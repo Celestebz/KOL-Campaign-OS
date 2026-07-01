@@ -1,0 +1,165 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* 自定义样式 */
+.ant-layout {
+  min-height: 100vh;
+}
+
+.ant-layout-header {
+  background: #001529;
+  padding: 0 24px;
+}
+
+.ant-layout-sider {
+  background: #001529;
+}
+
+.ant-layout-content {
+  padding: 24px;
+  background: #f0f2f5;
+  min-height: calc(100vh - 64px);
+}
+
+.logo {
+  height: 32px;
+  margin: 16px;
+  color: white;
+  font-size: 18px;
+  font-weight: bold;
+  text-align: center;
+  line-height: 32px;
+}
+
+.site-layout-background {
+  background: #fff;
+}
+
+.page-header {
+  background: #fff;
+  padding: 16px 24px;
+  margin-bottom: 24px;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.page-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #262626;
+}
+
+.content-card {
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.stats-card {
+  text-align: center;
+  padding: 24px;
+}
+
+.stats-number {
+  font-size: 32px;
+  font-weight: bold;
+  color: #1890ff;
+  margin-bottom: 8px;
+}
+
+.stats-label {
+  color: #8c8c8c;
+  font-size: 14px;
+}
+
+.success-rate {
+  color: #52c41a;
+}
+
+.failed-rate {
+  color: #ff4d4f;
+}
+
+/* 模板预览内容样式 */
+.preview-content img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0;
+  border-radius: 0;
+}
+
+/* 编辑器与预览统一段落间距 */
+.ql-editor p,
+.preview-content p {
+  margin: 0;
+  line-height: 1.6;
+  min-height: 1.2em; /* 统一最小高度 */
+}
+
+/* 强制编辑器段落样式：空段落也必须有高度 */
+/* 针对完全空的段落 */
+.ql-editor p:empty::before,
+.preview-content p:empty::before {
+  content: '\00a0';
+  display: inline-block;
+}
+
+/* 针对包含 br 的空段落（Quill默认行为） */
+.ql-editor p br,
+.preview-content p br {
+  display: inline-block;
+}
+
+.preview-content {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* 强制编辑器默认字体大小为 14px */
+.ql-editor {
+  font-size: 14px;
+}
+
+/* 让编辑器内的图片默认块级显示，避免行高导致的底部空隙 */
+.ql-editor img {
+  display: block;
+  margin: 0;
+}
+
+/* Quill 字体大小下拉显示数字 */
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="8px"]::before,
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value="8px"]::before { content: '8'; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="10px"]::before,
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value="10px"]::before { content: '10'; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="12px"]::before,
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value="12px"]::before { content: '12'; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="14px"]::before,
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value="14px"]::before { content: '14'; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="18px"]::before,
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value="18px"]::before { content: '18'; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="24px"]::before,
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value="24px"]::before { content: '24'; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="36px"]::before,
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value="36px"]::before { content: '36'; }
+
+/* 预览下拉条目本身以对应字号呈现，便于直观选择 */
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="8px"] { font-size: 8px; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="10px"] { font-size: 10px; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="12px"] { font-size: 12px; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="14px"] { font-size: 14px; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="18px"] { font-size: 18px; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="24px"] { font-size: 24px; }
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value="36px"] { font-size: 36px; }

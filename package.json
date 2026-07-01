@@ -1,0 +1,50 @@
+{
+  "name": "kol-campaign-os",
+  "version": "1.0.0",
+  "description": "KOL Campaign OS Web MVP",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && npm run dev",
+    "client": "cd client && npm start",
+    "build": "cd client && npm run build",
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install"
+  },
+  "keywords": [
+    "kol",
+    "creator",
+    "campaign",
+    "analytics"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "pkg": "^5.8.1",
+    "electron": "^31.3.0",
+    "electron-builder": "^24.9.3"
+  },
+  "build": {
+    "appId": "com.kolcampaignos.app",
+    "productName": "KOL Campaign OS",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**",
+      "server/**",
+      "client/build/**",
+      "package.json"
+    ]
+  },
+  "pkg": {
+    "assets": [
+      "client/build/**/*",
+      "server/routes/**/*"
+    ],
+    "scripts": [
+      "server/**/*.js"
+    ],
+    "outputPath": "dist"
+  }
+}
