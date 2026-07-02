@@ -40,7 +40,8 @@ const PROVIDER_LABELS = {
 
 const EXPORT_HEADERS = [
   '视频ID', '产品/活动', '平台', 'KOL', '标题', '作者', '原始链接', '平台视频ID', '状态', '抓取状态', 'AI状态',
-  '分析时间', '发布时间', '合作价格', '备注', '最近抓取时间', '播放数', '点赞数', '评论数', '收藏数', '分享数',
+  '分析时间', '发布时间', '合作价格', '备注', '最近抓取时间', '内容类型', '主要曝光数', '曝光口径', '数据完整性',
+  '播放数', '点赞数', '评论数', '收藏数', '分享数',
   'AI评分', 'AI摘要', 'AI情绪-正向', 'AI情绪-中性', 'AI情绪-负向', 'AI购买意向数量', 'AI购买意向关键词',
   'AI品牌提及', 'AI风险点', 'AI产品反馈', 'AI合作建议', 'AI内容优化建议', 'AI完整报告', 'AI最终提示词',
   'AI报告时间', '创建时间'
@@ -159,6 +160,133 @@ function firstDefined(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '');
 }
 
+function detectYouTubeContentType(url = '') {
+  return url.toLowerCase().includes('/shorts/') ? 'short' : 'video';
+}
+
+function detectInstagramContentType(post = {}, url = '') {
+  const rawType = String(firstDefined(
+    post.product_type,
+    post.media_type,
+    post.mediaType,
+    post.type,
+    post.__typename,
+    post.media_product_type,
+    ''
+  )).toLowerCase();
+  const lowerUrl = String(url || '').toLowerCase();
+
+  if (rawType.includes('reel') || lowerUrl.includes('/reel/')) return 'reel';
+  if (rawType.includes('clips') || rawType.includes('clip')) return 'reel';
+  if (rawType.includes('carousel') || rawType.includes('album') || Array.isArray(post.carousel_media) || Array.isArray(post.children)) return 'carousel';
+  if (rawType.includes('video')) return 'video';
+  if (post.is_video === true || post.video_url || post.video_view_count !== undefined || post.video_play_count !== undefined) {
+    return lowerUrl.includes('/reel/') || rawType.includes('clips') ? 'reel' : 'video';
+  }
+  if (rawType.includes('image') || rawType.includes('photo')) return 'image';
+  return lowerUrl.includes('/reel/') ? 'reel' : 'unknown';
+}
+
+function unwrapScrapeCreatorsPost(data = {}) {
+  return firstDefined(
+    data.response?.aweme_detail,
+    data.aweme_detail,
+    data.data?.response?.aweme_detail,
+    data.data?.aweme_detail,
+    data.data?.xdt_shortcode_media,
+    data.data?.shortcode_media,
+    data.data?.media,
+    data.data?.post,
+    data.post,
+    data.video,
+    data.data,
+    data
+  );
+}
+
+function getEdgeCount(edge) {
+  return normalizeCount(edge?.count);
+}
+
+function getInstagramCaption(post = {}) {
+  return firstDefined(
+    post.caption,
+    post.title,
+    post.edge_media_to_caption?.edges?.[0]?.node?.text,
+    post.accessibility_caption
+  );
+}
+
+function normalizeTimestamp(value) {
+  if (!value) return '';
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    const milliseconds = numeric > 100000000000 ? numeric : numeric * 1000;
+    return new Date(milliseconds).toISOString();
+  }
+  return value;
+}
+
+function getInstagramComments(post = {}, data = {}) {
+  const direct = post.comments || data.comments || data.data?.comments || [];
+  if (Array.isArray(direct) && direct.length) return direct;
+
+  const edges = firstDefined(
+    post.edge_media_to_parent_comment?.edges,
+    post.edge_media_to_comment?.edges,
+    post.edge_media_preview_comment?.edges,
+    []
+  );
+
+  return Array.isArray(edges) ? edges.map((edge) => edge.node || edge) : [];
+}
+
+function buildExposure(platform, contentType, metrics = {}) {
+  const playCount = normalizeCount(metrics.play_count);
+
+  if (platform === 'youtube') {
+    return {
+      primary_exposure_count: playCount,
+      exposure_metric_type: 'YouTube viewCount',
+      data_quality_note: playCount === null ? '缺少公开视频数' : '完整'
+    };
+  }
+
+  if (platform === 'tiktok') {
+    return {
+      primary_exposure_count: playCount,
+      exposure_metric_type: 'TikTok play_count',
+      data_quality_note: playCount === null ? '缺少公开视频数' : '完整'
+    };
+  }
+
+  if (platform === 'instagram') {
+    if (playCount !== null) {
+      const metricType = contentType === 'reel'
+        ? 'Instagram Reel play_count'
+        : 'Instagram video_view_count';
+      return {
+        primary_exposure_count: playCount,
+        exposure_metric_type: metricType,
+        data_quality_note: '完整'
+      };
+    }
+
+    const label = contentType === 'carousel' ? '多图帖' : contentType === 'image' ? '图片帖' : '该内容';
+    return {
+      primary_exposure_count: null,
+      exposure_metric_type: `Instagram ${label}无公开播放/浏览数`,
+      data_quality_note: '缺少曝光数'
+    };
+  }
+
+  return {
+    primary_exposure_count: playCount,
+    exposure_metric_type: playCount === null ? 'unavailable' : 'play_count',
+    data_quality_note: playCount === null ? '缺少曝光数' : '完整'
+  };
+}
+
 function providerKey(scope, provider) {
   return `${scope}.${provider}`;
 }
@@ -226,6 +354,19 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
+async function fetchFirstJson(candidates, options = {}) {
+  const errors = [];
+  for (const url of candidates) {
+    try {
+      const data = await fetchJson(url, options);
+      return { data, url };
+    } catch (error) {
+      errors.push(`${url}: ${error.message}`);
+    }
+  }
+  throw new Error(errors.join('；'));
+}
+
 async function fetchYouTubeGoogle(url, setting) {
   if (!setting?.api_key) throw new Error('Google Official YouTube API Key 未配置');
 
@@ -240,7 +381,7 @@ async function fetchYouTubeGoogle(url, setting) {
 
   const commentsApi = `https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=${encodeURIComponent(videoId)}&maxResults=100&order=relevance&textFormat=plainText&key=${apiKey}`;
   const comments = await fetchYouTubeComments(commentsApi);
-  return normalizeYouTubeItem(item, videoId, comments);
+  return normalizeYouTubeItem(item, videoId, comments, url);
 }
 
 function matonHeaders(setting) {
@@ -264,7 +405,7 @@ async function fetchYouTubeMaton(url, setting) {
 
   const commentsApi = `${baseUrl}/youtube/youtube/v3/commentThreads?part=snippet&videoId=${encodeURIComponent(videoId)}&maxResults=100&order=relevance&textFormat=plainText`;
   const comments = await fetchYouTubeComments(commentsApi, { headers: matonHeaders(setting) });
-  return normalizeYouTubeItem(item, videoId, comments);
+  return normalizeYouTubeItem(item, videoId, comments, url);
 }
 
 async function fetchYouTubeComments(url, options = {}) {
@@ -287,23 +428,27 @@ async function fetchYouTubeComments(url, options = {}) {
   }
 }
 
-function normalizeYouTubeItem(item, videoId, comments) {
+function normalizeYouTubeItem(item, videoId, comments, url = '') {
   const snippet = item.snippet || {};
   const stats = item.statistics || {};
+  const metrics = {
+    play_count: normalizeCount(stats.viewCount),
+    like_count: normalizeCount(stats.likeCount),
+    comment_count: normalizeCount(stats.commentCount),
+    collect_count: 0,
+    share_count: null
+  };
+  const contentType = detectYouTubeContentType(url);
   return {
     platform: 'youtube',
     platform_video_id: videoId,
     kol_name: snippet.channelTitle || '',
     title: snippet.title || '',
     author_name: snippet.channelTitle || '',
+    content_type: contentType,
     published_at: snippet.publishedAt || '',
-    metrics: {
-      play_count: normalizeCount(stats.viewCount),
-      like_count: normalizeCount(stats.likeCount),
-      comment_count: normalizeCount(stats.commentCount),
-      collect_count: 0,
-      share_count: null
-    },
+    metrics,
+    exposure: buildExposure('youtube', contentType, metrics),
     comments,
     raw: item
   };
@@ -313,44 +458,54 @@ async function fetchScrapeCreators(platform, url, setting) {
   if (!setting?.api_key) throw new Error('ScrapeCreators API Key 未配置');
 
   const baseUrl = (setting.base_url || 'https://api.scrapecreators.com').replace(/\/$/, '');
-  const endpoint = platform === 'instagram' ? '/v1/instagram/post' : '/v1/tiktok/video';
-  const data = await fetchJson(`${baseUrl}${endpoint}?url=${encodeURIComponent(url)}`, {
+  const endpoints = platform === 'instagram'
+    ? ['/v1/instagram/post']
+    : ['/v2/tiktok/video', '/v1/tiktok/video'];
+  const headers = {
+    'x-api-key': setting.api_key,
+    Authorization: `Bearer ${setting.api_key}`
+  };
+  const result = await fetchFirstJson(endpoints.map((endpoint) => `${baseUrl}${endpoint}?url=${encodeURIComponent(url)}`), {
     headers: {
-      'x-api-key': setting.api_key,
-      Authorization: `Bearer ${setting.api_key}`
+      ...headers
     }
   });
+  const data = result.data;
 
-  const post = data.data || data.post || data.video || data;
+  const post = unwrapScrapeCreatorsPost(data);
   const owner = post.owner || post.author || post.user || {};
   const metrics = post.metrics || post.statistics || post.stats || {};
-  const rawComments = post.comments || data.comments || [];
+  const normalizedMetrics = {
+    play_count: normalizeCount(firstDefined(metrics.play_count, metrics.view_count, metrics.video_play_count, metrics.video_view_count, post.play_count, post.view_count, post.video_play_count, post.video_view_count, post.views)),
+    like_count: normalizeCount(firstDefined(metrics.like_count, metrics.digg_count, post.like_count, post.likes, post.digg_count, getEdgeCount(post.edge_media_preview_like), getEdgeCount(post.edge_liked_by))),
+    comment_count: normalizeCount(firstDefined(metrics.comment_count, post.comment_count, post.comments_count, getEdgeCount(post.edge_media_to_parent_comment), getEdgeCount(post.edge_media_to_comment), getEdgeCount(post.edge_media_preview_comment))),
+    collect_count: normalizeCount(firstDefined(metrics.collect_count, metrics.save_count, post.collect_count, post.save_count, post.favorites)),
+    share_count: normalizeCount(firstDefined(metrics.share_count, post.share_count, post.shares))
+  };
+  const contentType = platform === 'instagram' ? detectInstagramContentType(post, url) : 'video';
+  const rawComments = platform === 'instagram' ? getInstagramComments(post, data) : (post.comments || data.comments || []);
   const comments = Array.isArray(rawComments) ? rawComments.slice(0, 100).map((comment) => ({
     id: firstDefined(comment.id, comment.comment_id, comment.pk),
     parent_id: firstDefined(comment.parent_id, comment.parentCommentId),
-    user_name: firstDefined(comment.user_name, comment.username, comment.author?.username, comment.user?.username),
+    user_name: firstDefined(comment.user_name, comment.username, comment.author?.username, comment.user?.username, comment.owner?.username),
     content: firstDefined(comment.content, comment.text, comment.comment),
-    like_count: normalizeCount(firstDefined(comment.like_count, comment.likes, comment.digg_count)),
-    commented_at: firstDefined(comment.created_at, comment.createdAt, comment.timestamp),
+    like_count: normalizeCount(firstDefined(comment.like_count, comment.likes, comment.digg_count, getEdgeCount(comment.edge_liked_by))),
+    commented_at: normalizeTimestamp(firstDefined(comment.created_at, comment.createdAt, comment.timestamp)),
     raw: comment
   })) : [];
 
   return {
     platform,
-    platform_video_id: String(firstDefined(post.id, post.shortcode, post.code, post.aweme_id, post.video_id, '')),
-    kol_name: firstDefined(owner.username, owner.full_name, post.username, post.author_name, ''),
-    title: firstDefined(post.caption, post.description, post.title, post.desc, ''),
-    author_name: firstDefined(owner.username, owner.full_name, post.username, post.author_name, ''),
-    published_at: firstDefined(post.taken_at, post.created_at, post.create_time, post.published_at, ''),
-    metrics: {
-      play_count: normalizeCount(firstDefined(metrics.play_count, metrics.view_count, post.play_count, post.view_count, post.views)),
-      like_count: normalizeCount(firstDefined(metrics.like_count, post.like_count, post.likes, post.digg_count)),
-      comment_count: normalizeCount(firstDefined(metrics.comment_count, post.comment_count, post.comments_count)),
-      collect_count: normalizeCount(firstDefined(metrics.collect_count, metrics.save_count, post.collect_count, post.save_count, post.favorites)),
-      share_count: normalizeCount(firstDefined(metrics.share_count, post.share_count, post.shares))
-    },
+    platform_video_id: String(firstDefined(post.shortcode, post.code, post.aweme_id, post.id, post.video_id, '')),
+    kol_name: firstDefined(owner.username, owner.unique_id, owner.full_name, owner.nickname, post.username, post.author_name, ''),
+    title: firstDefined(getInstagramCaption(post), post.description, post.desc, ''),
+    author_name: firstDefined(owner.username, owner.unique_id, owner.full_name, owner.nickname, post.username, post.author_name, ''),
+    content_type: contentType,
+    published_at: normalizeTimestamp(firstDefined(post.taken_at_timestamp, post.taken_at, post.created_at, post.create_time, post.published_at, '')),
+    metrics: normalizedMetrics,
+    exposure: buildExposure(platform, contentType, normalizedMetrics),
     comments,
-    raw: data
+    raw: { endpoint: result.url, response: data }
   };
 }
 
@@ -504,10 +659,17 @@ function buildAnalysisPromptV2(video, snapshot, comments, promptTemplate, campai
     },
     video: {
       platform: video.platform,
+      content_type: video.content_type || 'unknown',
       url: video.source_url,
       title: video.title,
       author_name: video.author_name,
       published_at: video.published_at,
+      exposure: {
+        primary_exposure_count: snapshot?.primary_exposure_count,
+        exposure_metric_type: snapshot?.exposure_metric_type,
+        data_quality_note: snapshot?.data_quality_note,
+        note: 'For Instagram image/carousel posts, public play/view count may be unavailable. Do not judge performance as poor only because exposure is missing; use engagement and comment quality instead.'
+      },
       metrics: {
         play_count: snapshot?.play_count,
         like_count: snapshot?.like_count,
@@ -763,7 +925,7 @@ async function crawlVideo(videoId, jobItemId) {
   const fetched = await fetchVideoData(video.source_url);
   await dbOperations.run(
     `UPDATE video_sources SET platform = ?, platform_video_id = ?, kol_name = COALESCE(NULLIF(?, ''), kol_name),
-     title = ?, author_name = ?, published_at = ?, status = ?, crawl_status = ?, error_message = NULL,
+     title = ?, author_name = ?, content_type = ?, published_at = ?, status = ?, crawl_status = ?, error_message = NULL,
      last_crawled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [
       fetched.platform,
@@ -771,6 +933,7 @@ async function crawlVideo(videoId, jobItemId) {
       fetched.kol_name,
       fetched.title,
       fetched.author_name,
+      fetched.content_type || 'unknown',
       fetched.published_at,
       'crawled',
       'success',
@@ -784,8 +947,10 @@ async function crawlVideo(videoId, jobItemId) {
     data: fetched.raw
   };
   await dbOperations.run(
-    `INSERT INTO video_snapshots (video_source_id, play_count, like_count, comment_count, collect_count, share_count, raw_data)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO video_snapshots
+     (video_source_id, play_count, like_count, comment_count, collect_count, share_count,
+      primary_exposure_count, exposure_metric_type, data_quality_note, raw_data)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       videoId,
       fetched.metrics.play_count,
@@ -793,6 +958,9 @@ async function crawlVideo(videoId, jobItemId) {
       fetched.metrics.comment_count,
       fetched.metrics.collect_count,
       fetched.metrics.share_count,
+      fetched.exposure?.primary_exposure_count ?? null,
+      fetched.exposure?.exposure_metric_type || '',
+      fetched.exposure?.data_quality_note || '',
       JSON.stringify(rawData)
     ]
   );
@@ -920,7 +1088,8 @@ function buildVideoListSql(filters = {}) {
   const { campaign_id, platform, crawl_status, analysis_status, search, ids } = filters;
   let sql = `
     SELECT vs.*, c.name as campaign_name, c.product as campaign_product,
-      snap.play_count, snap.like_count, snap.comment_count, snap.collect_count, snap.share_count, snap.snapshot_at,
+      snap.play_count, snap.like_count, snap.comment_count, snap.collect_count, snap.share_count,
+      snap.primary_exposure_count, snap.exposure_metric_type, snap.data_quality_note, snap.snapshot_at,
       ai.score, ai.summary, ai.sentiment_positive, ai.sentiment_neutral, ai.sentiment_negative,
       ai.purchase_intent_count, ai.purchase_intent_keywords, ai.brand_mentions, ai.risks, ai.product_feedback,
       ai.cooperation_advice, ai.content_suggestions, ai.full_report, ai.final_prompt, ai.created_at as ai_created_at,
@@ -987,6 +1156,10 @@ function rowsToSheetRows(rows) {
     合作价格: row.cooperation_price || '',
     备注: row.notes || '',
     最近抓取时间: row.last_crawled_at || '',
+    内容类型: row.content_type || '',
+    主要曝光数: row.primary_exposure_count ?? '',
+    曝光口径: row.exposure_metric_type || '',
+    数据完整性: row.data_quality_note || '',
     播放数: row.play_count ?? '',
     点赞数: row.like_count ?? '',
     评论数: row.comment_count ?? '',
@@ -1194,7 +1367,8 @@ router.get('/jobs/:id/export', async (req, res) => {
   try {
     const rows = await dbOperations.query(`
       SELECT vs.*, c.name as campaign_name,
-        snap.play_count, snap.like_count, snap.comment_count, snap.collect_count, snap.share_count, snap.snapshot_at,
+        snap.play_count, snap.like_count, snap.comment_count, snap.collect_count, snap.share_count,
+        snap.primary_exposure_count, snap.exposure_metric_type, snap.data_quality_note, snap.snapshot_at,
         ai.score, ai.summary, ai.sentiment_positive, ai.sentiment_neutral, ai.sentiment_negative,
         ai.purchase_intent_count, ai.purchase_intent_keywords, ai.brand_mentions, ai.risks, ai.product_feedback,
         ai.cooperation_advice, ai.content_suggestions, ai.full_report, ai.final_prompt, ai.created_at as ai_created_at
@@ -1211,55 +1385,7 @@ router.get('/jobs/:id/export', async (req, res) => {
       ORDER BY item.id
     `, [req.params.id]);
 
-    const sheetRows = rows.map((row) => ({
-      视频ID: row.id,
-      '产品/活动': row.campaign_name || '',
-      平台: row.platform || '',
-      KOL: row.kol_name || row.author_name || '',
-      标题: row.title || '',
-      作者: row.author_name || '',
-      原始链接: row.source_url || '',
-      平台视频ID: row.platform_video_id || '',
-      状态: row.status || '',
-      抓取状态: row.crawl_status || '',
-      AI状态: row.analysis_status || '',
-      分析时间: row.ai_created_at || '',
-      发布时间: row.published_at || '',
-      合作价格: row.cooperation_price || '',
-      备注: row.notes || '',
-      最近抓取时间: row.last_crawled_at || '',
-      播放数: row.play_count ?? '',
-      点赞数: row.like_count ?? '',
-      评论数: row.comment_count ?? '',
-      收藏数: row.collect_count ?? '',
-      分享数: row.share_count ?? '',
-      AI评分: row.score ?? '',
-      AI摘要: row.summary || '',
-      'AI情绪-正向': row.sentiment_positive ?? '',
-      'AI情绪-中性': row.sentiment_neutral ?? '',
-      'AI情绪-负向': row.sentiment_negative ?? '',
-      AI购买意向数量: row.purchase_intent_count ?? '',
-      AI购买意向关键词: row.purchase_intent_keywords || '',
-      AI品牌提及: row.brand_mentions || '',
-      AI风险点: row.risks || '',
-      AI产品反馈: row.product_feedback || '',
-      AI合作建议: row.cooperation_advice || '',
-      AI内容优化建议: row.content_suggestions || '',
-      AI完整报告: row.full_report || row.summary || '',
-      AI最终提示词: row.final_prompt || '',
-      AI报告时间: row.ai_created_at || '',
-      创建时间: row.created_at || ''
-    }));
-
-    const worksheet = xlsx.utils.json_to_sheet(toExcelSafeRows(sheetRows), { header: EXPORT_HEADERS });
-    worksheet['!cols'] = EXPORT_HEADERS.map((header) => ({ wch: header.includes('AI') || header.includes('标题') ? 28 : 16 }));
-    const workbook = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(workbook, worksheet, '视频分析');
-    const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=video_analysis_job_${req.params.id}.xlsx`);
-    res.send(buffer);
+    sendVideoWorkbook(res, rows, `video_analysis_job_${req.params.id}.xlsx`);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

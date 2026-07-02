@@ -81,6 +81,7 @@ const VideoAnalysis = () => {
   const [loading, setLoading] = useState(false);
   const [jobLoading, setJobLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
+  const [campaignManageVisible, setCampaignManageVisible] = useState(false);
   const [editingVideo, setEditingVideo] = useState(null);
   const [detailVideo, setDetailVideo] = useState(null);
   const [form] = Form.useForm();
@@ -100,7 +101,8 @@ const VideoAnalysis = () => {
 
   const campaignOptions = campaigns.map((item) => ({
     value: item.id,
-    label: item.name
+    label: item.name,
+    campaign: item
   }));
 
   const fetchCampaigns = async () => {
@@ -111,6 +113,139 @@ const VideoAnalysis = () => {
       message.error('获取产品/活动列表失败');
     }
   };
+
+  const handleDeleteCampaign = async (campaign, event) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    try {
+      await axios.delete(`/api/campaigns/${campaign.id}`);
+      message.success('产品/活动已删除');
+      if (filters.campaign_id === campaign.id) {
+        const nextFilters = { ...filters, campaign_id: undefined };
+        setFilters(nextFilters);
+        fetchVideos(nextFilters);
+      }
+      if (form.getFieldValue('campaign_id') === campaign.id) {
+        form.setFieldValue('campaign_id', 1);
+      }
+      fetchCampaigns();
+    } catch (error) {
+      message.error(error.response?.data?.error || '删除产品/活动失败');
+    }
+  };
+
+  const handleRenameCampaign = (campaign, event) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    let nextName = campaign.name;
+
+    Modal.confirm({
+      title: '重命名产品/活动',
+      content: (
+        <Input
+          defaultValue={campaign.name}
+          autoFocus
+          onChange={(inputEvent) => {
+            nextName = inputEvent.target.value;
+          }}
+          onPressEnter={() => {
+            document.querySelector('.ant-modal-confirm-btns .ant-btn-primary')?.click();
+          }}
+        />
+      ),
+      okText: '保存',
+      cancelText: '取消',
+      async onOk() {
+        const cleanName = String(nextName || '').trim();
+        if (!cleanName) {
+          message.error('请输入产品/活动名称');
+          return Promise.reject();
+        }
+        try {
+          const res = await axios.put(`/api/campaigns/${campaign.id}`, { name: cleanName, product: cleanName });
+          message.success('产品/活动已重命名');
+          fetchCampaigns();
+          fetchVideos();
+          if (form.getFieldValue('campaign_id') === campaign.id) {
+            form.setFieldValue('campaign_id', res.data.data.id);
+          }
+        } catch (error) {
+          message.error(error.response?.data?.error || '重命名产品/活动失败');
+          return Promise.reject();
+        }
+      }
+    });
+  };
+
+  const renderCampaignOption = (option) => {
+    const campaign = option.campaign;
+    if (!campaign) return option.label;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <span>{campaign.name}</span>
+        <Space size={2}>
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined />}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => handleRenameCampaign(campaign, event)}
+          />
+          {campaign.id !== 1 ? (
+            <Popconfirm
+              title="删除这个产品/活动？"
+              description="仅未被视频使用的产品/活动可以删除。"
+              onConfirm={(event) => handleDeleteCampaign(campaign, event)}
+              onCancel={(event) => {
+                event?.preventDefault();
+                event?.stopPropagation();
+              }}
+            >
+              <Button
+                type="text"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              />
+            </Popconfirm>
+          ) : null}
+        </Space>
+      </div>
+    );
+  };
+
+  const campaignManageColumns = [
+    { title: '产品/活动', dataIndex: 'name', key: 'name' },
+    {
+      title: '操作',
+      key: 'action',
+      width: 180,
+      render: (_, campaign) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={(event) => handleRenameCampaign(campaign, event)}>重命名</Button>
+          <Popconfirm
+            title="删除这个产品/活动？"
+            description={campaign.id === 1 ? 'Default Campaign 不能删除。' : '仅未被视频使用的产品/活动可以删除。'}
+            disabled={campaign.id === 1}
+            onConfirm={(event) => handleDeleteCampaign(campaign, event)}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />} disabled={campaign.id === 1}>删除</Button>
+          </Popconfirm>
+        </Space>
+      )
+    }
+  ];
 
   const fetchVideos = async (nextFilters = filters) => {
     setLoading(true);
@@ -142,7 +277,7 @@ const VideoAnalysis = () => {
   const openCreateModal = () => {
     setEditingVideo(null);
     form.resetFields();
-    form.setFieldsValue({ campaign_id: campaigns[0]?.id || 1 });
+    form.setFieldsValue({ campaign_id: 1 });
     setModalVisible(true);
   };
 
@@ -295,6 +430,9 @@ const VideoAnalysis = () => {
       render: (value) => <Tag color={statusColor(value, 'analysis')}>{statusText(value, 'analysis')}</Tag>
     },
     { title: '最近抓取', dataIndex: 'last_crawled_at', key: 'last_crawled_at', width: 160, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '内容类型', dataIndex: 'content_type', key: 'content_type', width: 100, render: (value) => value || '-' },
+    { title: '主要曝光数', dataIndex: 'primary_exposure_count', key: 'primary_exposure_count', width: 120, render: (value) => value ?? '-' },
+    { title: '曝光口径', dataIndex: 'exposure_metric_type', key: 'exposure_metric_type', width: 180, ellipsis: true, render: (value) => value || '-' },
     { title: '播放', dataIndex: 'play_count', key: 'play_count', width: 90, render: (value) => value ?? '-' },
     { title: '点赞', dataIndex: 'like_count', key: 'like_count', width: 90, render: (value) => value ?? '-' },
     { title: '评论', dataIndex: 'comment_count', key: 'comment_count', width: 90, render: (value) => value ?? '-' },
@@ -364,7 +502,25 @@ const VideoAnalysis = () => {
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Row gutter={12}>
           <Col span={5}>
-            <Select allowClear placeholder="产品/活动" value={filters.campaign_id} onChange={(value) => updateFilter('campaign_id', value)} options={campaignOptions} style={{ width: '100%' }} />
+            <Select
+              allowClear
+              placeholder="产品/活动"
+              value={filters.campaign_id}
+              onChange={(value) => updateFilter('campaign_id', value)}
+              options={campaignOptions}
+              optionRender={renderCampaignOption}
+              dropdownRender={(menu) => (
+                <>
+                  {menu}
+                  <div style={{ padding: 8, borderTop: '1px solid #f0f0f0' }}>
+                    <Button block icon={<EditOutlined />} onClick={() => setCampaignManageVisible(true)}>
+                      管理产品/活动
+                    </Button>
+                  </div>
+                </>
+              )}
+              style={{ width: '100%' }}
+            />
           </Col>
           <Col span={4}>
             <Select allowClear placeholder="平台" value={filters.platform} onChange={(value) => updateFilter('platform', value)} options={platformOptions} style={{ width: '100%' }} />
@@ -397,6 +553,22 @@ const VideoAnalysis = () => {
       </Card>
 
       <Modal
+        title="管理产品/活动"
+        open={campaignManageVisible}
+        onCancel={() => setCampaignManageVisible(false)}
+        footer={null}
+        width={680}
+      >
+        <Table
+          columns={campaignManageColumns}
+          dataSource={campaigns}
+          rowKey="id"
+          pagination={false}
+          size="small"
+        />
+      </Modal>
+
+      <Modal
         title={editingVideo ? '编辑链接' : '新建链接'}
         open={modalVisible}
         onCancel={() => setModalVisible(false)}
@@ -412,6 +584,7 @@ const VideoAnalysis = () => {
               showSearch
               options={campaignOptions}
               optionFilterProp="label"
+              optionRender={renderCampaignOption}
               dropdownRender={(menu) => (
                 <>
                   {menu}
@@ -426,6 +599,9 @@ const VideoAnalysis = () => {
                         form.setFieldValue('campaign_id', res.data.data.id);
                       }}
                     />
+                    <Button block icon={<EditOutlined />} style={{ marginTop: 8 }} onClick={() => setCampaignManageVisible(true)}>
+                      管理产品/活动
+                    </Button>
                   </div>
                 </>
               )}
@@ -457,6 +633,10 @@ const VideoAnalysis = () => {
             <div><strong>KOL：</strong>{detailVideo.kol_name || detailVideo.author_name || '-'}</div>
             <div><strong>标题：</strong>{detailVideo.title || '-'}</div>
             <div><strong>链接：</strong><a href={detailVideo.source_url} target="_blank" rel="noreferrer">{detailVideo.source_url}</a></div>
+            <div><strong>内容类型：</strong>{detailVideo.content_type || '-'}</div>
+            <div><strong>主要曝光数：</strong>{detailVideo.primary_exposure_count ?? '-'}</div>
+            <div><strong>曝光口径：</strong>{detailVideo.exposure_metric_type || '-'}</div>
+            <div><strong>数据完整性：</strong>{detailVideo.data_quality_note || '-'}</div>
             <div><strong>合作价格：</strong>{detailVideo.cooperation_price || '-'}</div>
             <div><strong>备注：</strong>{detailVideo.notes || '-'}</div>
             <div><strong>错误：</strong>{detailVideo.error_message || '-'}</div>

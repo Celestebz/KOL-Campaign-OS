@@ -115,6 +115,7 @@ async function initDatabase() {
       kol_name TEXT,
       title TEXT,
       author_name TEXT,
+      content_type TEXT,
       published_at TEXT,
       cooperation_price TEXT,
       notes TEXT,
@@ -136,6 +137,9 @@ async function initDatabase() {
       comment_count INTEGER,
       collect_count INTEGER,
       share_count INTEGER,
+      primary_exposure_count INTEGER,
+      exposure_metric_type TEXT,
+      data_quality_note TEXT,
       raw_data TEXT,
       snapshot_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (video_source_id) REFERENCES video_sources (id)
@@ -274,8 +278,36 @@ async function initDatabase() {
     await addColumnIfMissing('customers', 'price_rmb', 'TEXT');
     await addColumnIfMissing('customers', 'rating', 'TEXT');
     await addColumnIfMissing('video_sources', 'notes', 'TEXT');
+    await addColumnIfMissing('video_sources', 'content_type', 'TEXT');
     await addColumnIfMissing('video_sources', 'crawl_status', "TEXT DEFAULT 'pending'");
     await addColumnIfMissing('video_sources', 'analysis_status', "TEXT DEFAULT 'not_analyzed'");
+    await addColumnIfMissing('video_snapshots', 'primary_exposure_count', 'INTEGER');
+    await addColumnIfMissing('video_snapshots', 'exposure_metric_type', 'TEXT');
+    await addColumnIfMissing('video_snapshots', 'data_quality_note', 'TEXT');
+
+    await dbOperations.run(`
+      UPDATE video_snapshots
+      SET primary_exposure_count = play_count
+      WHERE primary_exposure_count IS NULL AND play_count IS NOT NULL
+    `);
+
+    await dbOperations.run(`
+      UPDATE video_snapshots
+      SET exposure_metric_type = 'play_count',
+          data_quality_note = '历史数据，建议重新抓取以获得精确曝光口径'
+      WHERE (exposure_metric_type IS NULL OR exposure_metric_type = '')
+        AND play_count IS NOT NULL
+    `);
+
+    await dbOperations.run(`
+      UPDATE video_sources
+      SET content_type = CASE
+        WHEN platform = 'youtube' THEN 'video'
+        WHEN platform = 'tiktok' THEN 'video'
+        ELSE 'unknown'
+      END
+      WHERE content_type IS NULL OR content_type = ''
+    `);
 
     await dbOperations.run(`
       UPDATE video_sources
