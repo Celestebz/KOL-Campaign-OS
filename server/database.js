@@ -234,6 +234,139 @@ async function initDatabase() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
+    await dbOperations.run(`CREATE TABLE IF NOT EXISTS kol_strategies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      brand TEXT,
+      product TEXT,
+      category TEXT,
+      target_market TEXT,
+      language TEXT,
+      primary_platform TEXT,
+      secondary_platforms TEXT,
+      campaign_goal TEXT,
+      status TEXT DEFAULT 'draft',
+      product_context TEXT,
+      persona_config TEXT,
+      search_strategy TEXT,
+      scoring_weights TEXT,
+      finder_handoff TEXT,
+      source_material_summary TEXT,
+      source_material_meta TEXT,
+      source_material_type TEXT,
+      research_status TEXT DEFAULT 'not_started',
+      research_sources TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
+    )`);
+
+    await dbOperations.run(`CREATE TABLE IF NOT EXISTS finder_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER,
+      strategy_id INTEGER,
+      name TEXT,
+      platform TEXT,
+      keywords TEXT,
+      status TEXT DEFAULT 'draft',
+      result_count INTEGER DEFAULT 0,
+      notes TEXT,
+      search_sources TEXT,
+      target_platforms TEXT,
+      search_cycles TEXT,
+      current_cycle TEXT,
+      total_cycles INTEGER DEFAULT 0,
+      completed_cycles INTEGER DEFAULT 0,
+      success_count INTEGER DEFAULT 0,
+      failed_count INTEGER DEFAULT 0,
+      provider_attempts TEXT,
+      error_message TEXT,
+      raw_request TEXT,
+      raw_response_summary TEXT,
+      started_at DATETIME,
+      finished_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns (id),
+      FOREIGN KEY (strategy_id) REFERENCES kol_strategies (id)
+    )`);
+
+    await dbOperations.run(`CREATE TABLE IF NOT EXISTS raw_candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      finder_task_id INTEGER,
+      campaign_id INTEGER,
+      strategy_id INTEGER,
+      platform TEXT,
+      kol_name TEXT NOT NULL,
+      contact_name TEXT,
+      profile_url TEXT,
+      video_url TEXT,
+      video_title TEXT,
+      followers TEXT,
+      avg_views TEXT,
+      email TEXT,
+      phone TEXT,
+      country_region TEXT,
+      matched_keywords TEXT,
+      ai_score INTEGER,
+      ai_match_reason TEXT,
+      status TEXT DEFAULT 'new',
+      source TEXT,
+      raw_data TEXT,
+      approved_customer_id INTEGER,
+      approved_campaign_kol_id INTEGER,
+      error_message TEXT,
+      search_cycle TEXT,
+      matched_persona TEXT,
+      scoring_breakdown TEXT,
+      evidence_url TEXT,
+      evidence_title TEXT,
+      evidence_type TEXT,
+      source_query TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (finder_task_id) REFERENCES finder_tasks (id),
+      FOREIGN KEY (campaign_id) REFERENCES campaigns (id),
+      FOREIGN KEY (strategy_id) REFERENCES kol_strategies (id),
+      FOREIGN KEY (approved_customer_id) REFERENCES customers (id)
+    )`);
+
+    await dbOperations.run(`CREATE TABLE IF NOT EXISTS campaign_kols (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL,
+      customer_id INTEGER NOT NULL,
+      raw_candidate_id INTEGER,
+      kol_name_snapshot TEXT,
+      contact_name_snapshot TEXT,
+      youtube_url_snapshot TEXT,
+      youtube_followers_snapshot TEXT,
+      instagram_url_snapshot TEXT,
+      instagram_followers_snapshot TEXT,
+      tiktok_url_snapshot TEXT,
+      tiktok_followers_snapshot TEXT,
+      email_snapshot TEXT,
+      country_region_snapshot TEXT,
+      quoted_price TEXT,
+      exchange_rate TEXT,
+      price_rmb TEXT,
+      status TEXT DEFAULT 'candidate',
+      owner TEXT,
+      youtube_video_link TEXT,
+      instagram_video_link TEXT,
+      tiktok_video_link TEXT,
+      notes TEXT,
+      feishu_record_id TEXT,
+      sync_status TEXT DEFAULT 'sync_pending',
+      last_synced_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns (id),
+      FOREIGN KEY (customer_id) REFERENCES customers (id),
+      FOREIGN KEY (raw_candidate_id) REFERENCES raw_candidates (id),
+      UNIQUE (campaign_id, customer_id)
+    )`);
+
     await dbOperations.run(`INSERT OR IGNORE INTO customer_groups (id, name, description) VALUES
       (1, 'Prospects', 'New KOL candidates'),
       (2, 'Contacted', 'Creators already contacted'),
@@ -277,6 +410,39 @@ async function initDatabase() {
     await addColumnIfMissing('customers', 'exchange_rate', 'TEXT');
     await addColumnIfMissing('customers', 'price_rmb', 'TEXT');
     await addColumnIfMissing('customers', 'rating', 'TEXT');
+    await addColumnIfMissing('customers', 'feishu_record_id', 'TEXT');
+    await addColumnIfMissing('customers', 'sync_status', "TEXT DEFAULT 'sync_pending'");
+    await addColumnIfMissing('customers', 'last_synced_at', 'DATETIME');
+    await addColumnIfMissing('customers', 'source_raw_candidate_id', 'INTEGER');
+    await addColumnIfMissing('customers', 'last_verified_at', 'DATETIME');
+    await addColumnIfMissing('finder_tasks', 'strategy_id', 'INTEGER');
+    await addColumnIfMissing('finder_tasks', 'search_sources', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'target_platforms', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'search_cycles', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'current_cycle', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'total_cycles', 'INTEGER DEFAULT 0');
+    await addColumnIfMissing('finder_tasks', 'completed_cycles', 'INTEGER DEFAULT 0');
+    await addColumnIfMissing('finder_tasks', 'success_count', 'INTEGER DEFAULT 0');
+    await addColumnIfMissing('finder_tasks', 'failed_count', 'INTEGER DEFAULT 0');
+    await addColumnIfMissing('finder_tasks', 'provider_attempts', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'error_message', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'raw_request', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'raw_response_summary', 'TEXT');
+    await addColumnIfMissing('kol_strategies', 'source_material_summary', 'TEXT');
+    await addColumnIfMissing('kol_strategies', 'source_material_meta', 'TEXT');
+    await addColumnIfMissing('kol_strategies', 'source_material_type', 'TEXT');
+    await addColumnIfMissing('kol_strategies', 'research_status', "TEXT DEFAULT 'not_started'");
+    await addColumnIfMissing('kol_strategies', 'research_sources', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'started_at', 'DATETIME');
+    await addColumnIfMissing('finder_tasks', 'finished_at', 'DATETIME');
+    await addColumnIfMissing('raw_candidates', 'strategy_id', 'INTEGER');
+    await addColumnIfMissing('raw_candidates', 'search_cycle', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'matched_persona', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'scoring_breakdown', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'evidence_url', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'evidence_title', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'evidence_type', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'source_query', 'TEXT');
     await addColumnIfMissing('video_sources', 'notes', 'TEXT');
     await addColumnIfMissing('video_sources', 'content_type', 'TEXT');
     await addColumnIfMissing('video_sources', 'crawl_status', "TEXT DEFAULT 'pending'");

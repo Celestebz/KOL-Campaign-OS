@@ -33,6 +33,7 @@
     "files": [
       "electron/**",
       "server/**",
+      "skills/**",
       "client/build/**",
       "package.json"
     ]
@@ -40,7 +41,8 @@
   "pkg": {
     "assets": [
       "client/build/**/*",
-      "server/routes/**/*"
+      "server/routes/**/*",
+      "skills/**/*"
     ],
     "scripts": [
       "server/**/*.js"

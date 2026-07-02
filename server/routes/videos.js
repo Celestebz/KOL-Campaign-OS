@@ -642,6 +642,8 @@ function buildAnalysisPromptV2(video, snapshot, comments, promptTemplate, campai
       'Do not assume a fixed brand. Use target_context when provided; otherwise infer the relevant product category and brands from the video title, metadata, and comments.',
       'If brand keywords are provided, evaluate brand exposure and campaign fit against those keywords.',
       'If brand keywords are empty, do not mark the video as irrelevant only because a target brand is missing; evaluate the creator/content/category value generically.',
+      'Do not state that an account is a competitor, partner, distributor, official account, affiliate, or paid collaborator unless the provided title, profile data, comments, notes, or target_context explicitly proves it.',
+      'If the brand relationship is unclear, describe it as a relationship hypothesis or verification item. Example: "发布者疑似品牌/渠道型账号，非独立 KOL；其与目标品牌的商业关系需确认。若为竞品，则存在品牌冲突；若为渠道方，则应按渠道内容评估。" Do not write uncertain relationship assumptions as facts.',
       'Fill every field in required_json_schema. Use empty arrays, empty strings, or 0 when evidence is missing.',
       'Score should reflect creator/content fit, engagement quality, audience feedback, purchase intent, brand/category relevance, and collaboration risk.'
     ],
@@ -687,7 +689,7 @@ function buildAnalysisPromptV2(video, snapshot, comments, promptTemplate, campai
       sentiment: { positive: 0, neutral: 0, negative: 0 },
       purchase_intent: { count: 0, keywords: [] },
       brand_mentions: 'string or object. Include counts for target keywords if provided; otherwise list notable brands/categories mentioned.',
-      risks: [],
+      risks: 'array. Write external brand/channel/competitor relationship issues as hypotheses when not explicitly proven, not as facts.',
       product_feedback: [],
       cooperation_advice: '',
       content_suggestions: [],

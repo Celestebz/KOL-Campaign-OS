@@ -3,6 +3,7 @@ const router = express.Router();
 const { dbOperations } = require('../database');
 
 const SYSTEM_SELECTION_KEY = 'system.provider_selection';
+const FEISHU_PROVIDER_KEY = 'cloud.feishu_bitable';
 
 const PLATFORM_PROVIDERS = {
   youtube: ['google_official', 'maton_gateway', 'scrapecreators', 'brightdata', 'custom'],
@@ -58,6 +59,21 @@ function cleanProvider(row, provider) {
     auth_scheme: extra.auth_scheme || '',
     connection_id: extra.connection_id || '',
     custom_provider_name: extra.custom_provider_name || '',
+    notes: extra.notes || ''
+  };
+}
+
+function cleanFeishu(row) {
+  const extra = parseJson(row?.extra_config, {});
+  return {
+    provider: 'feishu_bitable',
+    app_id: extra.app_id || '',
+    app_secret: row?.api_key || '',
+    base_url: row?.base_url || extra.base_url || 'https://open.feishu.cn',
+    app_token: extra.app_token || '',
+    kol_table_id: extra.kol_table_id || '',
+    campaign_kol_table_id: extra.campaign_kol_table_id || '',
+    campaign_table_id: extra.campaign_table_id || '',
     notes: extra.notes || ''
   };
 }
@@ -137,6 +153,33 @@ async function upsertSelection(selection) {
   );
 }
 
+async function upsertFeishu(row = {}) {
+  const extraConfig = {
+    app_id: row.app_id || '',
+    app_token: row.app_token || '',
+    kol_table_id: row.kol_table_id || '',
+    campaign_kol_table_id: row.campaign_kol_table_id || '',
+    campaign_table_id: row.campaign_table_id || '',
+    notes: row.notes || ''
+  };
+
+  await dbOperations.run(
+    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, ?, '', ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(provider) DO UPDATE SET
+       api_key = excluded.api_key,
+       base_url = excluded.base_url,
+       extra_config = excluded.extra_config,
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      FEISHU_PROVIDER_KEY,
+      row.app_secret || '',
+      row.base_url || 'https://open.feishu.cn',
+      JSON.stringify(extraConfig)
+    ]
+  );
+}
+
 router.get('/', async (req, res) => {
   try {
     const rows = await dbOperations.query('SELECT provider, api_key, base_url, model, extra_config, updated_at FROM api_settings ORDER BY provider');
@@ -147,6 +190,10 @@ router.get('/', async (req, res) => {
       platforms: {},
       aiModels: { active: selection.aiModels.active, providers: {} },
       agents: { active: selection.agents.active, providers: {} },
+      cloudStorage: {
+        primary: 'feishu_bitable',
+        feishu: cleanFeishu(getRow(rows, FEISHU_PROVIDER_KEY))
+      },
       fallbackStrategy: selection.fallbackStrategy
     };
 
@@ -231,7 +278,11 @@ router.post('/', async (req, res) => {
       if (row) await upsertProvider(providerKey('agent', provider), row);
     }
 
-    res.json({ success: true, message: 'API 设置已保存' });
+    if (settings.cloudStorage?.feishu) {
+      await upsertFeishu(settings.cloudStorage.feishu);
+    }
+
+    res.json({ success: true, message: 'Settings saved' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

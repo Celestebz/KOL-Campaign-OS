@@ -79,9 +79,9 @@ const VideoAnalysis = () => {
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [filters, setFilters] = useState({});
   const [loading, setLoading] = useState(false);
-  const [jobLoading, setJobLoading] = useState(false);
+  const [crawlLoading, setCrawlLoading] = useState(false);
+  const [analyzeLoading, setAnalyzeLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
-  const [campaignManageVisible, setCampaignManageVisible] = useState(false);
   const [editingVideo, setEditingVideo] = useState(null);
   const [detailVideo, setDetailVideo] = useState(null);
   const [form] = Form.useForm();
@@ -113,139 +113,6 @@ const VideoAnalysis = () => {
       message.error('获取产品/活动列表失败');
     }
   };
-
-  const handleDeleteCampaign = async (campaign, event) => {
-    event?.preventDefault();
-    event?.stopPropagation();
-    try {
-      await axios.delete(`/api/campaigns/${campaign.id}`);
-      message.success('产品/活动已删除');
-      if (filters.campaign_id === campaign.id) {
-        const nextFilters = { ...filters, campaign_id: undefined };
-        setFilters(nextFilters);
-        fetchVideos(nextFilters);
-      }
-      if (form.getFieldValue('campaign_id') === campaign.id) {
-        form.setFieldValue('campaign_id', 1);
-      }
-      fetchCampaigns();
-    } catch (error) {
-      message.error(error.response?.data?.error || '删除产品/活动失败');
-    }
-  };
-
-  const handleRenameCampaign = (campaign, event) => {
-    event?.preventDefault();
-    event?.stopPropagation();
-    let nextName = campaign.name;
-
-    Modal.confirm({
-      title: '重命名产品/活动',
-      content: (
-        <Input
-          defaultValue={campaign.name}
-          autoFocus
-          onChange={(inputEvent) => {
-            nextName = inputEvent.target.value;
-          }}
-          onPressEnter={() => {
-            document.querySelector('.ant-modal-confirm-btns .ant-btn-primary')?.click();
-          }}
-        />
-      ),
-      okText: '保存',
-      cancelText: '取消',
-      async onOk() {
-        const cleanName = String(nextName || '').trim();
-        if (!cleanName) {
-          message.error('请输入产品/活动名称');
-          return Promise.reject();
-        }
-        try {
-          const res = await axios.put(`/api/campaigns/${campaign.id}`, { name: cleanName, product: cleanName });
-          message.success('产品/活动已重命名');
-          fetchCampaigns();
-          fetchVideos();
-          if (form.getFieldValue('campaign_id') === campaign.id) {
-            form.setFieldValue('campaign_id', res.data.data.id);
-          }
-        } catch (error) {
-          message.error(error.response?.data?.error || '重命名产品/活动失败');
-          return Promise.reject();
-        }
-      }
-    });
-  };
-
-  const renderCampaignOption = (option) => {
-    const campaign = option.campaign;
-    if (!campaign) return option.label;
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <span>{campaign.name}</span>
-        <Space size={2}>
-          <Button
-            type="text"
-            size="small"
-            icon={<EditOutlined />}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-            }}
-            onClick={(event) => handleRenameCampaign(campaign, event)}
-          />
-          {campaign.id !== 1 ? (
-            <Popconfirm
-              title="删除这个产品/活动？"
-              description="仅未被视频使用的产品/活动可以删除。"
-              onConfirm={(event) => handleDeleteCampaign(campaign, event)}
-              onCancel={(event) => {
-                event?.preventDefault();
-                event?.stopPropagation();
-              }}
-            >
-              <Button
-                type="text"
-                size="small"
-                danger
-                icon={<DeleteOutlined />}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-              />
-            </Popconfirm>
-          ) : null}
-        </Space>
-      </div>
-    );
-  };
-
-  const campaignManageColumns = [
-    { title: '产品/活动', dataIndex: 'name', key: 'name' },
-    {
-      title: '操作',
-      key: 'action',
-      width: 180,
-      render: (_, campaign) => (
-        <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={(event) => handleRenameCampaign(campaign, event)}>重命名</Button>
-          <Popconfirm
-            title="删除这个产品/活动？"
-            description={campaign.id === 1 ? 'Default Campaign 不能删除。' : '仅未被视频使用的产品/活动可以删除。'}
-            disabled={campaign.id === 1}
-            onConfirm={(event) => handleDeleteCampaign(campaign, event)}
-          >
-            <Button size="small" danger icon={<DeleteOutlined />} disabled={campaign.id === 1}>删除</Button>
-          </Popconfirm>
-        </Space>
-      )
-    }
-  ];
 
   const fetchVideos = async (nextFilters = filters) => {
     setLoading(true);
@@ -338,14 +205,19 @@ const VideoAnalysis = () => {
     return false;
   };
 
-  const pollJob = (jobId) => {
+  const setBatchLoading = (type, value) => {
+    if (type === 'crawl') setCrawlLoading(value);
+    else setAnalyzeLoading(value);
+  };
+
+  const pollJob = (jobId, type) => {
     const timer = setInterval(async () => {
       try {
         const res = await axios.get(`/api/videos/jobs/${jobId}`);
         const job = res.data.data.job;
         if (['success', 'partial_failed', 'failed'].includes(job?.status)) {
           clearInterval(timer);
-          setJobLoading(false);
+          setBatchLoading(type, false);
           await fetchVideos();
           if (job.status === 'success') {
             message.success('任务完成');
@@ -355,22 +227,22 @@ const VideoAnalysis = () => {
         }
       } catch (error) {
         clearInterval(timer);
-        setJobLoading(false);
+        setBatchLoading(type, false);
         message.error('查询任务状态失败');
       }
     }, 2000);
   };
 
   const runBatch = async (type, ids = selectedRowKeys) => {
-    setJobLoading(true);
+    setBatchLoading(type, true);
     try {
       const endpoint = type === 'crawl' ? '/api/videos/crawl' : '/api/videos/analyze';
       const res = await axios.post(endpoint, { videoIds: ids });
       const jobId = res.data.data.job_id;
       message.success(type === 'crawl' ? `已创建抓取任务 #${jobId}` : `已创建 AI 分析任务 #${jobId}`);
-      pollJob(jobId);
+      pollJob(jobId, type);
     } catch (error) {
-      setJobLoading(false);
+      setBatchLoading(type, false);
       message.error(error.response?.data?.error || '创建任务失败');
     }
   };
@@ -487,8 +359,8 @@ const VideoAnalysis = () => {
           <Upload accept=".xlsx,.xls,.csv" showUploadList={false} beforeUpload={handleImport}>
             <Button icon={<UploadOutlined />}>上传 Excel/CSV</Button>
           </Upload>
-          <Button icon={<SyncOutlined />} loading={jobLoading} disabled={!selectedRowKeys.length} onClick={() => runBatch('crawl')}>批量抓取 ({selectedRowKeys.length})</Button>
-          <Button icon={<BarChartOutlined />} loading={jobLoading} disabled={!selectedRowKeys.length} onClick={() => runBatch('analyze')}>批量分析 ({selectedRowKeys.length})</Button>
+          <Button icon={<SyncOutlined />} loading={crawlLoading} disabled={!selectedRowKeys.length || crawlLoading} onClick={() => runBatch('crawl')}>批量抓取 ({selectedRowKeys.length})</Button>
+          <Button icon={<BarChartOutlined />} loading={analyzeLoading} disabled={!selectedRowKeys.length || analyzeLoading} onClick={() => runBatch('analyze')}>批量分析 ({selectedRowKeys.length})</Button>
           <Popconfirm title="确定删除选中的视频？" disabled={!selectedRowKeys.length} onConfirm={() => handleDelete(selectedRowKeys)}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除 ({selectedRowKeys.length})</Button>
           </Popconfirm>
@@ -508,17 +380,6 @@ const VideoAnalysis = () => {
               value={filters.campaign_id}
               onChange={(value) => updateFilter('campaign_id', value)}
               options={campaignOptions}
-              optionRender={renderCampaignOption}
-              dropdownRender={(menu) => (
-                <>
-                  {menu}
-                  <div style={{ padding: 8, borderTop: '1px solid #f0f0f0' }}>
-                    <Button block icon={<EditOutlined />} onClick={() => setCampaignManageVisible(true)}>
-                      管理产品/活动
-                    </Button>
-                  </div>
-                </>
-              )}
               style={{ width: '100%' }}
             />
           </Col>
@@ -553,22 +414,6 @@ const VideoAnalysis = () => {
       </Card>
 
       <Modal
-        title="管理产品/活动"
-        open={campaignManageVisible}
-        onCancel={() => setCampaignManageVisible(false)}
-        footer={null}
-        width={680}
-      >
-        <Table
-          columns={campaignManageColumns}
-          dataSource={campaigns}
-          rowKey="id"
-          pagination={false}
-          size="small"
-        />
-      </Modal>
-
-      <Modal
         title={editingVideo ? '编辑链接' : '新建链接'}
         open={modalVisible}
         onCancel={() => setModalVisible(false)}
@@ -584,7 +429,6 @@ const VideoAnalysis = () => {
               showSearch
               options={campaignOptions}
               optionFilterProp="label"
-              optionRender={renderCampaignOption}
               dropdownRender={(menu) => (
                 <>
                   {menu}
@@ -599,9 +443,6 @@ const VideoAnalysis = () => {
                         form.setFieldValue('campaign_id', res.data.data.id);
                       }}
                     />
-                    <Button block icon={<EditOutlined />} style={{ marginTop: 8 }} onClick={() => setCampaignManageVisible(true)}>
-                      管理产品/活动
-                    </Button>
                   </div>
                 </>
               )}

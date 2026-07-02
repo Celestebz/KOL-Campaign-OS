@@ -6,7 +6,10 @@ import {
   DashboardOutlined,
   FileTextOutlined,
   PlayCircleOutlined,
+  ProfileOutlined,
+  SearchOutlined,
   SettingOutlined,
+  TeamOutlined,
   UserOutlined
 } from '@ant-design/icons';
 
@@ -16,6 +19,9 @@ import Templates from './pages/Templates';
 import VideoAnalysis from './pages/VideoAnalysis';
 import Records from './pages/Records';
 import Settings from './pages/Settings';
+import RawCandidates from './pages/RawCandidates';
+import CampaignKols from './pages/CampaignKols';
+import KolStrategy from './pages/KolStrategy';
 
 const { Header, Sider, Content } = Layout;
 
@@ -26,7 +32,10 @@ function App() {
 
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-    { key: '/customers', icon: <UserOutlined />, label: 'KOL 管理' },
+    { key: '/strategy', icon: <ProfileOutlined />, label: 'KOL Strategy' },
+    { key: '/finder', icon: <SearchOutlined />, label: 'KOL Finder' },
+    { key: '/customers', icon: <UserOutlined />, label: 'KOL Master' },
+    { key: '/campaign-kols', icon: <TeamOutlined />, label: 'Campaign KOL' },
     { key: '/send', icon: <PlayCircleOutlined />, label: '视频数据' },
     { key: '/records', icon: <BarChartOutlined />, label: '分析记录' },
     { key: '/templates', icon: <FileTextOutlined />, label: 'AI Prompt 模板' },
@@ -54,7 +63,10 @@ function App() {
         <Content style={{ margin: '0 16px' }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/strategy" element={<KolStrategy />} />
+            <Route path="/finder" element={<RawCandidates />} />
             <Route path="/customers" element={<Customers />} />
+            <Route path="/campaign-kols" element={<CampaignKols />} />
             <Route path="/send" element={<VideoAnalysis />} />
             <Route path="/records" element={<Records />} />
             <Route path="/templates" element={<Templates />} />

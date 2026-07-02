@@ -104,6 +104,21 @@ router.delete('/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: `该产品/活动已有 ${usage.count} 条视频，不能删除。请先把视频改到其他产品/活动。` });
     }
 
+    const campaignKolUsage = await dbOperations.get('SELECT COUNT(*) as count FROM campaign_kols WHERE campaign_id = ?', [id]);
+    if (campaignKolUsage?.count > 0) {
+      return res.status(400).json({ success: false, error: `该产品/活动已有 ${campaignKolUsage.count} 条 Campaign KOL，不能删除。请先移除项目 KOL。` });
+    }
+
+    const rawUsage = await dbOperations.get('SELECT COUNT(*) as count FROM raw_candidates WHERE campaign_id = ?', [id]);
+    if (rawUsage?.count > 0) {
+      return res.status(400).json({ success: false, error: `该产品/活动已有 ${rawUsage.count} 条 Raw Candidate，不能删除。请先清理候选。` });
+    }
+
+    const strategyUsage = await dbOperations.get('SELECT COUNT(*) as count FROM kol_strategies WHERE campaign_id = ?', [id]);
+    if (strategyUsage?.count > 0) {
+      return res.status(400).json({ success: false, error: `该产品/活动已有 ${strategyUsage.count} 条 KOL Strategy，不能删除。请先归档或删除 Strategy。` });
+    }
+
     await dbOperations.run('DELETE FROM campaigns WHERE id = ?', [id]);
     res.json({ success: true, message: '产品/活动已删除' });
   } catch (error) {

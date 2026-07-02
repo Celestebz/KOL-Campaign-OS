@@ -1,0 +1,4 @@
+interface:
+  display_name: "KOL Strategy"
+  short_description: "Generate structured KOL campaign strategy before Finder."
+  default_prompt: "Create a KOL strategy for this campaign and return structured Product Breakdown, KOL Persona, 7-cycle Search Strategy, Scoring Weights, and Finder Handoff."

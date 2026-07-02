@@ -58,6 +58,19 @@ const DEFAULT_SETTINGS = {
   },
   aiModels: { active: 'deepseek', providers: {} },
   agents: { active: 'maton_gateway', providers: {} },
+  cloudStorage: {
+    primary: 'feishu_bitable',
+    feishu: {
+      app_id: '',
+      app_secret: '',
+      base_url: 'https://open.feishu.cn',
+      app_token: '',
+      kol_table_id: '',
+      campaign_kol_table_id: '',
+      campaign_table_id: '',
+      notes: ''
+    }
+  },
   fallbackStrategy: {
     enableFallback: false,
     saveFailureReasons: true,
@@ -261,6 +274,57 @@ const Settings = () => {
               reserved={option.value !== 'maton_gateway'}
             />
           ))}
+        </Card>
+
+        <Card title="Cloud Data Storage" className="content-card" style={{ marginBottom: 16 }}>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="飞书多维表格作为 Approved KOL 和 Campaign KOL 的云端主库；Raw Candidates 默认只保存在本地，避免污染正式资源库。"
+          />
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item label="Feishu App ID" name={['settings', 'cloudStorage', 'feishu', 'app_id']}>
+                <Input placeholder="cli_xxx" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="Feishu App Secret" name={['settings', 'cloudStorage', 'feishu', 'app_secret']}>
+                <Input.Password autoComplete="new-password" placeholder="留空表示暂不启用同步" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="OpenAPI Base URL" name={['settings', 'cloudStorage', 'feishu', 'base_url']}>
+                <Input placeholder="https://open.feishu.cn" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item label="Base/App Token" name={['settings', 'cloudStorage', 'feishu', 'app_token']}>
+                <Input placeholder="多维表格 app_token" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item label="KOL Master Table ID" name={['settings', 'cloudStorage', 'feishu', 'kol_table_id']}>
+                <Input placeholder="tbl..." />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item label="Campaign KOL Table ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_kol_table_id']}>
+                <Input placeholder="tbl..." />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item label="Campaigns Table ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_table_id']}>
+                <Input placeholder="tbl...（预留）" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item label="同步备注" name={['settings', 'cloudStorage', 'feishu', 'notes']}>
+            <Input placeholder="例如字段名版本、权限说明或表格链接" />
+          </Form.Item>
         </Card>
 
         <Card title="Fallback Strategy" className="content-card" style={{ marginBottom: 16 }}>

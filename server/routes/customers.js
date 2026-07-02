@@ -209,7 +209,7 @@ async function updateKol(id, data) {
     return data[field] || null;
   });
   await dbOperations.run(
-    `UPDATE customers SET ${assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    `UPDATE customers SET ${assignments}, sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [...values, id]
   );
 }
@@ -419,8 +419,25 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+router.delete('/batch', async (req, res) => {
+  try {
+    const ids = (req.body.ids || req.body.customerIds || []).map((id) => Number(id)).filter(Boolean);
+    if (!ids.length) {
+      return res.status(400).json({ success: false, error: '请选择要删除的 KOL' });
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    await dbOperations.run(`DELETE FROM campaign_kols WHERE customer_id IN (${placeholders})`, ids);
+    await dbOperations.run(`DELETE FROM customers WHERE id IN (${placeholders})`, ids);
+    res.json({ success: true, message: `已删除 ${ids.length} 个 KOL` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.delete('/:id', async (req, res) => {
   try {
+    await dbOperations.run('DELETE FROM campaign_kols WHERE customer_id = ?', [req.params.id]);
     await dbOperations.run('DELETE FROM customers WHERE id = ?', [req.params.id]);
     res.json({ success: true, message: 'KOL 删除成功' });
   } catch (error) {

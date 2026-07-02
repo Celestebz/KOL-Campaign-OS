@@ -21,6 +21,8 @@ const Customers = () => {
   const [editingKol, setEditingKol] = useState(null);
   const [searchText, setSearchText] = useState('');
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [currentPageKolIds, setCurrentPageKolIds] = useState([]);
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -36,7 +38,10 @@ const Customers = () => {
       if (searchText) params.search = searchText;
       if (selectedGroup) params.group_id = selectedGroup;
       const response = await axios.get('/api/customers', { params });
-      setKols(response.data.data || []);
+      const rows = response.data.data || [];
+      setKols(rows);
+      setCurrentPageKolIds(rows.slice(0, 20).map((item) => item.id));
+      setSelectedRowKeys([]);
     } catch (error) {
       message.error('获取 KOL 列表失败');
     } finally {
@@ -68,7 +73,19 @@ const Customers = () => {
   const handleDelete = async (id) => {
     await axios.delete(`/api/customers/${id}`);
     message.success('删除成功');
+    setSelectedRowKeys((keys) => keys.filter((key) => key !== id));
     fetchKols();
+  };
+
+  const handleBatchDelete = async () => {
+    await axios.delete('/api/customers/batch', { data: { ids: selectedRowKeys } });
+    message.success(`已删除 ${selectedRowKeys.length} 个 KOL`);
+    setSelectedRowKeys([]);
+    fetchKols();
+  };
+
+  const selectCurrentPage = () => {
+    setSelectedRowKeys(currentPageKolIds);
   };
 
   const handleSubmit = async () => {
@@ -143,6 +160,7 @@ const Customers = () => {
     { title: '视频价格', dataIndex: 'video_price', key: 'video_price', width: 120, render: (v) => v || '-' },
     { title: '价格（RMB）', dataIndex: 'price_rmb', key: 'price_rmb', width: 130, render: (v) => v || '-' },
     { title: '评分', dataIndex: 'rating', key: 'rating', width: 90, render: (v) => v || '-' },
+    { title: '同步状态', dataIndex: 'sync_status', key: 'sync_status', width: 120, render: (v) => <Tag>{v || 'sync_pending'}</Tag> },
     { title: '分组', dataIndex: 'group_name', key: 'group_name', width: 130, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     { title: '备注', dataIndex: 'notes', key: 'notes', width: 220, ellipsis: true, render: (v) => v || '-' },
     {
@@ -164,7 +182,8 @@ const Customers = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">KOL 管理</h1>
+        <h1 className="page-title">KOL Master</h1>
+        <p className="page-subtitle">Approved KOL 主库：Raw Candidates 通过 Approve 后会沉淀到这里。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
@@ -194,12 +213,36 @@ const Customers = () => {
         </Space>
       </Card>
 
+      <Card className="content-card" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <span>已选 {selectedRowKeys.length} 个 KOL</span>
+          <Button onClick={selectCurrentPage} disabled={!currentPageKolIds.length}>全选当前页</Button>
+          <Button onClick={() => setSelectedRowKeys([])} disabled={!selectedRowKeys.length}>清空选择</Button>
+          <Popconfirm
+            title={`确定删除选中的 ${selectedRowKeys.length} 个 KOL？`}
+            description="删除后会同时移除这些 KOL 在 Campaign KOL 项目子表里的关联。"
+            onConfirm={handleBatchDelete}
+            disabled={!selectedRowKeys.length}
+          >
+            <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
+          </Popconfirm>
+        </Space>
+      </Card>
+
       <Card className="content-card">
         <Table
           columns={columns}
           dataSource={kols}
           rowKey="id"
           loading={loading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: setSelectedRowKeys,
+            preserveSelectedRowKeys: true
+          }}
+          onChange={(_, __, ___, extra) => {
+            setCurrentPageKolIds((extra.currentDataSource || []).map((item) => item.id));
+          }}
           scroll={{ x: 1900 }}
           pagination={{ pageSize: 20, showSizeChanger: true }}
         />

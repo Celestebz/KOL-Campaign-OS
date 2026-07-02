@@ -9,6 +9,11 @@ const settingsRoutes = require('./routes/settings');
 const groupRoutes = require('./routes/groups');
 const videoRoutes = require('./routes/videos');
 const campaignRoutes = require('./routes/campaigns');
+const rawCandidateRoutes = require('./routes/rawCandidates');
+const campaignKolRoutes = require('./routes/campaignKols');
+const syncRoutes = require('./routes/sync');
+const kolStrategyRoutes = require('./routes/kolStrategies');
+const finderTaskRoutes = require('./routes/finderTasks');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -38,6 +43,11 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/campaigns', campaignRoutes);
+app.use('/api/raw-candidates', rawCandidateRoutes);
+app.use('/api/campaign-kols', campaignKolRoutes);
+app.use('/api/sync', syncRoutes);
+app.use('/api/kol-strategies', kolStrategyRoutes);
+app.use('/api/finder-tasks', finderTaskRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'KOL Campaign OS service is running' });
