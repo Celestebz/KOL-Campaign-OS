@@ -71,6 +71,11 @@ const DEFAULT_SETTINGS = {
       notes: ''
     }
   },
+  externalAgent: {
+    enabled: true,
+    api_token: '',
+    notes: ''
+  },
   fallbackStrategy: {
     enableFallback: false,
     saveFailureReasons: true,
@@ -274,6 +279,33 @@ const Settings = () => {
               reserved={option.value !== 'maton_gateway'}
             />
           ))}
+        </Card>
+
+        <Card title="External Agent API" className="content-card" style={{ marginBottom: 16 }}>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="给 Codex / WorkBuddy 等外部高级 Agent 使用：Agent 可读取 Strategy Brief 并自动写入 Raw Candidates，但不能 Approve 到 KOL Master。"
+          />
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item label="启用 External Agent API" name={['settings', 'externalAgent', 'enabled']} valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </Col>
+            <Col span={18}>
+              <Form.Item label="Agent API Token" name={['settings', 'externalAgent', 'api_token']}>
+                <Input.Password autoComplete="new-password" placeholder="外部 Agent 调用 /api/agent/* 时使用 Bearer Token" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item label="Agent 使用备注" name={['settings', 'externalAgent', 'notes']}>
+            <Input placeholder="例如：只允许写 Raw Candidates；Approve 永远人工确认。" />
+          </Form.Item>
+          <Text type="secondary">
+            Brief API: GET /api/agent/brief/:strategyId；写入 API: POST /api/agent/raw-candidates/import；请求头使用 Authorization: Bearer &lt;Agent API Token&gt;。
+          </Text>
         </Card>
 
         <Card title="Cloud Data Storage" className="content-card" style={{ marginBottom: 16 }}>

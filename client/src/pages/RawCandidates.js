@@ -19,6 +19,32 @@ const searchSourceOptions = [
   { value: 'tiktok_search', label: 'TikTok Search' }
 ];
 
+const discoveryRouteOptions = [
+  { value: 'youtube_native_search', label: 'YouTube Native Search' },
+  { value: 'google_web_to_youtube', label: 'Google/Web -> YouTube' },
+  { value: 'youtube_to_instagram', label: 'YouTube -> Instagram' },
+  { value: 'google_web_to_instagram', label: 'Google/Web -> Instagram' },
+  { value: 'seed_posts_to_profile', label: 'Seed Posts/Reels -> Profile' },
+  { value: 'instagram_native_small_batch', label: 'Instagram Native Small Batch (fallback)' },
+  { value: 'google_web_to_tiktok', label: 'Google/Web -> TikTok' },
+  { value: 'tiktok_native_small_batch', label: 'TikTok Native Small Batch (fallback)' },
+  { value: 'spider_web_expansion', label: 'Spider-web Expansion' }
+];
+
+const defaultRoutesForTargets = (targets = []) => {
+  const routes = [];
+  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube', 'spider_web_expansion');
+  if (targets.includes('instagram')) routes.push('youtube_to_instagram', 'google_web_to_instagram', 'seed_posts_to_profile');
+  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'seed_posts_to_profile');
+  return [...new Set(routes.length ? routes : ['youtube_native_search'])];
+};
+
+const cycleOrder = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
+
+const sortCycles = (cycles = []) => [...cycles].sort((a, b) => (
+  cycleOrder.indexOf(a.cycle) - cycleOrder.indexOf(b.cycle)
+));
+
 const statusOptions = [
   { value: 'new', label: 'New' },
   { value: 'approved', label: 'Approved' },
@@ -43,7 +69,7 @@ const RawCandidates = () => {
   const [loading, setLoading] = useState(false);
   const [taskLoading, setTaskLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState({ status: 'new' });
   const [modalOpen, setModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -141,21 +167,28 @@ const RawCandidates = () => {
       message.warning('请先选择一个 Ready Strategy');
       return;
     }
-    const cycles = selectedStrategy.search_strategy?.length
-      ? selectedStrategy.search_strategy.map((cycle) => cycle.cycle)
+    const strategyCycles = sortCycles(selectedStrategy.search_strategy || []);
+    const cycles = strategyCycles.length
+      ? strategyCycles.filter((cycle) => String(cycle.keywords || '').trim()).map((cycle) => cycle.cycle)
       : ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
     const targetPlatforms = [
       selectedStrategy.primary_platform,
       ...(selectedStrategy.secondary_platforms || []),
       ...(selectedStrategy.finder_handoff?.required_platforms || [])
     ].filter(Boolean);
-    const searchSources = selectedStrategy.search_strategy?.flatMap((cycle) => (
+    const searchSources = strategyCycles.flatMap((cycle) => (
       Array.isArray(cycle.search_sources) ? cycle.search_sources : String(cycle.search_sources || '').split(/[,，;]/)
     )).map((value) => String(value || '').trim()).filter(Boolean);
+    const discoveryRoutes = strategyCycles.flatMap((cycle) => (
+      Array.isArray(cycle.discovery_routes) ? cycle.discovery_routes : String(cycle.discovery_routes || '').split(/[,，;]/)
+    )).map((value) => String(value || '').trim()).filter(Boolean);
+    const uniqueTargetPlatforms = [...new Set(targetPlatforms.length ? targetPlatforms : ['youtube'])];
     taskForm.setFieldsValue({
       cycles,
+      discovery_routes: [...new Set(discoveryRoutes.length ? discoveryRoutes : defaultRoutesForTargets(uniqueTargetPlatforms))],
       search_sources: [...new Set(searchSources.length ? searchSources : ['maton_agent', 'google_web', 'youtube_search'])],
-      target_platforms: [...new Set(targetPlatforms.length ? targetPlatforms : ['youtube'])],
+      target_platforms: uniqueTargetPlatforms,
+      seed_urls: '',
       limit_per_platform: 10,
       allow_fallback: true
     });
@@ -294,6 +327,9 @@ const RawCandidates = () => {
     },
     { title: '搜索轮次', dataIndex: 'search_cycle', key: 'search_cycle', width: 110, render: (v) => v || '-' },
     { title: 'Persona', dataIndex: 'matched_persona', key: 'matched_persona', width: 150, render: (v) => v || '-' },
+    { title: 'Discovery Route', dataIndex: 'discovery_route', key: 'discovery_route', width: 170, render: (v) => v ? <Tag color="blue">{v}</Tag> : '-' },
+    { title: 'Source Platform', dataIndex: 'source_platform', key: 'source_platform', width: 140, render: (v) => v || '-' },
+    { title: 'Target Platform', dataIndex: 'target_platform', key: 'target_platform', width: 140, render: (v, r) => v || r.platform || '-' },
     { title: '来源', dataIndex: 'source', key: 'source', width: 130, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     { title: '平台', dataIndex: 'platform', key: 'platform', width: 110, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     {
@@ -340,7 +376,7 @@ const RawCandidates = () => {
     }
   ];
 
-  const cycleOptions = (selectedStrategy?.search_strategy?.length ? selectedStrategy.search_strategy : [
+  const cycleOptions = sortCycles(selectedStrategy?.search_strategy?.length ? selectedStrategy.search_strategy : [
     { cycle: 'C1', name: 'Competitor Reviews' },
     { cycle: 'C2', name: 'Category Search' },
     { cycle: 'C3', name: 'Use-case Search' },
@@ -500,10 +536,16 @@ const RawCandidates = () => {
           <Form.Item label="Strategy">
             <Input value={selectedStrategy?.name || ''} disabled />
           </Form.Item>
+          <Form.Item label="Discovery Routes" name="discovery_routes" rules={[{ required: true, message: 'Please select at least one Discovery Route' }]}>
+            <Checkbox.Group options={discoveryRouteOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
+          </Form.Item>
+          <Form.Item label="Seed URLs" name="seed_urls" tooltip="Paste Instagram post, reel, or profile URLs. One URL per line.">
+            <TextArea rows={3} placeholder={"https://www.instagram.com/reel/...\nhttps://www.instagram.com/example/"} />
+          </Form.Item>
           <Form.Item label="搜索轮次" name="cycles" rules={[{ required: true, message: '请选择至少一个搜索轮次' }]}>
             <Checkbox.Group options={cycleOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
           </Form.Item>
-          <Form.Item label="搜索源" name="search_sources" rules={[{ required: true, message: '请选择至少一个搜索源' }]}>
+          <Form.Item label="Advanced Search Sources" name="search_sources" tooltip="Advanced compatibility for old Finder executors. Instagram V2 does not use native profile search by default.">
             <Checkbox.Group options={searchSourceOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
           </Form.Item>
           <Form.Item label="目标 KOL 平台" name="target_platforms" rules={[{ required: true, message: '请选择至少一个目标平台' }]}>
@@ -529,6 +571,10 @@ const RawCandidates = () => {
             <div><strong>平台：</strong>{detail.platform || '-'}</div>
             <div><strong>来源视频：</strong>{detail.video_url ? <a href={detail.video_url} target="_blank" rel="noreferrer">{detail.video_title || detail.video_url}</a> : '-'}</div>
             <div><strong>来源：</strong>{detail.source || '-'}</div>
+            <div><strong>Discovery Route: </strong>{detail.discovery_route || '-'}</div>
+            <div><strong>Source Platform: </strong>{detail.source_platform || '-'}</div>
+            <div><strong>Target Platform: </strong>{detail.target_platform || detail.platform || '-'}</div>
+            <div><strong>Source Agent: </strong>{detail.source_agent || '-'}</div>
             <div><strong>证据：</strong>{detail.evidence_url ? <a href={detail.evidence_url} target="_blank" rel="noreferrer">{detail.evidence_title || detail.evidence_url}</a> : '-'}</div>
             <div><strong>证据类型：</strong>{detail.evidence_type || '-'}</div>
             <div><strong>搜索 Query：</strong>{detail.source_query || '-'}</div>

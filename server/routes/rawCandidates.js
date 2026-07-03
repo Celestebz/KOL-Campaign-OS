@@ -297,7 +297,9 @@ router.post('/', async (req, res) => {
       'profile_url', 'video_url', 'video_title', 'followers', 'avg_views',
       'email', 'phone', 'country_region', 'matched_keywords', 'ai_score',
       'ai_match_reason', 'status', 'source', 'raw_data', 'search_cycle',
-      'matched_persona', 'scoring_breakdown'
+      'matched_persona', 'scoring_breakdown', 'discovery_route', 'source_platform',
+      'target_platform', 'source_agent', 'evidence_url', 'evidence_title',
+      'evidence_type', 'source_query'
     ];
     const values = [
       data.finder_task_id || null,
@@ -322,7 +324,15 @@ router.post('/', async (req, res) => {
       JSON.stringify(data.raw_data || data),
       clean(data.search_cycle),
       clean(data.matched_persona),
-      typeof data.scoring_breakdown === 'string' ? data.scoring_breakdown : JSON.stringify(data.scoring_breakdown || {})
+      typeof data.scoring_breakdown === 'string' ? data.scoring_breakdown : JSON.stringify(data.scoring_breakdown || {}),
+      clean(data.discovery_route),
+      clean(data.source_platform),
+      clean(data.target_platform || data.platform),
+      clean(data.source_agent || data.source),
+      clean(data.evidence_url),
+      clean(data.evidence_title),
+      clean(data.evidence_type),
+      clean(data.source_query)
     ];
     const placeholders = fields.map(() => '?').join(', ');
     const result = await dbOperations.run(

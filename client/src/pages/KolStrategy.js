@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Col, Collapse, Form, Input, message, Modal, Popconfirm, Row, Select, Space, Table, Tag, Upload } from 'antd';
+import { Alert, Button, Card, Col, Collapse, Form, Input, InputNumber, message, Modal, Popconfirm, Row, Select, Space, Table, Tag, Upload } from 'antd';
 import { CopyOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined, UploadOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -80,6 +80,7 @@ const defaultHandoff = {
   competitor_keywords: [],
   exclusion_keywords: [],
   minimum_followers: '',
+  maximum_followers: '',
   minimum_avg_views: '',
   required_evidence: [],
   approve_threshold: 75,
@@ -234,6 +235,9 @@ const KolStrategy = () => {
   };
 
   const applyStrategyToForm = (strategy) => {
+    const handoff = strategy.finder_handoff && Object.keys(strategy.finder_handoff).length
+      ? strategy.finder_handoff
+      : defaultHandoff;
     form.setFieldsValue({
       ...strategy,
       secondary_platforms: strategy.secondary_platforms || [],
@@ -241,7 +245,10 @@ const KolStrategy = () => {
       persona_config_text: stringifySection(strategy.persona_config, defaultPersona),
       search_strategy_text: stringifySection(strategy.search_strategy, defaultSearch),
       scoring_weights_text: stringifySection(strategy.scoring_weights, defaultScoring),
-      finder_handoff_text: stringifySection(strategy.finder_handoff, defaultHandoff)
+      finder_handoff_text: stringifySection(handoff, defaultHandoff),
+      minimum_followers: handoff.minimum_followers ? Number(handoff.minimum_followers) : null,
+      maximum_followers: handoff.maximum_followers ? Number(handoff.maximum_followers) : null,
+      minimum_avg_views: handoff.minimum_avg_views ? Number(handoff.minimum_avg_views) : null
     });
     setBriefText('');
     setMaterialFiles([]);
@@ -262,7 +269,10 @@ const KolStrategy = () => {
       persona_config_text: emptyJson(defaultPersona),
       search_strategy_text: emptyJson(defaultSearch),
       scoring_weights_text: emptyJson(defaultScoring),
-      finder_handoff_text: emptyJson(defaultHandoff)
+      finder_handoff_text: emptyJson(defaultHandoff),
+      minimum_followers: null,
+      maximum_followers: null,
+      minimum_avg_views: null
     });
     setBriefText('');
     setMaterialFiles([]);
@@ -277,13 +287,17 @@ const KolStrategy = () => {
 
   const buildPayload = async () => {
     const values = await form.validateFields();
+    const finderHandoff = parseSection(values.finder_handoff_text, 'Finder Handoff');
+    finderHandoff.minimum_followers = values.minimum_followers ? String(values.minimum_followers) : '';
+    finderHandoff.maximum_followers = values.maximum_followers ? String(values.maximum_followers) : '';
+    finderHandoff.minimum_avg_views = values.minimum_avg_views ? String(values.minimum_avg_views) : '';
     return {
       ...values,
       product_context: parseSection(values.product_context_text, 'Product Breakdown'),
       persona_config: parseSection(values.persona_config_text, 'KOL Persona'),
       search_strategy: parseSection(values.search_strategy_text, 'Search Strategy'),
       scoring_weights: parseSection(values.scoring_weights_text, 'Scoring Weights'),
-      finder_handoff: parseSection(values.finder_handoff_text, 'Finder Handoff')
+      finder_handoff: finderHandoff
     };
   };
 
@@ -537,6 +551,31 @@ const KolStrategy = () => {
             <Col span={6}><Form.Item label="主平台" name="primary_platform"><Select allowClear options={platformOptions} /></Form.Item></Col>
             <Col span={12}><Form.Item label="次平台" name="secondary_platforms"><Select mode="multiple" allowClear options={platformOptions} /></Form.Item></Col>
           </Row>
+
+          <Card size="small" title="Finder Entry Rules" style={{ marginBottom: 16 }}>
+            <Row gutter={16}>
+              <Col span={8}>
+                <Form.Item label="Minimum Followers" name="minimum_followers">
+                  <InputNumber min={0} precision={0} placeholder="e.g. 1000" style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={8}>
+                <Form.Item label="Maximum Followers" name="maximum_followers">
+                  <InputNumber min={0} precision={0} placeholder="optional, e.g. 200000" style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={8}>
+                <Form.Item label="Minimum Avg Views" name="minimum_avg_views">
+                  <InputNumber min={0} precision={0} placeholder="optional, e.g. 3000" style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Alert
+              type="info"
+              showIcon
+              message="Finder will ignore candidates that clearly fall outside these rules. If followers or views are unknown, the candidate stays New for manual review."
+            />
+          </Card>
 
           <Row gutter={16}>
             <Col span={14}>

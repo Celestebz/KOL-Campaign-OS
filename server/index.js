@@ -14,6 +14,7 @@ const campaignKolRoutes = require('./routes/campaignKols');
 const syncRoutes = require('./routes/sync');
 const kolStrategyRoutes = require('./routes/kolStrategies');
 const finderTaskRoutes = require('./routes/finderTasks');
+const agentRoutes = require('./routes/agent');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -48,6 +49,7 @@ app.use('/api/campaign-kols', campaignKolRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/kol-strategies', kolStrategyRoutes);
 app.use('/api/finder-tasks', finderTaskRoutes);
+app.use('/api/agent', agentRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'KOL Campaign OS service is running' });

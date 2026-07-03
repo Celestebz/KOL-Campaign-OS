@@ -127,6 +127,7 @@ Use this default unless the campaign goal justifies small changes:
   "competitor_keywords": ["competitor and alternative terms"],
   "exclusion_keywords": ["irrelevant or unsafe terms"],
   "minimum_followers": "minimum follower rule or empty string",
+  "maximum_followers": "maximum follower rule or empty string",
   "minimum_avg_views": "minimum average view rule or empty string",
   "required_evidence": ["evidence Finder should collect before approval"],
   "approve_threshold": 75,
@@ -144,3 +145,4 @@ Use this default unless the campaign goal justifies small changes:
 - Prefer search phrases that reveal buyer intent, content history, and product proof.
 - Avoid filler phrases such as "high quality creators" unless paired with observable evidence.
 - Do not invent exact follower thresholds when the campaign context gives no tier or budget; use flexible rules instead.
+- If a project is intended for micro/mid-tier creator discovery, set both minimum and maximum follower rules so Finder avoids irrelevant celebrity-scale accounts.

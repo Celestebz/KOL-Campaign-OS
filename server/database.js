@@ -273,6 +273,7 @@ async function initDatabase() {
       result_count INTEGER DEFAULT 0,
       notes TEXT,
       search_sources TEXT,
+      discovery_routes TEXT,
       target_platforms TEXT,
       search_cycles TEXT,
       current_cycle TEXT,
@@ -284,6 +285,7 @@ async function initDatabase() {
       error_message TEXT,
       raw_request TEXT,
       raw_response_summary TEXT,
+      source_agent TEXT,
       started_at DATETIME,
       finished_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -313,6 +315,10 @@ async function initDatabase() {
       ai_match_reason TEXT,
       status TEXT DEFAULT 'new',
       source TEXT,
+      discovery_route TEXT,
+      source_platform TEXT,
+      target_platform TEXT,
+      source_agent TEXT,
       raw_data TEXT,
       approved_customer_id INTEGER,
       approved_campaign_kol_id INTEGER,
@@ -417,6 +423,7 @@ async function initDatabase() {
     await addColumnIfMissing('customers', 'last_verified_at', 'DATETIME');
     await addColumnIfMissing('finder_tasks', 'strategy_id', 'INTEGER');
     await addColumnIfMissing('finder_tasks', 'search_sources', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'discovery_routes', 'TEXT');
     await addColumnIfMissing('finder_tasks', 'target_platforms', 'TEXT');
     await addColumnIfMissing('finder_tasks', 'search_cycles', 'TEXT');
     await addColumnIfMissing('finder_tasks', 'current_cycle', 'TEXT');
@@ -428,6 +435,7 @@ async function initDatabase() {
     await addColumnIfMissing('finder_tasks', 'error_message', 'TEXT');
     await addColumnIfMissing('finder_tasks', 'raw_request', 'TEXT');
     await addColumnIfMissing('finder_tasks', 'raw_response_summary', 'TEXT');
+    await addColumnIfMissing('finder_tasks', 'source_agent', 'TEXT');
     await addColumnIfMissing('kol_strategies', 'source_material_summary', 'TEXT');
     await addColumnIfMissing('kol_strategies', 'source_material_meta', 'TEXT');
     await addColumnIfMissing('kol_strategies', 'source_material_type', 'TEXT');
@@ -439,6 +447,10 @@ async function initDatabase() {
     await addColumnIfMissing('raw_candidates', 'search_cycle', 'TEXT');
     await addColumnIfMissing('raw_candidates', 'matched_persona', 'TEXT');
     await addColumnIfMissing('raw_candidates', 'scoring_breakdown', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'discovery_route', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'source_platform', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'target_platform', 'TEXT');
+    await addColumnIfMissing('raw_candidates', 'source_agent', 'TEXT');
     await addColumnIfMissing('raw_candidates', 'evidence_url', 'TEXT');
     await addColumnIfMissing('raw_candidates', 'evidence_title', 'TEXT');
     await addColumnIfMissing('raw_candidates', 'evidence_type', 'TEXT');

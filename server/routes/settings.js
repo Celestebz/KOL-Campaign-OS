@@ -4,6 +4,7 @@ const { dbOperations } = require('../database');
 
 const SYSTEM_SELECTION_KEY = 'system.provider_selection';
 const FEISHU_PROVIDER_KEY = 'cloud.feishu_bitable';
+const EXTERNAL_AGENT_PROVIDER_KEY = 'agent.external_api';
 
 const PLATFORM_PROVIDERS = {
   youtube: ['google_official', 'maton_gateway', 'scrapecreators', 'brightdata', 'custom'],
@@ -74,6 +75,16 @@ function cleanFeishu(row) {
     kol_table_id: extra.kol_table_id || '',
     campaign_kol_table_id: extra.campaign_kol_table_id || '',
     campaign_table_id: extra.campaign_table_id || '',
+    notes: extra.notes || ''
+  };
+}
+
+function cleanExternalAgent(row) {
+  const extra = parseJson(row?.extra_config, {});
+  return {
+    provider: 'external_agent_api',
+    api_token: row?.api_key || '',
+    enabled: extra.enabled !== false,
     notes: extra.notes || ''
   };
 }
@@ -180,6 +191,26 @@ async function upsertFeishu(row = {}) {
   );
 }
 
+async function upsertExternalAgent(row = {}) {
+  const extraConfig = {
+    enabled: row.enabled !== false,
+    notes: row.notes || ''
+  };
+  await dbOperations.run(
+    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, '', '', ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(provider) DO UPDATE SET
+       api_key = excluded.api_key,
+       extra_config = excluded.extra_config,
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      EXTERNAL_AGENT_PROVIDER_KEY,
+      row.api_token || '',
+      JSON.stringify(extraConfig)
+    ]
+  );
+}
+
 router.get('/', async (req, res) => {
   try {
     const rows = await dbOperations.query('SELECT provider, api_key, base_url, model, extra_config, updated_at FROM api_settings ORDER BY provider');
@@ -194,6 +225,7 @@ router.get('/', async (req, res) => {
         primary: 'feishu_bitable',
         feishu: cleanFeishu(getRow(rows, FEISHU_PROVIDER_KEY))
       },
+      externalAgent: cleanExternalAgent(getRow(rows, EXTERNAL_AGENT_PROVIDER_KEY)),
       fallbackStrategy: selection.fallbackStrategy
     };
 
@@ -280,6 +312,10 @@ router.post('/', async (req, res) => {
 
     if (settings.cloudStorage?.feishu) {
       await upsertFeishu(settings.cloudStorage.feishu);
+    }
+
+    if (settings.externalAgent) {
+      await upsertExternalAgent(settings.externalAgent);
     }
 
     res.json({ success: true, message: 'Settings saved' });

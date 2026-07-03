@@ -15,17 +15,39 @@ const DEFAULT_SEARCH_CYCLES = [
   { cycle: 'C7', name: 'Spider-web Expansion', priority: 7, keywords: '', search_sources: ['maton_agent', 'google_web', 'youtube_search'], target_platforms: ['youtube'], platforms: 'youtube', target_count: 10, exclusions: '', purpose: '' }
 ];
 
+const CYCLE_ORDER = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
+const DEFAULT_CYCLE_BY_ID = Object.fromEntries(DEFAULT_SEARCH_CYCLES.map((cycle) => [cycle.cycle, cycle]));
+
 const PROVIDER_LABELS = {
   maton_agent: 'Maton Agent',
   google_web: 'Google Web',
   youtube_search: 'YouTube Search',
   instagram_search: 'Instagram Search',
   tiktok_search: 'TikTok Search',
+  youtube_to_instagram: 'YouTube -> Instagram',
+  google_web_to_instagram: 'Google/Web -> Instagram',
+  seed_posts_to_profile: 'Seed Posts -> Profile',
+  instagram_native_small_batch: 'Instagram Native Small Batch',
+  youtube_native_search: 'YouTube Native Search',
+  google_web_to_youtube: 'Google/Web -> YouTube',
+  google_web_to_tiktok: 'Google/Web -> TikTok',
+  tiktok_native_small_batch: 'TikTok Native Small Batch',
   google_official: 'Google Official',
   scrapecreators: 'ScrapeCreators'
 };
 
 const SEARCH_SOURCES = ['maton_agent', 'google_web', 'youtube_search', 'instagram_search', 'tiktok_search'];
+const DISCOVERY_ROUTES = [
+  'youtube_native_search',
+  'google_web_to_youtube',
+  'youtube_to_instagram',
+  'google_web_to_instagram',
+  'seed_posts_to_profile',
+  'instagram_native_small_batch',
+  'google_web_to_tiktok',
+  'tiktok_native_small_batch',
+  'spider_web_expansion'
+];
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
 const LEGAL_SOURCE_TARGETS = {
   maton_agent: TARGET_PLATFORMS,
@@ -33,6 +55,20 @@ const LEGAL_SOURCE_TARGETS = {
   youtube_search: ['youtube'],
   instagram_search: ['instagram'],
   tiktok_search: ['tiktok']
+};
+const ROUTE_SOURCE_TARGETS = {
+  youtube_native_search: [{ searchSource: 'youtube_search', targetPlatform: 'youtube', sourcePlatform: 'youtube' }],
+  google_web_to_youtube: [{ searchSource: 'google_web', targetPlatform: 'youtube', sourcePlatform: 'google_web' }],
+  youtube_to_instagram: [{ searchSource: 'maton_agent', targetPlatform: 'instagram', sourcePlatform: 'youtube' }],
+  google_web_to_instagram: [{ searchSource: 'google_web', targetPlatform: 'instagram', sourcePlatform: 'google_web' }],
+  seed_posts_to_profile: [
+    { searchSource: 'maton_agent', targetPlatform: 'instagram', sourcePlatform: 'seed_url' },
+    { searchSource: 'maton_agent', targetPlatform: 'tiktok', sourcePlatform: 'seed_url' }
+  ],
+  instagram_native_small_batch: [{ searchSource: 'instagram_search', targetPlatform: 'instagram', sourcePlatform: 'instagram' }],
+  google_web_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'google_web' }],
+  tiktok_native_small_batch: [{ searchSource: 'tiktok_search', targetPlatform: 'tiktok', sourcePlatform: 'tiktok' }],
+  spider_web_expansion: TARGET_PLATFORMS.map((platform) => ({ searchSource: 'maton_agent', targetPlatform: platform, sourcePlatform: 'cross_platform' }))
 };
 
 const cancelledTasks = new Set();
@@ -57,10 +93,44 @@ function parseList(value) {
   return clean(value).split(/[,，\n;]/).map(clean).filter(Boolean);
 }
 
+function normalizeSearchStrategy(value) {
+  const parsed = Array.isArray(value) ? value : parseJson(value, DEFAULT_SEARCH_CYCLES);
+  const byCycle = {};
+  for (const item of Array.isArray(parsed) ? parsed : []) {
+    const cycleId = clean(item?.cycle).toUpperCase();
+    if (CYCLE_ORDER.includes(cycleId)) {
+      byCycle[cycleId] = { ...item, cycle: cycleId };
+    }
+  }
+  return CYCLE_ORDER.map((cycleId, index) => ({
+    ...DEFAULT_CYCLE_BY_ID[cycleId],
+    ...(byCycle[cycleId] || {}),
+    cycle: cycleId,
+    priority: index + 1
+  }));
+}
+
 function normalizeNumber(value) {
   if (value === undefined || value === null || value === '') return null;
   const n = Number(String(value).replace(/,/g, ''));
   return Number.isFinite(n) ? n : null;
+}
+
+function parseMetricNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const text = String(value).trim().toLowerCase().replace(/,/g, '');
+  if (!text) return null;
+  const match = text.match(/([\d.]+)\s*([kmb万萬]?)/);
+  if (!match) return null;
+  const base = Number(match[1]);
+  if (!Number.isFinite(base)) return null;
+  const unit = match[2];
+  if (unit === 'k') return Math.round(base * 1000);
+  if (unit === 'm') return Math.round(base * 1000000);
+  if (unit === 'b') return Math.round(base * 1000000000);
+  if (unit === '万' || unit === '萬') return Math.round(base * 10000);
+  return Math.round(base);
 }
 
 function providerKey(scope, provider) {
@@ -144,7 +214,7 @@ async function getReadyStrategy(strategyId) {
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
-    search_strategy: parseJson(row.search_strategy, DEFAULT_SEARCH_CYCLES),
+    search_strategy: normalizeSearchStrategy(row.search_strategy),
     scoring_weights: parseJson(row.scoring_weights, {}),
     finder_handoff: parseJson(row.finder_handoff, {})
   };
@@ -163,14 +233,35 @@ function searchSourcesForCycle(cycle, requestedSources = []) {
   return [...new Set((requestedSources.length ? requestedSources : cycleSources.length ? cycleSources : ['maton_agent', 'google_web', 'youtube_search']).filter((source) => SEARCH_SOURCES.includes(source)))];
 }
 
-function sourceTargetPairs(cycle, strategy, requestedSources = [], requestedTargets = []) {
-  const sources = searchSourcesForCycle(cycle, requestedSources);
+function defaultDiscoveryRoutesForTargets(targets) {
+  const routes = [];
+  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube', 'spider_web_expansion');
+  if (targets.includes('instagram')) routes.push('youtube_to_instagram', 'google_web_to_instagram', 'seed_posts_to_profile');
+  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'seed_posts_to_profile');
+  return [...new Set(routes.length ? routes : ['youtube_native_search'])];
+}
+
+function discoveryRoutesForCycle(cycle, strategy, requestedRoutes = [], requestedTargets = []) {
+  const cycleRoutes = parseList(cycle.discovery_routes);
   const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
+  return [...new Set((requestedRoutes.length ? requestedRoutes : cycleRoutes.length ? cycleRoutes : defaultDiscoveryRoutesForTargets(targets)).filter((route) => DISCOVERY_ROUTES.includes(route)))];
+}
+
+function sourceTargetPairs(cycle, strategy, requestedSources = [], requestedTargets = [], requestedRoutes = []) {
+  const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
+  const routes = discoveryRoutesForCycle(cycle, strategy, requestedRoutes, targets);
   const pairs = [];
+  for (const route of routes) {
+    for (const mapped of ROUTE_SOURCE_TARGETS[route] || []) {
+      if (targets.includes(mapped.targetPlatform)) pairs.push({ ...mapped, discoveryRoute: route });
+    }
+  }
+  if (pairs.length) return pairs;
+  const sources = searchSourcesForCycle(cycle, requestedSources);
   for (const source of sources) {
     for (const target of targets) {
       if ((LEGAL_SOURCE_TARGETS[source] || []).includes(target)) {
-        pairs.push({ searchSource: source, targetPlatform: target });
+        pairs.push({ searchSource: source, targetPlatform: target, sourcePlatform: source.replace('_search', ''), discoveryRoute: source });
       }
     }
   }
@@ -194,7 +285,172 @@ function keywordQueries(request) {
   return [...new Set((queries.length ? queries : [fallback]).filter(Boolean))].slice(0, 8);
 }
 
-function buildCycleRequest(strategy, cycle, searchSource, targetPlatform, limit) {
+const EU_COUNTRIES = [
+  'austria', 'belgium', 'bulgaria', 'croatia', 'cyprus', 'czech republic', 'czechia',
+  'denmark', 'estonia', 'finland', 'france', 'germany', 'greece', 'hungary', 'ireland',
+  'italy', 'latvia', 'lithuania', 'luxembourg', 'malta', 'netherlands', 'poland',
+  'portugal', 'romania', 'slovakia', 'slovenia', 'spain', 'sweden'
+];
+
+function inferCountryRegion(...values) {
+  const text = values.map(clean).filter(Boolean).join(' ').toLowerCase();
+  if (!text) return '';
+  const patterns = [
+    { value: 'Philippines', tests: ['philippines', 'filipino', '🇵🇭'] },
+    { value: 'United States', tests: ['united states', 'usa', 'u.s.', 'u.s.a', '🇺🇸'] },
+    { value: 'United Kingdom', tests: ['united kingdom', 'uk', 'u.k.', 'england', 'britain', '🇬🇧'] },
+    { value: 'Canada', tests: ['canada', '🇨🇦'] },
+    { value: 'Australia', tests: ['australia', '🇦🇺'] },
+    { value: 'Germany', tests: ['germany', 'deutschland', '🇩🇪'] },
+    { value: 'France', tests: ['france', '🇫🇷'] },
+    { value: 'Spain', tests: ['spain', 'españa', '🇪🇸'] },
+    { value: 'Italy', tests: ['italy', 'italia', '🇮🇹'] },
+    { value: 'Netherlands', tests: ['netherlands', 'holland', '🇳🇱'] },
+    { value: 'Sweden', tests: ['sweden', '🇸🇪'] },
+    { value: 'Poland', tests: ['poland', '🇵🇱'] },
+    { value: 'Japan', tests: ['japan', '🇯🇵'] },
+    { value: 'South Korea', tests: ['south korea', 'korea', '🇰🇷'] },
+    { value: 'China', tests: ['china', '🇨🇳'] },
+    { value: 'Brazil', tests: ['brazil', 'brasil', '🇧🇷'] },
+    { value: 'Mexico', tests: ['mexico', 'méxico', '🇲🇽'] }
+  ];
+  const matched = patterns.find((item) => item.tests.some((pattern) => text.includes(pattern)));
+  if (matched?.value) return matched.value;
+  if (['indonesia', 'bali', 'gianyar', 'batubulan'].some((pattern) => text.includes(pattern))) return 'Indonesia';
+  return '';
+}
+
+function targetMarketAllowsCountry(targetMarket, countryRegion) {
+  const target = clean(targetMarket).toLowerCase();
+  const country = clean(countryRegion).toLowerCase();
+  if (!target || !country || target.includes('global') || target.includes('worldwide')) return true;
+  const wantsUs = /\b(us|usa|u\.s\.|united states)\b/.test(target);
+  const wantsEu = /\b(eu|europe|european)\b/.test(target);
+  const wantsUk = /\b(uk|u\.k\.|united kingdom)\b/.test(target);
+  const inUs = country === 'united states' || country === 'usa' || country === 'us';
+  const inUk = country === 'united kingdom' || country === 'uk';
+  const inEu = EU_COUNTRIES.includes(country);
+  if (wantsUs && inUs) return true;
+  if (wantsEu && inEu) return true;
+  if (wantsUk && inUk) return true;
+  return target.includes(country);
+}
+
+function applyMarketGate(candidate, request) {
+  const targetMarket = request.campaign?.target_market || '';
+  if (!targetMarket || !candidate.country_region) return candidate;
+  if (targetMarketAllowsCountry(targetMarket, candidate.country_region)) return candidate;
+  return {
+    ...candidate,
+    status: 'ignored',
+    error_message: `Market mismatch: ${candidate.country_region} is outside target market ${targetMarket}`,
+    reason: `${candidate.reason || ''} Market mismatch: ${candidate.country_region} is outside target market ${targetMarket}`.trim()
+  };
+}
+
+function applyFollowerGate(candidate, request) {
+  const handoff = request.strategy?.finder_handoff || {};
+  const minFollowers = parseMetricNumber(handoff.minimum_followers || handoff.min_followers);
+  const maxFollowers = parseMetricNumber(handoff.maximum_followers || handoff.max_followers);
+  const minAvgViews = parseMetricNumber(handoff.minimum_avg_views || handoff.min_avg_views);
+  const followerCount = parseMetricNumber(candidate.followers);
+  const avgViews = parseMetricNumber(candidate.avg_views);
+  const failures = [];
+
+  if (minFollowers !== null && followerCount !== null && followerCount < minFollowers) {
+    failures.push(`followers ${followerCount} < minimum ${minFollowers}`);
+  }
+  if (maxFollowers !== null && followerCount !== null && followerCount > maxFollowers) {
+    failures.push(`followers ${followerCount} > maximum ${maxFollowers}`);
+  }
+  if (minAvgViews !== null && avgViews !== null && avgViews < minAvgViews) {
+    failures.push(`avg views ${avgViews} < minimum ${minAvgViews}`);
+  }
+
+  if (!failures.length) return candidate;
+  const message = `Follower rule mismatch: ${failures.join('; ')}`;
+  return {
+    ...candidate,
+    status: 'ignored',
+    error_message: [candidate.error_message, message].filter(Boolean).join(' | '),
+    reason: `${candidate.reason || ''} ${message}`.trim()
+  };
+}
+
+const CREATOR_POSITIVE_TERMS = [
+  'review', 'reviewer', 'reviews', 'demo', 'gear', 'pedal', 'vocal', 'vocals',
+  'singer', 'songwriter', 'musician', 'producer', 'loop', 'looping', 'looper',
+  'worship', 'busking', 'live performer', 'youtube', 'creator', 'content',
+  'studio', 'recording', 'audio', 'mixing', 'sound', 'tutorial'
+];
+
+const NON_CREATOR_NEGATIVE_TERMS = [
+  'store', 'shop', 'online store', 'music store', 'open everyday', 'dealer',
+  'distributor', 'rental', 'repair', 'restaurant', 'cafe', 'fashion', 'beauty',
+  'makeup', 'fitness', 'real estate', 'agency'
+];
+
+const STRONG_NON_CREATOR_TERMS = [
+  'online store', 'music store', 'open everyday', 'dealer', 'distributor', 'rental', 'repair'
+];
+
+function appendGateFailure(candidate, message) {
+  return {
+    ...candidate,
+    status: 'ignored',
+    error_message: [candidate.error_message, message].filter(Boolean).join(' | '),
+    reason: `${candidate.reason || ''} ${message}`.trim()
+  };
+}
+
+function applyInstagramCreatorQualityGate(candidate) {
+  if (candidate.platform !== 'instagram') return candidate;
+  const raw = candidate.raw_data || {};
+  const text = [
+    candidate.kol_name,
+    raw.username,
+    raw.full_name,
+    raw.biography,
+    raw.category_name,
+    raw.google_title,
+    raw.google_description,
+    raw.external_url
+  ].map(clean).join(' ').toLowerCase();
+  const followers = parseMetricNumber(candidate.followers);
+  const mediaCount = parseMetricNumber(raw.media_count);
+  const failures = [];
+  const positives = CREATOR_POSITIVE_TERMS.filter((term) => text.includes(term));
+  const negatives = NON_CREATOR_NEGATIVE_TERMS.filter((term) => text.includes(term));
+  const strongNegatives = STRONG_NON_CREATOR_TERMS.filter((term) => text.includes(term));
+
+  if (raw.is_private) failures.push('private account');
+  if (followers !== null && followers < 1000) failures.push(`followers ${followers} < Instagram baseline 1000`);
+  if (mediaCount !== null && mediaCount < 30) failures.push(`media count ${mediaCount} < baseline 30`);
+  if (strongNegatives.length) failures.push(`strong non-creator profile signals: ${strongNegatives.slice(0, 3).join(', ')}`);
+  if (negatives.length && !positives.length) failures.push(`non-creator profile signals: ${negatives.slice(0, 3).join(', ')}`);
+  if (!positives.length) failures.push('missing creator/reviewer/gear signals in profile');
+  if (raw.matched_from === 'caption' && followers !== null && followers < 5000 && positives.length < 2) {
+    failures.push('caption-only match with weak creator signals');
+  }
+
+  if (!failures.length) {
+    return {
+      ...candidate,
+      scoring_breakdown: {
+        ...(candidate.scoring_breakdown || {}),
+        creator_quality_signals: positives.slice(0, 6),
+        instagram_media_count: mediaCount
+      }
+    };
+  }
+  return appendGateFailure(candidate, `Instagram quality mismatch: ${failures.join('; ')}`);
+}
+
+function applyFinderGates(candidate, request) {
+  return applyInstagramCreatorQualityGate(applyFollowerGate(applyMarketGate(candidate, request), request));
+}
+
+function buildCycleRequest(strategy, cycle, searchSource, targetPlatform, limit, discoveryRoute = searchSource, sourcePlatform = searchSource) {
   return {
     campaign: {
       id: strategy.campaign_id,
@@ -223,6 +479,8 @@ function buildCycleRequest(strategy, cycle, searchSource, targetPlatform, limit)
       target_count: limit
     },
     search_source: searchSource,
+    discovery_route: discoveryRoute,
+    source_platform: sourcePlatform,
     target_platform: targetPlatform,
     platform: targetPlatform,
     limit,
@@ -260,6 +518,10 @@ function extractCandidateArray(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.candidates)) return data.candidates;
   if (Array.isArray(data?.data?.candidates)) return data.data.candidates;
+  if (Array.isArray(data?.profiles)) return data.profiles;
+  if (Array.isArray(data?.data?.profiles)) return data.data.profiles;
+  if (Array.isArray(data?.searchResults)) return data.searchResults;
+  if (Array.isArray(data?.data?.searchResults)) return data.data.searchResults;
   if (Array.isArray(data?.results)) return data.results;
   if (Array.isArray(data?.data?.results)) return data.data.results;
   if (Array.isArray(data?.items)) return data.items;
@@ -396,6 +658,62 @@ async function scrapeCreatorsFinderAdapter(request) {
   return { provider: request.search_source || 'scrapecreators', endpoint: result.url, candidates };
 }
 
+async function scrapeCreatorsFinderAdapterV2(request) {
+  const setting = await getSetting(providerKey(request.target_platform, 'scrapecreators'), legacyKeysFor(request.target_platform, 'scrapecreators'));
+  if (!setting?.api_key) throw new Error('ScrapeCreators API Key is not configured');
+  const baseUrl = (setting.base_url || 'https://api.scrapecreators.com').replace(/\/$/, '').replace(/\/v1$/, '');
+  const headers = { 'x-api-key': setting.api_key, Authorization: `Bearer ${setting.api_key}` };
+  const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
+  const candidates = [];
+  let lastEndpoint = '';
+
+  for (const query of keywordQueries(request)) {
+    if (candidates.length >= maxResults) break;
+    const endpoints = request.target_platform === 'instagram'
+      ? [buildUrl(baseUrl, '/v1/instagram/search/profiles', { query })]
+      : [
+        buildUrl(baseUrl, '/v1/tiktok/search', { query, limit: maxResults }),
+        buildUrl(baseUrl, '/v1/tiktok/users/search', { query, limit: maxResults }),
+        buildUrl(baseUrl, '/v1/tiktok/user/search', { query, limit: maxResults })
+      ];
+    const result = await fetchFirstJson(endpoints, { headers });
+    lastEndpoint = result.url;
+    const rawCandidates = extractCandidateArray(result.data);
+    for (const item of rawCandidates) {
+      const user = item.user || item.author || item.owner || item;
+      const username = clean(user.username || user.unique_id || user.handle || user.nickname || item.username || item.author_name);
+      const profileUrl = clean(user.profile_url || user.url || item.profile_url || item.url || (username ? (request.target_platform === 'instagram' ? `https://www.instagram.com/${username}/` : `https://www.tiktok.com/@${username}`) : ''));
+      const evidenceTitle = clean(user.google_title || item.google_title || user.full_name || user.nickname || username || item.name);
+      const inferredCountry = clean(user.country || user.region || item.country_region || inferCountryRegion(user.biography, user.bio, user.google_description, item.google_description, item.description));
+      candidates.push(applyMarketGate({
+        platform: request.target_platform,
+        kol_name: clean(user.full_name || user.nickname || username || item.name),
+        profile_url: profileUrl,
+        followers: clean(user.follower_count || user.followers || user.followers_count || item.followers || item.follower_count),
+        avg_views: clean(user.avg_views || item.avg_views || item.views),
+        email: clean(user.email || item.email),
+        country_region: inferredCountry,
+        matched_keywords: query,
+        matched_persona: request.strategy.persona_config?.primary_persona || '',
+        representative_video_url: clean(item.video_url || item.post_url),
+        representative_video_title: clean(item.title || item.desc || item.description),
+        evidence_url: profileUrl,
+        evidence_title: evidenceTitle,
+        evidence_type: 'profile',
+        source_query: query,
+        reason: `Matched ${PROVIDER_LABELS[request.search_source] || PROVIDER_LABELS.scrapecreators} search: ${query}`,
+        raw_data: item
+      }, request));
+      if (candidates.length >= maxResults) break;
+    }
+  }
+
+  if (!candidates.length) {
+    throw new Error('ScrapeCreators returned 0 candidates. Try shorter Instagram keywords.');
+  }
+  return { provider: request.search_source || 'scrapecreators', endpoint: lastEndpoint, candidates: candidates.slice(0, maxResults) };
+}
+
 function normalizeCandidate(input, request, provider) {
   const platform = clean(input.platform || request.target_platform || request.platform);
   const profileUrl = clean(input.profile_url || input.profileUrl || input.channel_url || input.url || '');
@@ -417,11 +735,17 @@ function normalizeCandidate(input, request, provider) {
     matched_persona: clean(input.matched_persona || request.strategy.persona_config?.primary_persona),
     ai_score: normalizeNumber(input.ai_score || input.score),
     ai_match_reason: clean(input.reason || input.ai_match_reason || `Found by ${PROVIDER_LABELS[provider] || provider}`),
+    status: clean(input.status),
+    error_message: clean(input.error_message),
     scoring_breakdown: input.scoring_breakdown || {},
     evidence_url: evidenceUrl,
     evidence_title: evidenceTitle,
     evidence_type: evidenceType,
     source_query: clean(input.source_query || request.cycle.keywords),
+    discovery_route: clean(input.discovery_route || request.discovery_route),
+    source_platform: clean(input.source_platform || request.source_platform),
+    target_platform: platform,
+    source_agent: clean(input.source_agent || ''),
     raw_data: input.raw_data || input
   };
 }
@@ -467,11 +791,15 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
     return { inserted: false, skipped: true, reason: 'Missing kol_name/profile_url' };
   }
   const existing = await rawCandidateExists(candidate, task.strategy_id);
-  const status = await masterExists(candidate) ? 'duplicate' : 'new';
+  const desiredStatus = ['ignored', 'error'].includes(candidate.status) ? candidate.status : '';
+  const status = desiredStatus || (await masterExists(candidate) ? 'duplicate' : 'new');
   const rawData = JSON.stringify({
     provider,
     finder_task_id: task.id,
     search_cycle: cycle.cycle,
+    discovery_route: candidate.discovery_route,
+    source_platform: candidate.source_platform,
+    target_platform: candidate.target_platform,
     data: candidate.raw_data
   });
   if (existing) {
@@ -487,6 +815,12 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
        evidence_title = COALESCE(NULLIF(evidence_title, ''), ?),
        evidence_type = COALESCE(NULLIF(evidence_type, ''), ?),
        source_query = COALESCE(NULLIF(source_query, ''), ?),
+       discovery_route = COALESCE(NULLIF(discovery_route, ''), ?),
+       source_platform = COALESCE(NULLIF(source_platform, ''), ?),
+       target_platform = COALESCE(NULLIF(target_platform, ''), ?),
+       source_agent = COALESCE(NULLIF(source_agent, ''), ?),
+       status = CASE WHEN status IN ('approved', 'duplicate') THEN status WHEN ? <> '' THEN ? ELSE status END,
+       error_message = COALESCE(NULLIF(error_message, ''), ?),
        ai_score = COALESCE(ai_score, ?),
        ai_match_reason = COALESCE(NULLIF(ai_match_reason, ''), ?),
        raw_data = ?,
@@ -503,21 +837,29 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
         candidate.evidence_title,
         candidate.evidence_type,
         candidate.source_query,
+        candidate.discovery_route,
+        candidate.source_platform,
+        candidate.target_platform,
+        candidate.source_agent || provider,
+        desiredStatus,
+        desiredStatus,
+        candidate.error_message,
         candidate.ai_score,
         candidate.ai_match_reason,
         rawData,
         existing.id
       ]
     );
-    return { inserted: false, duplicate: true };
+    return { inserted: false, duplicate: true, status: existing.status || status };
   }
   const result = await dbOperations.run(
     `INSERT INTO raw_candidates
      (finder_task_id, campaign_id, strategy_id, platform, kol_name, profile_url, video_url, video_title,
       followers, avg_views, email, country_region, matched_keywords, ai_score, ai_match_reason,
-      status, source, raw_data, search_cycle, matched_persona, scoring_breakdown,
+      status, source, discovery_route, source_platform, target_platform, source_agent,
+      raw_data, error_message, search_cycle, matched_persona, scoring_breakdown,
       evidence_url, evidence_title, evidence_type, source_query)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       task.id,
       task.campaign_id,
@@ -536,7 +878,12 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
       candidate.ai_match_reason,
       status,
       provider,
+      candidate.discovery_route,
+      candidate.source_platform,
+      candidate.target_platform,
+      candidate.source_agent || provider,
       rawData,
+      candidate.error_message,
       cycle.cycle,
       candidate.matched_persona,
       JSON.stringify(candidate.scoring_breakdown || {}),
@@ -552,14 +899,18 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
 async function runProvider(request, allowFallback) {
   const attempts = [];
   const source = request.search_source;
+  const externalAgentRoute = ['youtube_to_instagram', 'google_web_to_instagram', 'seed_posts_to_profile', 'google_web_to_tiktok', 'spider_web_expansion'].includes(request.discovery_route);
   try {
+    if (externalAgentRoute && request.target_platform !== 'youtube') {
+      throw new Error(`${PROVIDER_LABELS[request.discovery_route] || request.discovery_route} is an External Agent route. Use the Agent Brief/API import flow; Instagram native search is not used by default.`);
+    }
     let maton = null;
     if (source === 'maton_agent' || source === 'google_web') {
       maton = await matonFinderAdapter(request);
     } else if (source === 'youtube_search') {
       maton = await youtubeSearchAdapter(request);
     } else if (source === 'instagram_search' || source === 'tiktok_search') {
-      maton = await scrapeCreatorsFinderAdapter(request);
+      maton = await scrapeCreatorsFinderAdapterV2(request);
     } else {
       throw new Error(`Unsupported search source: ${source}`);
     }
@@ -567,13 +918,13 @@ async function runProvider(request, allowFallback) {
     return { ...maton, attempts };
   } catch (error) {
     attempts.push({ search_source: source, provider: source, ok: false, error: error.message });
-    if (!allowFallback || source !== 'maton_agent') throw Object.assign(new Error(error.message), { attempts });
+    if (!allowFallback || source !== 'maton_agent' || externalAgentRoute) throw Object.assign(new Error(error.message), { attempts });
   }
 
   try {
     const fallback = request.target_platform === 'youtube'
       ? await youtubeSearchAdapter({ ...request, search_source: 'youtube_search' })
-      : await scrapeCreatorsFinderAdapter({
+      : await scrapeCreatorsFinderAdapterV2({
         ...request,
         search_source: request.target_platform === 'instagram' ? 'instagram_search' : 'tiktok_search'
       });
@@ -614,20 +965,20 @@ async function processTask(taskId, options = {}) {
       cancelledTasks.delete(taskId);
       return;
     }
-    const pairs = sourceTargetPairs(cycle, strategy, options.searchSources || [], options.targetPlatforms || []);
+    const pairs = sourceTargetPairs(cycle, strategy, options.searchSources || [], options.targetPlatforms || [], options.discoveryRoutes || []);
     await updateTask(taskId, { current_cycle: cycle.cycle });
 
     for (const pair of pairs) {
-      const { searchSource, targetPlatform } = pair;
-      const request = buildCycleRequest(strategy, cycle, searchSource, targetPlatform, options.limit || 10);
+      const { searchSource, targetPlatform, discoveryRoute, sourcePlatform } = pair;
+      const request = buildCycleRequest(strategy, cycle, searchSource, targetPlatform, options.limit || 10, discoveryRoute, sourcePlatform);
       try {
         const result = await runProvider(request, options.allowFallback !== false);
-        allAttempts.push(...result.attempts.map((attempt) => ({ ...attempt, cycle: cycle.cycle, search_source: searchSource, target_platform: targetPlatform })));
+        allAttempts.push(...result.attempts.map((attempt) => ({ ...attempt, cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform })));
         const seen = new Set();
         let inserted = 0;
         let skipped = 0;
         for (const raw of result.candidates.slice(0, options.limit || 10)) {
-          const normalized = normalizeCandidate(raw, request, result.provider);
+          const normalized = applyFinderGates(normalizeCandidate(raw, request, result.provider), request);
           const key = profileKey(normalized);
           if (seen.has(key)) {
             skipped += 1;
@@ -635,15 +986,15 @@ async function processTask(taskId, options = {}) {
           }
           seen.add(key);
           const saved = await upsertRawCandidate(normalized, task, cycle, result.provider);
-          if (saved.inserted) inserted += 1;
-          if (saved.skipped) skipped += 1;
+          if (saved.inserted && saved.status !== 'ignored') inserted += 1;
+          if (saved.skipped || saved.status === 'ignored') skipped += 1;
         }
         successCount += inserted;
-        responseSummary.push({ cycle: cycle.cycle, search_source: searchSource, target_platform: targetPlatform, provider: result.provider, returned: result.candidates.length, inserted, skipped });
+        responseSummary.push({ cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform, provider: result.provider, returned: result.candidates.length, inserted, skipped });
       } catch (error) {
         failedCount += 1;
-        allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]).map((attempt) => ({ ...attempt, cycle: cycle.cycle, search_source: searchSource, target_platform: targetPlatform })));
-        responseSummary.push({ cycle: cycle.cycle, search_source: searchSource, target_platform: targetPlatform, error: error.message });
+        allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]).map((attempt) => ({ ...attempt, cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform })));
+        responseSummary.push({ cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform, error: error.message });
       }
     }
 
@@ -692,6 +1043,7 @@ router.get('/', async (req, res) => {
     res.json({ success: true, data: rows.map((row) => ({
       ...row,
       search_sources: parseJson(row.search_sources, parseList(row.search_sources)),
+      discovery_routes: parseJson(row.discovery_routes, parseList(row.discovery_routes)),
       target_platforms: parseJson(row.target_platforms, parseList(row.target_platforms || row.platform)),
       search_cycles: parseJson(row.search_cycles, []),
       provider_attempts: parseJson(row.provider_attempts, []),
@@ -715,6 +1067,7 @@ router.get('/:id', async (req, res) => {
     res.json({ success: true, data: {
       ...row,
       search_sources: parseJson(row.search_sources, parseList(row.search_sources)),
+      discovery_routes: parseJson(row.discovery_routes, parseList(row.discovery_routes)),
       target_platforms: parseJson(row.target_platforms, parseList(row.target_platforms || row.platform)),
       search_cycles: parseJson(row.search_cycles, []),
       provider_attempts: parseJson(row.provider_attempts, []),
@@ -736,23 +1089,27 @@ router.post('/', async (req, res) => {
     if (!cycles.length) return res.status(400).json({ success: false, error: 'Please select at least one search cycle' });
     const targetPlatforms = (body.target_platforms || body.platforms || []).filter((p) => TARGET_PLATFORMS.includes(p));
     const searchSources = (body.search_sources || []).filter((source) => SEARCH_SOURCES.includes(source));
+    const discoveryRoutes = (body.discovery_routes || body.discoveryRoutes || []).filter((route) => DISCOVERY_ROUTES.includes(route));
     const normalizedCycles = cycles.map((cycle) => ({
       ...cycle,
+      discovery_routes: discoveryRoutes.length ? discoveryRoutes : discoveryRoutesForCycle(cycle, strategy, [], targetPlatforms),
       search_sources: searchSources.length ? searchSources : searchSourcesForCycle(cycle),
       target_platforms: targetPlatforms.length ? targetPlatforms : targetPlatformsForCycle(cycle, strategy)
     }));
     const rawRequest = {
       strategy_id: strategy.id,
       cycles: normalizedCycles.map((c) => c.cycle),
+      discovery_routes: discoveryRoutes,
       search_sources: searchSources,
       target_platforms: targetPlatforms,
+      seed_urls: parseList(body.seed_urls || body.seedUrls),
       limit_per_platform: Number(body.limit_per_platform || 10),
       allow_fallback: body.allow_fallback !== false
     };
     const result = await dbOperations.run(
       `INSERT INTO finder_tasks
-       (campaign_id, strategy_id, name, platform, keywords, status, search_sources, target_platforms, search_cycles, total_cycles, raw_request, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (campaign_id, strategy_id, name, platform, keywords, status, search_sources, discovery_routes, target_platforms, search_cycles, total_cycles, raw_request, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         strategy.campaign_id,
         strategy.id,
@@ -761,6 +1118,7 @@ router.post('/', async (req, res) => {
         normalizedCycles.map((cycle) => keywordString(cycle, strategy)).join(' | '),
         'draft',
         JSON.stringify(searchSources.length ? searchSources : [...new Set(normalizedCycles.flatMap((cycle) => cycle.search_sources || []))]),
+        JSON.stringify(discoveryRoutes.length ? discoveryRoutes : [...new Set(normalizedCycles.flatMap((cycle) => cycle.discovery_routes || []))]),
         JSON.stringify(targetPlatforms.length ? targetPlatforms : [...new Set(normalizedCycles.flatMap((cycle) => cycle.target_platforms || []))]),
         JSON.stringify(normalizedCycles),
         normalizedCycles.length,
@@ -772,6 +1130,7 @@ router.post('/', async (req, res) => {
     setImmediate(() => {
       processTask(result.id, {
         searchSources,
+        discoveryRoutes,
         targetPlatforms,
         limit: Math.max(1, Math.min(Number(body.limit_per_platform || 10), 50)),
         allowFallback: body.allow_fallback !== false

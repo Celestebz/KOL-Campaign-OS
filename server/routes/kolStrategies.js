@@ -58,6 +58,9 @@ const DEFAULT_SEARCH_CYCLES = [
   { cycle: 'C7', name: 'Spider-web Expansion', priority: 7, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Expand from similar creators, collaborations, tags, and comments.' }
 ];
 
+const CYCLE_ORDER = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
+const DEFAULT_CYCLE_BY_ID = Object.fromEntries(DEFAULT_SEARCH_CYCLES.map((cycle) => [cycle.cycle, cycle]));
+
 function clean(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
@@ -79,6 +82,27 @@ function asJson(value, fallback) {
   return JSON.stringify(value);
 }
 
+function normalizeSearchStrategy(value) {
+  const parsed = Array.isArray(value) ? value : parseJson(value, DEFAULT_SEARCH_CYCLES);
+  const byCycle = {};
+  for (const item of Array.isArray(parsed) ? parsed : []) {
+    const cycleId = clean(item?.cycle).toUpperCase();
+    if (CYCLE_ORDER.includes(cycleId)) {
+      byCycle[cycleId] = { ...item, cycle: cycleId };
+    }
+  }
+  return CYCLE_ORDER.map((cycleId, index) => ({
+    ...DEFAULT_CYCLE_BY_ID[cycleId],
+    ...(byCycle[cycleId] || {}),
+    cycle: cycleId,
+    priority: index + 1
+  }));
+}
+
+function searchStrategyJson(value) {
+  return JSON.stringify(normalizeSearchStrategy(value));
+}
+
 function normalizeStrategy(row) {
   if (!row) return row;
   return {
@@ -86,7 +110,7 @@ function normalizeStrategy(row) {
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
-    search_strategy: parseJson(row.search_strategy, DEFAULT_SEARCH_CYCLES),
+    search_strategy: normalizeSearchStrategy(row.search_strategy),
     scoring_weights: parseJson(row.scoring_weights, DEFAULT_SCORING_WEIGHTS),
     finder_handoff: parseJson(row.finder_handoff, {}),
     source_material_meta: parseJson(row.source_material_meta, {}),
@@ -309,7 +333,7 @@ function buildStrategyPrompt(strategy, campaign, materialContext = null) {
         negative_signals: [],
         best_content_formats: []
       },
-      search_strategy: DEFAULT_SEARCH_CYCLES,
+      search_strategy: normalizeSearchStrategy(DEFAULT_SEARCH_CYCLES),
       scoring_weights: DEFAULT_SCORING_WEIGHTS,
       finder_handoff: {
         required_platforms: [],
@@ -317,6 +341,7 @@ function buildStrategyPrompt(strategy, campaign, materialContext = null) {
         competitor_keywords: [],
         exclusion_keywords: [],
         minimum_followers: '',
+        maximum_followers: '',
         minimum_avg_views: '',
         required_evidence: [],
         approve_threshold: 75,
@@ -330,7 +355,7 @@ function buildStrategyPrompt(strategy, campaign, materialContext = null) {
     existing_strategy_sections: {
       product_context: parseJson(strategy.product_context, {}),
       persona_config: parseJson(strategy.persona_config, {}),
-      search_strategy: parseJson(strategy.search_strategy, DEFAULT_SEARCH_CYCLES),
+      search_strategy: normalizeSearchStrategy(strategy.search_strategy),
       scoring_weights: parseJson(strategy.scoring_weights, DEFAULT_SCORING_WEIGHTS),
       finder_handoff: parseJson(strategy.finder_handoff, {})
     },
@@ -449,7 +474,7 @@ router.post('/', async (req, res) => {
         clean(body.status) || 'draft',
         asJson(body.product_context, {}),
         asJson(body.persona_config, {}),
-        asJson(body.search_strategy, DEFAULT_SEARCH_CYCLES),
+        searchStrategyJson(body.search_strategy),
         asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
         asJson(body.finder_handoff, {})
       ]
@@ -483,7 +508,7 @@ router.put('/:id', async (req, res) => {
         clean(body.campaign_goal),
         asJson(body.product_context, {}),
         asJson(body.persona_config, {}),
-        asJson(body.search_strategy, DEFAULT_SEARCH_CYCLES),
+        searchStrategyJson(body.search_strategy),
         asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
         asJson(body.finder_handoff, {}),
         req.params.id
@@ -503,7 +528,7 @@ router.post('/:id/generate-draft', async (req, res) => {
     const merged = {
       product_context: draft.product_context || strategy.product_context || {},
       persona_config: draft.persona_config || strategy.persona_config || {},
-      search_strategy: draft.search_strategy || strategy.search_strategy || DEFAULT_SEARCH_CYCLES,
+      search_strategy: normalizeSearchStrategy(draft.search_strategy || strategy.search_strategy || DEFAULT_SEARCH_CYCLES),
       scoring_weights: draft.scoring_weights || strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS,
       finder_handoff: draft.finder_handoff || strategy.finder_handoff || {}
     };
@@ -513,7 +538,7 @@ router.post('/:id/generate-draft', async (req, res) => {
       [
         JSON.stringify(merged.product_context),
         JSON.stringify(merged.persona_config),
-        JSON.stringify(merged.search_strategy),
+        searchStrategyJson(merged.search_strategy),
         JSON.stringify(merged.scoring_weights),
         JSON.stringify(merged.finder_handoff),
         req.params.id
@@ -537,7 +562,7 @@ router.post('/:id/analyze-materials', upload.array('files', MAX_MATERIAL_FILES),
       source_material_summary: clean(draft.source_material_summary),
       product_context: draft.product_context || strategy.product_context || {},
       persona_config: draft.persona_config || strategy.persona_config || {},
-      search_strategy: draft.search_strategy || strategy.search_strategy || DEFAULT_SEARCH_CYCLES,
+      search_strategy: normalizeSearchStrategy(draft.search_strategy || strategy.search_strategy || DEFAULT_SEARCH_CYCLES),
       scoring_weights: draft.scoring_weights || strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS,
       finder_handoff: draft.finder_handoff || strategy.finder_handoff || {}
     };
@@ -562,7 +587,7 @@ router.post('/:id/analyze-materials', upload.array('files', MAX_MATERIAL_FILES),
         JSON.stringify([]),
         JSON.stringify(merged.product_context),
         JSON.stringify(merged.persona_config),
-        JSON.stringify(merged.search_strategy),
+        searchStrategyJson(merged.search_strategy),
         JSON.stringify(merged.scoring_weights),
         JSON.stringify(merged.finder_handoff),
         req.params.id
@@ -631,7 +656,7 @@ router.post('/:id/duplicate', async (req, res) => {
         strategy.campaign_goal || '',
         JSON.stringify(strategy.product_context || {}),
         JSON.stringify(strategy.persona_config || {}),
-        JSON.stringify(strategy.search_strategy || DEFAULT_SEARCH_CYCLES),
+        searchStrategyJson(strategy.search_strategy || DEFAULT_SEARCH_CYCLES),
         JSON.stringify(strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS),
         JSON.stringify(strategy.finder_handoff || {})
       ]
