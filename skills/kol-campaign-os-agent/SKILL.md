@@ -5,6 +5,29 @@ description: One-skill external agent for KOL Campaign OS. Use when Kimi Code, W
 
 # KOL Campaign OS External Agent
 
+## Default Click Behavior
+
+When a user selects or installs this skill and asks for KOL Campaign OS help, assume they want the full workflow unless they explicitly narrow the task:
+
+```text
+Campaign/product brief -> KOL Strategy -> mark Strategy ready -> Finder -> Raw Candidates -> human approval
+```
+
+Do not ask the user to choose between `kol-strategy` and `kol-finder`. Use Strategy first, then Finder. If a ready `strategy_id` already exists, skip Strategy creation and start from Finder Brief. If no Strategy exists, create or improve one before running Finder.
+
+Default Finder execution behavior:
+
+- If the external agent platform supports subagents or parallel workers, use KOL Campaign OS Subagent Hybrid by default for any target platform.
+- Create a Finder parent task, generate cycle-level Finder subtasks, execute each cycle subtask separately, and import each result through `/api/finder-subtasks/{finder_subtask_id}/import`.
+- Default Subagent Hybrid creates one subtask per selected search cycle, usually C1-C7. Routes are evidence paths inside each cycle subtask, not separate default subtasks.
+- Do not collapse multiple generated cycle subtasks into one `/api/agent/raw-candidates/import` call when subtask APIs are available.
+- Use `/api/agent/raw-candidates/import` only when subtask APIs are unavailable or the user explicitly asks for a single external-agent run.
+- If the user asks for Instagram KOLs, use `youtube_to_instagram`, `google_web_to_instagram`, and `reddit_to_instagram` as the primary routes.
+- For Instagram accepted candidates, verify that `profile_url` is reachable and that the handle belongs to the named creator. Do not rely only on a listicle, directory, Reddit mention, or search snippet.
+- Write accepted and useful rejected candidates into Raw Candidates when API access is available.
+- If API write access is not available, return import-ready JSON for Raw Candidates.
+- Never approve candidates into KOL Master or Campaign KOL.
+
 ## Role
 
 Act as an external intelligent worker for KOL Campaign OS.
@@ -15,6 +38,12 @@ Your job is to complete the external-agent workflow end to end:
 
 ```text
 Campaign/product brief -> Strategy -> Finder search -> Raw Candidates in KOL Campaign OS -> Human approval in UI
+```
+
+The app supports Subagent Hybrid Finder and agents with subagent/parallel-worker capability should prefer it:
+
+```text
+Ready Strategy -> Finder Parent Task -> Finder Subtasks -> external subagent search -> import JSON -> Raw Candidates -> Human approval in UI
 ```
 
 You may create or improve a Strategy and write KOL discovery results to Raw Candidates. You must not approve candidates into KOL Master.
@@ -28,6 +57,7 @@ Default values and discovery behavior when the user does not specify them:
 - `base_url`: `http://localhost:5001`
 - `campaign_id`: no fixed default. First inspect existing Campaigns.
 - target count: no fixed default. Ask the user how many reviewable KOL candidates they want.
+- follower/tier requirement: no fixed default. Ask for desired creator size, such as nano/micro/mid-tier/hero or a follower/view range.
 - workflow mode: collect brief first, then run Strategy + Finder + Raw Candidate import
 
 You need:
@@ -36,7 +66,7 @@ You need:
 - Either a `strategy_id` or enough product/campaign brief text to create a Strategy
 - `agent_api_token`: External Agent API token for `/api/agent/*` endpoints
 - `campaign_id`, selected from existing Campaigns or created after user confirmation
-- target count, target platform, market, and search notes
+- target count, target platform, market, follower/tier requirement, and search notes
 
 If running on the same machine as KOL Campaign OS, you may read the token from the local system settings/database if available. Never print, log, or expose the token.
 
@@ -60,7 +90,7 @@ Campaign selection rules:
 - Do not silently default to Campaign ID `1`.
 - Do not use `Default Campaign` unless the user explicitly chooses it or there is truly no better Campaign and the user confirms.
 
-Collect these inputs before starting Strategy + Finder:
+Collect these minimum brief inputs before creating a new Campaign or starting Strategy + Finder:
 
 - product or brand name
 - product website, shop link, document, or short product description
@@ -68,7 +98,10 @@ Collect these inputs before starting Strategy + Finder:
 - target platform, or let the user say "you decide"
 - campaign goal, such as review, awareness, affiliate, UGC, or expert credibility
 - target count: how many reviewable accepted KOL candidates the user wants
-- any competitors, exclusion rules, budget/tier preference, or must-have creator type
+- follower/tier requirement: desired creator size or allowed range, such as nano, micro, mid-tier, hero, 10K-100K followers, 100K-500K followers, or "you decide"
+- any competitors, exclusion rules, budget preference, or must-have creator type
+
+Do not create a new Campaign after only collecting name/brand/product basics if the user is asking for KOL search. First ask for target platform, target market, campaign goal, target count, and follower/tier requirement. If the user explicitly says "you decide", choose conservative defaults and state them before creating Strategy/Finder.
 
 If the user gives incomplete information, ask follow-up questions for only the missing high-impact items. Once enough information is collected, summarize the assumptions briefly and proceed automatically.
 
@@ -109,6 +142,30 @@ Read the Finder brief:
 GET {base_url}/api/agent/brief/{strategy_id}
 ```
 
+Create a Finder parent task for Subagent Hybrid:
+
+```http
+POST {base_url}/api/finder-tasks
+Content-Type: application/json
+
+{
+  "strategy_id": 1,
+  "execution_mode": "subagent_hybrid",
+  "target_platforms": ["instagram"],
+  "discovery_routes": ["youtube_to_instagram", "google_web_to_instagram", "reddit_to_instagram"],
+  "cycles": ["C1", "C2", "C3", "C4", "C5", "C6", "C7"],
+  "limit_per_platform": 10,
+  "allow_fallback": true,
+  "subtask_mode": "cycle"
+}
+```
+
+Generate subtasks:
+
+```http
+POST {base_url}/api/finder-tasks/{finder_task_id}/subtasks/generate
+```
+
 Write Raw Candidates:
 
 ```http
@@ -117,29 +174,52 @@ Content-Type: application/json
 Authorization: Bearer <agent_api_token>
 ```
 
+Subagent Hybrid APIs are used when KOL Campaign OS gives you a specific Finder Subtask Prompt:
+
+```http
+GET {base_url}/api/finder-tasks/{finder_task_id}/subtasks
+GET {base_url}/api/finder-subtasks/{finder_subtask_id}/prompt
+POST {base_url}/api/finder-subtasks/{finder_subtask_id}/import
+POST {base_url}/api/finder-subtasks/{finder_subtask_id}/status
+```
+
+Subtask import does not approve candidates. It writes accepted and rejected results into Raw Candidates for human review.
+
 ## Workflow
 
 ### A. If the user already provides a Strategy ID
 
 1. Read the Finder brief from `/api/agent/brief/{strategy_id}`.
 2. Understand campaign, product, market, Strategy, target platforms, Finder rules, and existing records.
-3. Run your own KOL discovery workflow.
-4. Check candidates against existing KOL Master and Raw Candidates from the brief.
-5. Split output into `accepted_candidates` and `rejected_candidates`.
-6. Write both accepted and useful rejected records back through `/api/agent/raw-candidates/import`.
-7. Report `strategy_id`, `finder_task_id`, accepted count, rejected count, and failures.
+3. If you can use subagents or parallel workers, create a Finder parent task with `execution_mode: "subagent_hybrid"` and generate subtasks.
+4. Execute each generated cycle subtask separately. Follow its route plan and attempt every required route, or record a skip/no-result reason.
+5. Import each subtask result through `/api/finder-subtasks/{finder_subtask_id}/import`.
+6. Use `/api/agent/raw-candidates/import` only if subtask APIs are unavailable or the user explicitly asks for a single external-agent run.
+7. Check candidates against existing KOL Master and Raw Candidates from the brief. Every candidate must still include its real `discovery_route`, `source_platform`, and `target_platform`.
+8. Report `strategy_id`, `finder_task_id`, subtask count, accepted count, rejected count, and failures.
+
+### A2. If the user provides a Finder Subtask Prompt
+
+1. Follow the prompt exactly. It already contains campaign, strategy, route, query, and output schema.
+2. Search only the specified `search_cycle`. Use the prompt's route plan as the evidence-path checklist.
+3. Attempt required routes or include route coverage with skip/no-result reasons.
+4. Return valid JSON only. Do not include Markdown or explanations.
+5. Include `finder_subtask_id`, `strategy_id`, `source_agent`, optional `route_coverage`, `accepted_candidates`, and `rejected_candidates`.
+6. Candidate records must use their actual route, not `cycle_multi_route`.
+7. If allowed to call the local API, import results with `POST /api/finder-subtasks/{finder_subtask_id}/import`.
+8. Do not call approve APIs.
 
 ### B. If the user gives a product/campaign brief but no Strategy ID
 
 1. Inspect Campaigns with `GET /api/campaigns`.
-2. Ask the user which Campaign to use, or create a new Campaign with `POST /api/campaigns`.
-3. Ask the user for target count if they have not provided it.
+2. Ask the user which Campaign to use, or create a new Campaign only after collecting the minimum brief inputs.
+3. Ask the user for target count and follower/tier requirement if they have not provided them.
 4. Create a Strategy draft from the brief.
 5. Save it through `POST /api/kol-strategies` with `status: "draft"`.
 6. If the user asked you to find KOLs or complete the workflow, publish it with `POST /api/kol-strategies/{strategy_id}/mark-ready`.
 7. Read the Finder brief from `/api/agent/brief/{strategy_id}`.
-8. Run Finder and write Raw Candidates.
-9. Report `campaign_id`, `strategy_id`, whether it was published ready, `finder_task_id`, accepted count, rejected count, and assumptions.
+8. Run Finder through Subagent Hybrid when subagents or parallel workers are available; otherwise run a single external-agent discovery and import Raw Candidates.
+9. Report `campaign_id`, `strategy_id`, whether it was published ready, `finder_task_id`, subtask count, accepted count, rejected count, and assumptions.
 
 If required fields are missing and one-shot execution is requested, make conservative assumptions, record them in the Strategy and final report, and continue. Ask the user only when the missing input would make the result misleading or unusable.
 
@@ -147,10 +227,10 @@ If required fields are missing and one-shot execution is requested, make conserv
 
 1. Use `base_url = http://localhost:5001`.
 2. Inspect existing Campaigns with `GET /api/campaigns`.
-3. Ask the user which Campaign to use, or create a new one after collecting product/campaign name.
-4. Ask for target count.
+3. Ask the user which Campaign to use, or create a new one after collecting the minimum brief inputs.
+4. Ask for target count and follower/tier requirement.
 5. Ask for product/campaign information using the User Interaction Contract.
-6. After the user answers, create Strategy, publish it for Finder, read Finder brief, run discovery, and import Raw Candidates.
+6. After the user answers, create Strategy, publish it for Finder, read Finder brief, run Subagent Hybrid if available, and import Raw Candidates.
 7. Do not ask the user to restate the full API prompt.
 
 ## Strategy Creation Contract
@@ -258,9 +338,12 @@ Supported `target_platforms`: `youtube`, `instagram`, `tiktok`.
 - Do not run Finder against an unpublished Strategy unless you first publish it with explicit one-shot or publish instruction.
 - Do not invent follower counts, views, email, country, price, or engagement.
 - Do not invent exact Strategy facts such as competitors, budgets, or price tiers. If unknown, use flexible rules and note uncertainty.
+- Do not accept Instagram candidates until handle attribution and profile reachability are verified. If attribution is unclear, import as `ignored` with a reject reason or leave the candidate out.
 - Do not hide important rejected results if they explain why a search route was bad.
 - Do not treat the Finder brief as optional once a Strategy exists. Always read it before importing candidates.
 - Do not recommend existing KOL Master or existing Raw Candidates as new people.
+- Do not let all cycle subtasks silently skip the same selected route. Required routes in each prompt must be attempted or reported in `route_coverage` with a reason.
+- Do not import cycle-level candidates with `discovery_route: "cycle_multi_route"`. Use the real evidence path such as `youtube_to_instagram`, `google_web_to_instagram`, or `reddit_to_instagram`.
 - If a field is unknown, leave it blank and explain uncertainty in `ai_match_reason` or `reject_reason`.
 
 ## Candidate Fields
@@ -289,10 +372,10 @@ Use this shape for accepted candidates:
   "source_query": "what was searched or inspected",
   "search_cycle": "C1 | C2 | C3 | C4 | C5 | C6 | C7 | custom",
   "scoring_breakdown": {
-    "brand_fit": 0,
-    "product_fit": 0,
-    "traffic_quality": 0,
+    "persona_fit": 0,
+    "market_fit": 0,
     "evidence_quality": 0,
+    "collaboration_risk": 0,
     "risk": "low | medium | high"
   },
   "raw_data": {}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "KOL Campaign OS"
+  short_description: "Create Strategy first, run Finder, and write Raw Candidates for human approval."
+  default_prompt: "Use KOL Campaign OS end to end: inspect or create the Campaign, create or improve KOL Strategy, mark it ready, run Finder for the target platform, and write accepted/rejected Raw Candidates back into the system. Before creating a new Campaign for KOL search, collect target market, target platform, campaign goal, target count, and follower/tier requirements. Do not approve candidates into KOL Master."

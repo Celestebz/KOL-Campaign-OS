@@ -15,6 +15,7 @@ const syncRoutes = require('./routes/sync');
 const kolStrategyRoutes = require('./routes/kolStrategies');
 const finderTaskRoutes = require('./routes/finderTasks');
 const agentRoutes = require('./routes/agent');
+const finderSubtaskRoutes = require('./routes/finderSubtasks');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -49,6 +50,7 @@ app.use('/api/campaign-kols', campaignKolRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/kol-strategies', kolStrategyRoutes);
 app.use('/api/finder-tasks', finderTaskRoutes);
+app.use('/api/finder-subtasks', finderSubtaskRoutes);
 app.use('/api/agent', agentRoutes);
 
 app.get('/api/health', (req, res) => {

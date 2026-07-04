@@ -28,6 +28,7 @@ const PROVIDER_LABELS = {
   google_web_to_instagram: 'Google/Web -> Instagram',
   seed_posts_to_profile: 'Seed Posts -> Profile',
   instagram_native_small_batch: 'Instagram Native Small Batch',
+  reddit_to_instagram: 'Reddit -> Instagram',
   youtube_native_search: 'YouTube Native Search',
   google_web_to_youtube: 'Google/Web -> YouTube',
   google_web_to_tiktok: 'Google/Web -> TikTok',
@@ -38,12 +39,14 @@ const PROVIDER_LABELS = {
 
 const SEARCH_SOURCES = ['maton_agent', 'google_web', 'youtube_search', 'instagram_search', 'tiktok_search'];
 const DISCOVERY_ROUTES = [
+  'cycle_multi_route',
   'youtube_native_search',
   'google_web_to_youtube',
   'youtube_to_instagram',
   'google_web_to_instagram',
   'seed_posts_to_profile',
   'instagram_native_small_batch',
+  'reddit_to_instagram',
   'google_web_to_tiktok',
   'tiktok_native_small_batch',
   'spider_web_expansion'
@@ -66,9 +69,23 @@ const ROUTE_SOURCE_TARGETS = {
     { searchSource: 'maton_agent', targetPlatform: 'tiktok', sourcePlatform: 'seed_url' }
   ],
   instagram_native_small_batch: [{ searchSource: 'instagram_search', targetPlatform: 'instagram', sourcePlatform: 'instagram' }],
+  reddit_to_instagram: [{ searchSource: 'google_web', targetPlatform: 'instagram', sourcePlatform: 'reddit' }],
   google_web_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'google_web' }],
   tiktok_native_small_batch: [{ searchSource: 'tiktok_search', targetPlatform: 'tiktok', sourcePlatform: 'tiktok' }],
   spider_web_expansion: TARGET_PLATFORMS.map((platform) => ({ searchSource: 'maton_agent', targetPlatform: platform, sourcePlatform: 'cross_platform' }))
+};
+
+const ROUTE_PREFERRED_CYCLES = {
+  youtube_native_search: ['C1', 'C2', 'C6'],
+  google_web_to_youtube: ['C2', 'C1', 'C4'],
+  youtube_to_instagram: ['C1', 'C3', 'C7'],
+  google_web_to_instagram: ['C2', 'C4', 'C1'],
+  reddit_to_instagram: ['C5', 'C3'],
+  seed_posts_to_profile: ['C7', 'C6'],
+  instagram_native_small_batch: ['C6'],
+  google_web_to_tiktok: ['C2', 'C3', 'C4'],
+  tiktok_native_small_batch: ['C6'],
+  spider_web_expansion: ['C7']
 };
 
 const cancelledTasks = new Set();
@@ -241,6 +258,16 @@ function defaultDiscoveryRoutesForTargets(targets) {
   return [...new Set(routes.length ? routes : ['youtube_native_search'])];
 }
 
+function defaultSubagentRoutesForTargets(targets) {
+  const routes = [];
+  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube', 'spider_web_expansion');
+  if (targets.includes('instagram')) {
+    routes.push('youtube_to_instagram', 'google_web_to_instagram', 'reddit_to_instagram', 'seed_posts_to_profile', 'instagram_native_small_batch');
+  }
+  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'seed_posts_to_profile', 'tiktok_native_small_batch');
+  return [...new Set(routes.length ? routes : ['youtube_native_search'])];
+}
+
 function discoveryRoutesForCycle(cycle, strategy, requestedRoutes = [], requestedTargets = []) {
   const cycleRoutes = parseList(cycle.discovery_routes);
   const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
@@ -268,6 +295,88 @@ function sourceTargetPairs(cycle, strategy, requestedSources = [], requestedTarg
   return pairs;
 }
 
+function sourceTargetPairsForSubagents(cycle, strategy, requestedTargets = [], requestedRoutes = []) {
+  const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
+  const cycleRoutes = parseList(cycle.discovery_routes);
+  const routes = [...new Set((requestedRoutes.length ? requestedRoutes : cycleRoutes.length ? cycleRoutes : defaultSubagentRoutesForTargets(targets)).filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route)))];
+  const pairs = [];
+  for (const route of routes) {
+    for (const mapped of ROUTE_SOURCE_TARGETS[route] || []) {
+      if (targets.includes(mapped.targetPlatform)) pairs.push({ ...mapped, discoveryRoute: route });
+    }
+  }
+  return pairs;
+}
+
+function routeLabel(route) {
+  return PROVIDER_LABELS[route] || route;
+}
+
+function routeMappingsForTargets(route, targets) {
+  return (ROUTE_SOURCE_TARGETS[route] || []).filter((mapped) => targets.includes(mapped.targetPlatform));
+}
+
+function closestSelectedCycle(preferred, selectedCycleIds) {
+  const selected = selectedCycleIds.filter((cycle) => CYCLE_ORDER.includes(cycle));
+  if (!selected.length) return '';
+  for (const cycle of preferred) {
+    if (selected.includes(cycle)) return cycle;
+  }
+  const preferredIndex = CYCLE_ORDER.indexOf(preferred.find((cycle) => CYCLE_ORDER.includes(cycle)) || selected[0]);
+  return selected.reduce((best, cycle) => {
+    const distance = Math.abs(CYCLE_ORDER.indexOf(cycle) - preferredIndex);
+    const bestDistance = Math.abs(CYCLE_ORDER.indexOf(best) - preferredIndex);
+    return distance < bestDistance ? cycle : best;
+  }, selected[0]);
+}
+
+function buildRouteCoveragePlan(cycles, strategy, requestedTargets = [], requestedRoutes = [], seedUrls = []) {
+  const selectedCycleIds = cycles.map((cycle) => cycle.cycle);
+  const targets = [...new Set((requestedTargets.length ? requestedTargets : cycles.flatMap((cycle) => targetPlatformsForCycle(cycle, strategy))).filter((p) => TARGET_PLATFORMS.includes(p)))];
+  const fallbackRoutes = defaultSubagentRoutesForTargets(targets);
+  const routes = [...new Set((requestedRoutes.length ? requestedRoutes : fallbackRoutes).filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route)))];
+  const usableRoutes = routes.filter((route) => routeMappingsForTargets(route, targets).length);
+  const requiredByCycle = Object.fromEntries(selectedCycleIds.map((cycle) => [cycle, []]));
+
+  for (const route of usableRoutes) {
+    const preferred = ROUTE_PREFERRED_CYCLES[route] || ['C2'];
+    const assignedCycle = closestSelectedCycle(preferred, selectedCycleIds);
+    if (assignedCycle) requiredByCycle[assignedCycle].push(route);
+  }
+
+  return cycles.map((cycle) => {
+    const cycleTargets = targetPlatformsForCycle(cycle, strategy, targets);
+    const requiredRoutes = (requiredByCycle[cycle.cycle] || []).map((route) => ({
+      route,
+      label: routeLabel(route),
+      mappings: routeMappingsForTargets(route, targets),
+      required: true,
+      reason: `Primary coverage for ${cycle.cycle} ${cycle.name || ''}`.trim()
+    }));
+    const optionalRoutes = usableRoutes
+      .filter((route) => !requiredRoutes.some((item) => item.route === route))
+      .filter((route) => routeMappingsForTargets(route, cycleTargets.length ? cycleTargets : targets).length)
+      .map((route) => ({
+        route,
+        label: routeLabel(route),
+        mappings: routeMappingsForTargets(route, cycleTargets.length ? cycleTargets : targets),
+        required: false,
+        reason: 'Optional evidence path if it fits this cycle intent'
+      }));
+    return {
+      cycle: cycle.cycle,
+      cycle_name: cycle.name,
+      purpose: cycle.purpose || '',
+      target_platforms: cycleTargets.length ? cycleTargets : targets,
+      source_query: keywordString(cycle, strategy),
+      seed_urls: seedUrls,
+      required_routes: requiredRoutes,
+      optional_routes: optionalRoutes,
+      coverage_rule: 'Required routes must be attempted or reported with a skip reason. Candidates must record their actual discovery_route.'
+    };
+  });
+}
+
 function keywordString(cycle, strategy) {
   const pieces = [
     cycle.keywords,
@@ -283,6 +392,108 @@ function keywordQueries(request) {
   const queries = parseList(request.cycle.keywords || request.campaign.product || request.campaign.name);
   const fallback = clean(request.campaign.product || request.campaign.name || request.cycle.name);
   return [...new Set((queries.length ? queries : [fallback]).filter(Boolean))].slice(0, 8);
+}
+
+async function existingProfiles(strategyId, campaignId) {
+  const customers = await dbOperations.query(`
+    SELECT id, name, email, profile_url, youtube_url, instagram_url, tiktok_url
+    FROM customers
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 200
+  `);
+  const raw = await dbOperations.query(`
+    SELECT id, strategy_id, campaign_id, platform, kol_name, email, profile_url, status
+    FROM raw_candidates
+    WHERE strategy_id = ? OR campaign_id = ?
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 200
+  `, [strategyId, campaignId]);
+  return { kol_master: customers, raw_candidates: raw };
+}
+
+function buildSubagentPrompt({ subtaskId, task, strategy, cycle, pair, routePlan, sourceQuery, seedUrls, existing }) {
+  const isCycleSubtask = Boolean(routePlan);
+  const routeName = pair?.discoveryRoute || 'cycle_multi_route';
+  const routeLabelText = isCycleSubtask ? `${cycle.cycle} ${cycle.name || 'Cycle Research'}` : routeLabel(routeName);
+  const sourceAgent = isCycleSubtask ? `codex_subagent_${cycle.cycle.toLowerCase()}_cycle` : `codex_subagent_${routeName}`;
+  const payload = {
+    finder_subtask_id: subtaskId,
+    strategy_id: strategy.id,
+    source_agent: sourceAgent,
+    route_coverage: isCycleSubtask ? [] : undefined,
+    accepted_candidates: [],
+    rejected_candidates: []
+  };
+  if (!isCycleSubtask) delete payload.route_coverage;
+  return [
+    isCycleSubtask
+      ? `You are a KOL Finder cycle subagent for KOL Campaign OS. Work only on this search intent: ${routeLabelText}.`
+      : `You are a KOL Finder subagent for KOL Campaign OS. Work only on this focused discovery route: ${routeLabelText}.`,
+    '',
+    'Campaign:',
+    JSON.stringify({
+      id: strategy.campaign_id,
+      name: strategy.campaign_name,
+      brand: strategy.brand || strategy.campaign_brand || '',
+      product: strategy.product || strategy.campaign_product || '',
+      category: strategy.category || '',
+      target_market: strategy.target_market || '',
+      language: strategy.language || '',
+      goal: strategy.campaign_goal || ''
+    }, null, 2),
+    '',
+    'Strategy:',
+    JSON.stringify({
+      id: strategy.id,
+      name: strategy.name,
+      product_context: strategy.product_context,
+      persona_config: strategy.persona_config,
+      scoring_weights: strategy.scoring_weights,
+      finder_handoff: strategy.finder_handoff
+    }, null, 2),
+    '',
+    'Subtask scope:',
+    JSON.stringify(isCycleSubtask ? {
+      finder_task_id: task.id,
+      search_cycle: cycle.cycle,
+      cycle_name: cycle.name,
+      cycle_purpose: cycle.purpose || '',
+      discovery_route: 'cycle_multi_route',
+      target_platforms: routePlan.target_platforms,
+      source_query: sourceQuery,
+      seed_urls: seedUrls,
+      route_plan: routePlan
+    } : {
+      finder_task_id: task.id,
+      search_cycle: cycle.cycle,
+      cycle_name: cycle.name,
+      discovery_route: pair.discoveryRoute,
+      source_platform: pair.sourcePlatform,
+      target_platform: pair.targetPlatform,
+      source_query: sourceQuery,
+      seed_urls: seedUrls
+    }, null, 2),
+    '',
+    'Existing records to avoid duplicating:',
+    JSON.stringify(existing, null, 2),
+    '',
+    'Rules:',
+    '- Return valid JSON only. No Markdown.',
+    '- Do not approve candidates or write to KOL Master.',
+    '- Treat search results as leads. Inspect enough evidence before accepting.',
+    '- Do not invent follower counts, emails, countries, prices, or engagement numbers. Leave unknown fields blank.',
+    '- Every candidate must include its real discovery_route, source_platform, target_platform, evidence_url, source_query, and search_cycle.',
+    '- For cycle_multi_route subtasks, do not import candidates with discovery_route = cycle_multi_route. Use the actual route that found the candidate.',
+    '- For Instagram targets, accepted candidates must have a reachable profile_url and verified handle attribution. Do not rely only on a listicle, directory, Reddit mention, or search snippet.',
+    '- Import meaningful rejected candidates with a clear reject_reason so the same bad path is not repeated.',
+    isCycleSubtask ? '- Attempt every required route in route_plan. If a required route cannot be searched or produces no useful leads, include it in route_coverage with a skip_reason or no_result reason.' : '',
+    isCycleSubtask ? '- Do not include candidates from other search cycles in this subtask output.' : '',
+    '',
+    'Required output shape:',
+    JSON.stringify(payload, null, 2),
+    '',
+    'Each candidate must include: platform, target_platform, source_platform, discovery_route, kol_name, profile_url, evidence_url, evidence_type, source_query, search_cycle, ai_match_reason, status. Rejected candidates must also include reject_reason.'
+  ].join('\n');
 }
 
 const EU_COUNTRIES = [
@@ -1054,6 +1265,146 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/:id/subtasks', async (req, res) => {
+  try {
+    const rows = await dbOperations.query(
+      'SELECT * FROM finder_subtasks WHERE finder_task_id = ? ORDER BY id ASC',
+      [req.params.id]
+    );
+    res.json({ success: true, data: rows.map((row) => ({
+      ...row,
+      agent_result_summary: parseJson(row.agent_result_summary, null)
+    })) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/subtasks/generate', async (req, res) => {
+  try {
+    const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
+    if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
+    const strategy = await getReadyStrategy(task.strategy_id);
+    const rawRequest = parseJson(task.raw_request, {});
+    const taskTargets = parseJson(task.target_platforms, parseList(task.target_platforms || task.platform));
+    const taskRoutes = parseJson(task.discovery_routes, parseList(task.discovery_routes));
+    const requestedTargets = (rawRequest.target_platforms?.length ? rawRequest.target_platforms : taskTargets || []).filter((p) => TARGET_PLATFORMS.includes(p));
+    const requestedRoutes = (rawRequest.discovery_routes?.length ? rawRequest.discovery_routes : taskRoutes || []).filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route));
+    const seedUrls = parseList(rawRequest.seed_urls || rawRequest.seedUrls);
+    const cycles = parseJson(task.search_cycles, DEFAULT_SEARCH_CYCLES);
+    const subtaskMode = clean(req.body?.subtask_mode || req.body?.subtaskMode || rawRequest.subtask_mode || rawRequest.subtaskMode || 'cycle');
+    const existing = await existingProfiles(strategy.id, strategy.campaign_id);
+    const created = [];
+
+    await dbOperations.run('DELETE FROM finder_subtasks WHERE finder_task_id = ? AND status = ?', [task.id, 'pending']);
+
+    if (subtaskMode === 'route_cycle') {
+      for (const cycle of cycles) {
+        const pairs = sourceTargetPairsForSubagents(cycle, strategy, requestedTargets, requestedRoutes);
+        const sourceQuery = keywordString(cycle, strategy);
+        for (const pair of pairs) {
+          const name = `${cycle.cycle} ${routeLabel(pair.discoveryRoute)} → ${pair.targetPlatform}`;
+          const inserted = await dbOperations.run(
+            `INSERT INTO finder_subtasks
+             (finder_task_id, strategy_id, campaign_id, name, status, discovery_route, source_platform, target_platform, search_cycle, source_query, agent_prompt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              task.id,
+              strategy.id,
+              strategy.campaign_id,
+              name,
+              'pending',
+              pair.discoveryRoute,
+              pair.sourcePlatform,
+              pair.targetPlatform,
+              cycle.cycle,
+              sourceQuery,
+              ''
+            ]
+          );
+          const prompt = buildSubagentPrompt({
+            subtaskId: inserted.id,
+            task,
+            strategy,
+            cycle,
+            pair,
+            sourceQuery,
+            seedUrls,
+            existing
+          });
+          await dbOperations.run('UPDATE finder_subtasks SET agent_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [prompt, inserted.id]);
+          created.push(await dbOperations.get('SELECT * FROM finder_subtasks WHERE id = ?', [inserted.id]));
+        }
+      }
+    } else {
+      const routePlans = buildRouteCoveragePlan(cycles, strategy, requestedTargets, requestedRoutes, seedUrls);
+      for (const cycle of cycles) {
+        const routePlan = routePlans.find((plan) => plan.cycle === cycle.cycle);
+        const sourceQuery = routePlan?.source_query || keywordString(cycle, strategy);
+        const targetPlatforms = routePlan?.target_platforms || requestedTargets;
+        const routeNames = [...(routePlan?.required_routes || []), ...(routePlan?.optional_routes || [])].map((route) => route.route);
+        const name = `${cycle.cycle} ${cycle.name || 'Cycle Research'} → ${(targetPlatforms || []).join(', ') || 'targets'}`;
+        const inserted = await dbOperations.run(
+          `INSERT INTO finder_subtasks
+           (finder_task_id, strategy_id, campaign_id, name, status, discovery_route, source_platform, target_platform, search_cycle, source_query, agent_prompt, agent_result_summary)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            task.id,
+            strategy.id,
+            strategy.campaign_id,
+            name,
+            'pending',
+            'cycle_multi_route',
+            'multi',
+            (targetPlatforms || []).join(','),
+            cycle.cycle,
+            sourceQuery,
+            '',
+            JSON.stringify({ route_plan: routePlan, route_coverage: [], route_attempts: [] })
+          ]
+        );
+        const prompt = buildSubagentPrompt({
+          subtaskId: inserted.id,
+          task,
+          strategy,
+          cycle,
+          routePlan,
+          sourceQuery,
+          seedUrls,
+          existing
+        });
+        await dbOperations.run('UPDATE finder_subtasks SET agent_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [prompt, inserted.id]);
+        const row = await dbOperations.get('SELECT * FROM finder_subtasks WHERE id = ?', [inserted.id]);
+        created.push({ ...row, route_plan_routes: routeNames });
+      }
+    }
+
+    await updateTask(task.id, {
+      status: 'draft',
+      total_cycles: created.length,
+      completed_cycles: 0,
+      raw_response_summary: JSON.stringify(created.map((row) => ({
+        subtask_id: row.id,
+        discovery_route: row.discovery_route,
+        source_platform: row.source_platform,
+        target_platform: row.target_platform,
+        search_cycle: row.search_cycle,
+        route_plan_routes: row.route_plan_routes || [],
+        status: row.status
+      })))
+    });
+    res.json({
+      success: true,
+      data: created.map((row) => ({
+        ...row,
+        agent_result_summary: parseJson(row.agent_result_summary, null)
+      }))
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const row = await dbOperations.get(`
@@ -1089,7 +1440,7 @@ router.post('/', async (req, res) => {
     if (!cycles.length) return res.status(400).json({ success: false, error: 'Please select at least one search cycle' });
     const targetPlatforms = (body.target_platforms || body.platforms || []).filter((p) => TARGET_PLATFORMS.includes(p));
     const searchSources = (body.search_sources || []).filter((source) => SEARCH_SOURCES.includes(source));
-    const discoveryRoutes = (body.discovery_routes || body.discoveryRoutes || []).filter((route) => DISCOVERY_ROUTES.includes(route));
+    const discoveryRoutes = (body.discovery_routes || body.discoveryRoutes || []).filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route));
     const normalizedCycles = cycles.map((cycle) => ({
       ...cycle,
       discovery_routes: discoveryRoutes.length ? discoveryRoutes : discoveryRoutesForCycle(cycle, strategy, [], targetPlatforms),
@@ -1098,6 +1449,8 @@ router.post('/', async (req, res) => {
     }));
     const rawRequest = {
       strategy_id: strategy.id,
+      execution_mode: clean(body.execution_mode || body.executionMode || 'system_provider'),
+      subtask_mode: clean(body.subtask_mode || body.subtaskMode || 'cycle'),
       cycles: normalizedCycles.map((c) => c.cycle),
       discovery_routes: discoveryRoutes,
       search_sources: searchSources,
@@ -1127,22 +1480,26 @@ router.post('/', async (req, res) => {
       ]
     );
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [result.id]);
-    setImmediate(() => {
-      processTask(result.id, {
-        searchSources,
-        discoveryRoutes,
-        targetPlatforms,
-        limit: Math.max(1, Math.min(Number(body.limit_per_platform || 10), 50)),
-        allowFallback: body.allow_fallback !== false
-      }).catch((error) => {
-        updateTask(result.id, {
-          status: 'failed',
-          error_message: error.message,
-          finished_at: new Date().toISOString()
+    if (rawRequest.execution_mode !== 'subagent_hybrid') {
+      setImmediate(() => {
+        processTask(result.id, {
+          searchSources,
+          discoveryRoutes,
+          targetPlatforms,
+          limit: Math.max(1, Math.min(Number(body.limit_per_platform || 10), 50)),
+          allowFallback: body.allow_fallback !== false
+        }).catch((error) => {
+          updateTask(result.id, {
+            status: 'failed',
+            error_message: error.message,
+            finished_at: new Date().toISOString()
+          });
         });
       });
-    });
-    res.json({ success: true, data: task, message: 'Finder task started' });
+    } else {
+      await updateTask(result.id, { source_agent: 'subagent_hybrid', status: 'draft' });
+    }
+    res.json({ success: true, data: task, message: rawRequest.execution_mode === 'subagent_hybrid' ? 'Finder task created for subagent subtasks' : 'Finder task started' });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }

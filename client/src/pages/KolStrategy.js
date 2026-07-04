@@ -465,7 +465,7 @@ const KolStrategy = () => {
     <div>
       <div className="page-header">
         <h1 className="page-title">KOL Strategy</h1>
-        <p className="page-subtitle">先拆解项目和 KOL Persona，再发布到 Finder。发布后不会自动搜索，只会让 Finder 可以选择这版策略。</p>
+        <p className="page-subtitle">先拆解项目和 KOL Persona，再发布到 Finder。发布后可在 KOL Finder 中启动 System Provider 搜索，或生成 Subagent Hybrid 任务与 Prompt。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
@@ -499,7 +499,7 @@ const KolStrategy = () => {
           <Button key="save" type="primary" icon={<SaveOutlined />} loading={saving} onClick={saveStrategy}>保存草稿</Button>
         ]}
       >
-        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="第一版是 AI Brief Analyzer：读取你粘贴或上传的材料生成 Strategy 草稿；发布到 Finder 后不会自动搜索。" />
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="Strategy 发布到 Finder 后，可在 KOL Finder 中启动 System Provider 搜索，或生成 Subagent Hybrid 任务与 Prompt。" />
         <Form form={form} layout="vertical">
           <Row gutter={16}>
             <Col span={8}>

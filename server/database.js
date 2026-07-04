@@ -338,6 +338,32 @@ async function initDatabase() {
       FOREIGN KEY (approved_customer_id) REFERENCES customers (id)
     )`);
 
+    await dbOperations.run(`CREATE TABLE IF NOT EXISTS finder_subtasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      finder_task_id INTEGER NOT NULL,
+      strategy_id INTEGER,
+      campaign_id INTEGER,
+      name TEXT,
+      status TEXT DEFAULT 'pending',
+      discovery_route TEXT,
+      source_platform TEXT,
+      target_platform TEXT,
+      search_cycle TEXT,
+      source_query TEXT,
+      agent_prompt TEXT,
+      agent_result_summary TEXT,
+      accepted_count INTEGER DEFAULT 0,
+      rejected_count INTEGER DEFAULT 0,
+      failed_count INTEGER DEFAULT 0,
+      started_at DATETIME,
+      finished_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (finder_task_id) REFERENCES finder_tasks (id),
+      FOREIGN KEY (strategy_id) REFERENCES kol_strategies (id),
+      FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
+    )`);
+
     await dbOperations.run(`CREATE TABLE IF NOT EXISTS campaign_kols (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       campaign_id INTEGER NOT NULL,
@@ -455,6 +481,16 @@ async function initDatabase() {
     await addColumnIfMissing('raw_candidates', 'evidence_title', 'TEXT');
     await addColumnIfMissing('raw_candidates', 'evidence_type', 'TEXT');
     await addColumnIfMissing('raw_candidates', 'source_query', 'TEXT');
+    await addColumnIfMissing('finder_subtasks', 'strategy_id', 'INTEGER');
+    await addColumnIfMissing('finder_subtasks', 'campaign_id', 'INTEGER');
+    await addColumnIfMissing('finder_subtasks', 'source_query', 'TEXT');
+    await addColumnIfMissing('finder_subtasks', 'agent_prompt', 'TEXT');
+    await addColumnIfMissing('finder_subtasks', 'agent_result_summary', 'TEXT');
+    await addColumnIfMissing('finder_subtasks', 'accepted_count', 'INTEGER DEFAULT 0');
+    await addColumnIfMissing('finder_subtasks', 'rejected_count', 'INTEGER DEFAULT 0');
+    await addColumnIfMissing('finder_subtasks', 'failed_count', 'INTEGER DEFAULT 0');
+    await addColumnIfMissing('finder_subtasks', 'started_at', 'DATETIME');
+    await addColumnIfMissing('finder_subtasks', 'finished_at', 'DATETIME');
     await addColumnIfMissing('video_sources', 'notes', 'TEXT');
     await addColumnIfMissing('video_sources', 'content_type', 'TEXT');
     await addColumnIfMissing('video_sources', 'crawl_status', "TEXT DEFAULT 'pending'");

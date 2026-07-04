@@ -20,7 +20,7 @@ Do not move to Finder until the product, target user, platform priority, KOL per
 ## Workflow
 
 1. Extract campaign facts from the user's brief or system data.
-2. Ask only for missing high-impact inputs: target market, main platform, campaign goal, product/category, price position, target buyer, competitors, budget or KOL tier constraints.
+2. Ask only for missing high-impact inputs: target market, main platform, campaign goal, product/category, price position, target buyer, competitors, budget or KOL tier constraints, and desired follower/view range.
 3. Generate five structured sections:
    - Product Breakdown
    - KOL Persona
@@ -39,6 +39,7 @@ Do not move to Finder until the product, target user, platform priority, KOL per
 - Keep scoring weights stable unless the campaign goal strongly suggests adjustment.
 - Treat risk as a deduction, not a positive score.
 - Finder handoff must be actionable: platforms, keywords, exclusion terms, minimum evidence, thresholds, and tier rules.
+- If the user has not provided creator size requirements, ask for desired KOL tier or follower/view range before finalizing the Strategy. If the user says "you decide", state the chosen tier rules explicitly in `finder_handoff`.
 
 ## Goal Bias
 

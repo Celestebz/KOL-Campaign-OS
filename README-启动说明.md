@@ -34,10 +34,13 @@ npm run dev
 
 ## 当前 MVP
 
-第一版只做视频分析闭环：
+当前版本包含视频分析闭环和 KOL Finder 审批流：
 
 ```text
 视频链接导入 -> 抓取表现数据/评论 -> AI 分析 -> 导出视频分析 XLSX
+Strategy -> Finder/Subagent 任务 -> Raw Candidates -> 人工 Approve
 ```
 
-KOL Finder、7轮搜索、Outreach、HTML 报告先预留，不在本版实现。
+KOL Finder 已支持 System Provider 和 Subagent Hybrid 两种模式。Subagent Hybrid 会生成 YouTube / Google Web / Reddit / Seed / Instagram small batch 子任务和可复制 Prompt，由 Codex / WorkBuddy / 外部 agent 搜索后把 JSON 导入 Raw Candidates。
+
+Outreach、HTML 报告、完整自动网页登录搜索暂不在本版实现。
