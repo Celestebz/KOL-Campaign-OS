@@ -68,6 +68,7 @@ const DEFAULT_SETTINGS = {
       kol_table_id: '',
       campaign_kol_table_id: '',
       campaign_table_id: '',
+      campaign_subtable_map: '',
       notes: ''
     }
   },
@@ -313,7 +314,7 @@ const Settings = () => {
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="飞书多维表格作为 Approved KOL 和 Campaign KOL 的云端主库；Raw Candidates 默认只保存在本地，避免污染正式资源库。"
+            message="飞书多维表格作为 Approved KOL 的云端主库；每个 Campaign 可以同步到自己的项目子表，Raw Candidates 默认只保存在本地。"
           />
           <Row gutter={16}>
             <Col span={8}>
@@ -344,8 +345,8 @@ const Settings = () => {
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item label="Campaign KOL Table ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_kol_table_id']}>
-                <Input placeholder="tbl..." />
+              <Form.Item label="默认 Campaign KOL 表" name={['settings', 'cloudStorage', 'feishu', 'campaign_kol_table_id']}>
+                <Input placeholder="tbl...（无子表映射时使用）" />
               </Form.Item>
             </Col>
             <Col span={6}>
@@ -354,6 +355,12 @@ const Settings = () => {
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item label="Campaign 子表映射" name={['settings', 'cloudStorage', 'feishu', 'campaign_subtable_map']}>
+            <Input.TextArea
+              autoSize={{ minRows: 2, maxRows: 5 }}
+              placeholder={`Campaign Name=tbl_xxx\n或 {"Campaign Name":"tbl_xxx"}`}
+            />
+          </Form.Item>
           <Form.Item label="同步备注" name={['settings', 'cloudStorage', 'feishu', 'notes']}>
             <Input placeholder="例如字段名版本、权限说明或表格链接" />
           </Form.Item>

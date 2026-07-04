@@ -20,6 +20,23 @@ function compact(value) {
   return String(value);
 }
 
+function parseCampaignSubtableMap(value) {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  const text = String(value).trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return text.split(/\r?\n|,/).reduce((acc, line) => {
+      const [name, tableId] = line.split('=').map((part) => part && part.trim());
+      if (name && tableId) acc[name] = tableId;
+      return acc;
+    }, {});
+  }
+}
+
 async function fetchJson(url, options = {}) {
   if (typeof fetch !== 'function') throw new Error('Node.js 18+ is required for Feishu sync');
   const response = await fetch(url, options);
@@ -41,7 +58,8 @@ async function getFeishuConfig() {
     app_token: extra.app_token || '',
     kol_table_id: extra.kol_table_id || '',
     campaign_kol_table_id: extra.campaign_kol_table_id || '',
-    campaign_table_id: extra.campaign_table_id || ''
+    campaign_table_id: extra.campaign_table_id || '',
+    campaign_subtable_map: parseCampaignSubtableMap(extra.campaign_subtable_map)
   };
 }
 
@@ -51,7 +69,6 @@ function requireFeishuConfig(config) {
   if (!config.app_secret) missing.push('App Secret');
   if (!config.app_token) missing.push('Base/App Token');
   if (!config.kol_table_id) missing.push('KOL Master Table ID');
-  if (!config.campaign_kol_table_id) missing.push('Campaign KOL Table ID');
   if (missing.length) throw new Error(`Feishu Bitable is not configured: ${missing.join(', ')}`);
 }
 
@@ -88,47 +105,53 @@ async function pushBitableRecord(config, token, tableId, recordId, fields) {
 
 function kolFields(row) {
   return {
-    KOL: compact(row.name),
+    'KOL名称': compact(row.name),
+    '平台': compact(row.platform),
+    creator_id: compact(row.creator_id),
     '联系人': compact(row.contact_name),
-    YouTube: compact(row.youtube_url),
+    'YouTube主页': compact(row.youtube_url),
     'YouTube粉丝量': compact(row.youtube_followers),
-    Instagram: compact(row.instagram_url),
+    'Instagram主页': compact(row.instagram_url),
     'Instagram粉丝量': compact(row.instagram_followers),
-    TikTok: compact(row.tiktok_url),
-    'TikTok粉丝量': compact(row.tiktok_followers),
     Email: compact(row.email),
-    Phone: compact(row.phone),
     '国家地区': compact(row.country_region),
-    '默认视频价格': compact(row.video_price),
-    '汇率': compact(row.exchange_rate),
-    '价格RMB': compact(row.price_rmb),
-    Rate: compact(row.rating),
-    Remark: compact(row.notes),
-    '来源': row.source_raw_candidate_id ? `Raw Candidate #${row.source_raw_candidate_id}` : 'Manual',
-    '最后验证时间': compact(row.last_verified_at)
+    '内容类型': compact(row.creator_type || 'KOL'),
+    '标签': 'KOL Campaign OS',
+    '备注': compact(row.notes),
+    '最后更新时间': compact(row.updated_at || row.last_verified_at)
   };
 }
 
 function campaignKolFields(row) {
   return {
-    '合作产品': compact(row.campaign_name),
-    KOL: compact(row.kol_name || row.kol_name_snapshot),
-    '联系人': compact(row.contact_name || row.contact_name_snapshot),
-    YouTube: compact(row.youtube_url || row.youtube_url_snapshot),
-    '粉丝量': compact(row.youtube_followers || row.youtube_followers_snapshot),
-    Instagram: compact(row.instagram_url || row.instagram_url_snapshot),
+    'KOL名称': compact(row.kol_name || row.kol_name_snapshot),
+    '项目状态': compact(row.status),
+    '平台': compact(row.platform),
+    'Instagram主页': compact(row.instagram_url || row.instagram_url_snapshot),
+    'Instagram粉丝量': compact(row.instagram_followers || row.instagram_followers_snapshot),
+    'YouTube主页': compact(row.youtube_url || row.youtube_url_snapshot),
+    'YouTube粉丝量': compact(row.youtube_followers || row.youtube_followers_snapshot),
+    'TikTok主页': compact(row.tiktok_url || row.tiktok_url_snapshot),
+    'TikTok粉丝量': compact(row.tiktok_followers || row.tiktok_followers_snapshot),
     Email: compact(row.email || row.email_snapshot),
     '国家地区': compact(row.country_region || row.country_region_snapshot),
-    '项目视频价格': compact(row.quoted_price),
+    Tier: '',
+    '项目报价': compact(row.quoted_price),
     '汇率': compact(row.exchange_rate),
     '价格RMB': compact(row.price_rmb),
-    '状态': compact(row.status),
     '跟进人': compact(row.owner),
-    'YouTube视频链接': compact(row.youtube_video_link),
-    'Instagram视频链接': compact(row.instagram_video_link),
-    'TikTok视频链接': compact(row.tiktok_video_link),
-    '备注': compact(row.notes)
+    '联系状态': '',
+    '回复状态': '',
+    '推荐原因': compact(row.notes),
+    '推荐内容角度': '',
+    '项目备注': `campaign_kol_id: ${row.id}\ncustomer_id: ${row.customer_id}\nraw_candidate_id: ${row.raw_candidate_id || ''}`,
+    '来源RawCandidate': row.raw_candidate_id ? `raw_candidate_${row.raw_candidate_id}` : ''
   };
+}
+
+function getCampaignKolTableId(config, row) {
+  const map = config.campaign_subtable_map || {};
+  return map[row.campaign_id] || map[String(row.campaign_id)] || map[row.campaign_name] || config.campaign_kol_table_id || '';
 }
 
 function campaignFields(row) {
@@ -204,7 +227,8 @@ async function syncCampaignKols(config, token, ids = []) {
   let sql = `
     SELECT ck.*, c.name as campaign_name,
       k.name as kol_name, k.contact_name, k.email, k.country_region,
-      k.youtube_url, k.youtube_followers, k.instagram_url
+      k.platform, k.youtube_url, k.youtube_followers, k.instagram_url, k.instagram_followers,
+      k.tiktok_url, k.tiktok_followers
     FROM campaign_kols ck
     JOIN campaigns c ON c.id = ck.campaign_id
     JOIN customers k ON k.id = ck.customer_id
@@ -221,10 +245,12 @@ async function syncCampaignKols(config, token, ids = []) {
 
   for (const row of rows) {
     try {
+      const tableId = getCampaignKolTableId(config, row);
+      if (!tableId) throw new Error(`No Feishu campaign subtable configured for ${row.campaign_name}`);
       const recordId = await pushBitableRecord(
         config,
         token,
-        config.campaign_kol_table_id,
+        tableId,
         row.feishu_record_id,
         campaignKolFields(row)
       );

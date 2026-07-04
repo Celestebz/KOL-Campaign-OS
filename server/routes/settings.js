@@ -75,6 +75,7 @@ function cleanFeishu(row) {
     kol_table_id: extra.kol_table_id || '',
     campaign_kol_table_id: extra.campaign_kol_table_id || '',
     campaign_table_id: extra.campaign_table_id || '',
+    campaign_subtable_map: extra.campaign_subtable_map || '',
     notes: extra.notes || ''
   };
 }
@@ -171,6 +172,7 @@ async function upsertFeishu(row = {}) {
     kol_table_id: row.kol_table_id || '',
     campaign_kol_table_id: row.campaign_kol_table_id || '',
     campaign_table_id: row.campaign_table_id || '',
+    campaign_subtable_map: row.campaign_subtable_map || '',
     notes: row.notes || ''
   };
 
