@@ -5,6 +5,7 @@ const { dbOperations } = require('../database');
 const SYSTEM_SELECTION_KEY = 'system.provider_selection';
 const FEISHU_PROVIDER_KEY = 'cloud.feishu_bitable';
 const EXTERNAL_AGENT_PROVIDER_KEY = 'agent.external_api';
+const SECRET_MASK = '••••••••';
 
 const PLATFORM_PROVIDERS = {
   youtube: ['google_official', 'maton_gateway', 'scrapecreators', 'brightdata', 'custom'],
@@ -49,11 +50,27 @@ function isConfigured(row) {
   return Boolean(row?.api_key || row?.base_url || row?.model || row?.extra_config);
 }
 
+function maskSecret(value) {
+  return value ? SECRET_MASK : '';
+}
+
+function isMaskedSecret(value) {
+  const text = String(value || '').trim();
+  return text === SECRET_MASK || /^(\*|•){6,}$/.test(text);
+}
+
+function preserveSecret(nextValue, currentValue = '') {
+  if (nextValue === undefined || nextValue === null) return currentValue || '';
+  const text = String(nextValue);
+  if (!text.trim() || isMaskedSecret(text)) return currentValue || '';
+  return text;
+}
+
 function cleanProvider(row, provider) {
   const extra = parseJson(row?.extra_config, {});
   return {
     provider,
-    api_key: row?.api_key || '',
+    api_key: maskSecret(row?.api_key),
     base_url: row?.base_url || '',
     model: row?.model || '',
     auth_header_name: extra.auth_header_name || '',
@@ -69,9 +86,9 @@ function cleanFeishu(row) {
   return {
     provider: 'feishu_bitable',
     app_id: extra.app_id || '',
-    app_secret: row?.api_key || '',
+    app_secret: maskSecret(row?.api_key),
     base_url: row?.base_url || extra.base_url || 'https://open.feishu.cn',
-    app_token: extra.app_token || '',
+    app_token: maskSecret(extra.app_token),
     kol_table_id: extra.kol_table_id || '',
     campaign_kol_table_id: extra.campaign_kol_table_id || '',
     campaign_table_id: extra.campaign_table_id || '',
@@ -84,7 +101,7 @@ function cleanExternalAgent(row) {
   const extra = parseJson(row?.extra_config, {});
   return {
     provider: 'external_agent_api',
-    api_token: row?.api_key || '',
+    api_token: maskSecret(row?.api_key),
     enabled: extra.enabled !== false,
     notes: extra.notes || ''
   };
@@ -127,6 +144,7 @@ function mergeSelection(saved) {
 }
 
 async function upsertProvider(key, row = {}) {
+  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ?', [key]);
   const extraConfig = {
     auth_header_name: row.auth_header_name || '',
     auth_scheme: row.auth_scheme || '',
@@ -146,7 +164,7 @@ async function upsertProvider(key, row = {}) {
        updated_at = CURRENT_TIMESTAMP`,
     [
       key,
-      row.api_key || '',
+      preserveSecret(row.api_key, current?.api_key),
       row.base_url || '',
       row.model || '',
       JSON.stringify(extraConfig)
@@ -166,9 +184,11 @@ async function upsertSelection(selection) {
 }
 
 async function upsertFeishu(row = {}) {
+  const current = await dbOperations.get('SELECT api_key, extra_config FROM api_settings WHERE provider = ?', [FEISHU_PROVIDER_KEY]);
+  const currentExtra = parseJson(current?.extra_config, {});
   const extraConfig = {
     app_id: row.app_id || '',
-    app_token: row.app_token || '',
+    app_token: preserveSecret(row.app_token, currentExtra.app_token),
     kol_table_id: row.kol_table_id || '',
     campaign_kol_table_id: row.campaign_kol_table_id || '',
     campaign_table_id: row.campaign_table_id || '',
@@ -186,7 +206,7 @@ async function upsertFeishu(row = {}) {
        updated_at = CURRENT_TIMESTAMP`,
     [
       FEISHU_PROVIDER_KEY,
-      row.app_secret || '',
+      preserveSecret(row.app_secret, current?.api_key),
       row.base_url || 'https://open.feishu.cn',
       JSON.stringify(extraConfig)
     ]
@@ -194,6 +214,7 @@ async function upsertFeishu(row = {}) {
 }
 
 async function upsertExternalAgent(row = {}) {
+  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ?', [EXTERNAL_AGENT_PROVIDER_KEY]);
   const extraConfig = {
     enabled: row.enabled !== false,
     notes: row.notes || ''
@@ -207,7 +228,7 @@ async function upsertExternalAgent(row = {}) {
        updated_at = CURRENT_TIMESTAMP`,
     [
       EXTERNAL_AGENT_PROVIDER_KEY,
-      row.api_token || '',
+      preserveSecret(row.api_token, current?.api_key),
       JSON.stringify(extraConfig)
     ]
   );

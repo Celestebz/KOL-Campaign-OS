@@ -275,6 +275,8 @@ async function refreshParentSummary(finderTaskId) {
         target_platform: row.target_platform,
         search_cycle: row.search_cycle,
         route_plan: parseJson(row.agent_result_summary, {})?.route_plan || null,
+        cycle_status: parseJson(row.agent_result_summary, {})?.cycle_status || row.status,
+        cycle_status_reason: parseJson(row.agent_result_summary, {})?.cycle_status_reason || '',
         route_coverage: parseJson(row.agent_result_summary, {})?.route_coverage || [],
         accepted_count: row.accepted_count || 0,
         rejected_count: row.rejected_count || 0,
@@ -312,8 +314,13 @@ router.post('/:id/status', async (req, res) => {
     const summary = req.body?.agent_result_summary || req.body?.route_coverage || req.body?.route_attempts
       ? JSON.stringify({
         ...mergeSummary(subtask.agent_result_summary, req.body?.agent_result_summary),
+        cycle_status: req.body?.cycle_status || req.body?.agent_result_summary?.cycle_status || parseJson(subtask.agent_result_summary, {})?.cycle_status || (status === 'failed' ? 'blocked' : status === 'completed' ? 'completed' : 'pending'),
+        cycle_status_reason: req.body?.cycle_status_reason || req.body?.cycleStatusReason || req.body?.skipped_reason || req.body?.skippedReason || req.body?.agent_result_summary?.cycle_status_reason || req.body?.agent_result_summary?.skipped_reason || parseJson(subtask.agent_result_summary, {})?.cycle_status_reason || '',
         route_coverage: req.body?.route_coverage || parseJson(subtask.agent_result_summary, {})?.route_coverage || [],
-        route_attempts: req.body?.route_attempts || parseJson(subtask.agent_result_summary, {})?.route_attempts || []
+        route_attempts: req.body?.route_attempts || parseJson(subtask.agent_result_summary, {})?.route_attempts || [],
+        accepted_count: Number(subtask.accepted_count || 0),
+        rejected_count: Number(subtask.rejected_count || 0),
+        failed_count: Number(subtask.failed_count || 0)
       })
       : subtask.agent_result_summary;
     await dbOperations.run(
@@ -372,6 +379,11 @@ router.post('/:id/import', async (req, res) => {
     const rejectedCount = results.filter((item) => item.success && item.status === 'ignored').length;
     const failedCount = results.filter((item) => !item.success).length;
     const finalStatus = failedCount > 0 && successCount === 0 && rejectedCount === 0 ? 'failed' : 'completed';
+    const existingSummary = mergeSummary(subtask.agent_result_summary);
+    const cycleStatus = clean(body.cycle_status || body.cycleStatus || existingSummary.cycle_status)
+      || (finalStatus === 'failed' ? 'blocked' : 'completed');
+    const cycleStatusReason = clean(body.cycle_status_reason || body.cycleStatusReason || body.skipped_reason || body.skippedReason || existingSummary.cycle_status_reason || existingSummary.skipped_reason)
+      || (cycleStatus === 'blocked' ? 'required route could not be completed' : '');
     await dbOperations.run(
       `UPDATE finder_subtasks SET
        status = ?, accepted_count = ?, rejected_count = ?, failed_count = ?,
@@ -383,8 +395,10 @@ router.post('/:id/import', async (req, res) => {
         rejectedCount,
         failedCount,
         JSON.stringify({
-          ...mergeSummary(subtask.agent_result_summary),
+          ...existingSummary,
           source_agent: source,
+          cycle_status: cycleStatus,
+          cycle_status_reason: cycleStatusReason,
           accepted_count: successCount,
           rejected_count: rejectedCount,
           failed_count: failedCount,

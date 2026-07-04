@@ -121,7 +121,7 @@ const ProviderFields = ({ baseName, provider, showModel = false, custom = false,
     <Row gutter={16}>
       <Col span={showModel ? 8 : 12}>
         <Form.Item label="API Key" name={[...baseName, 'api_key']}>
-          <Input.Password autoComplete="new-password" placeholder="留空表示暂不启用" />
+          <Input.Password autoComplete="new-password" placeholder="留空保留现有密钥；输入新值则更新" />
         </Form.Item>
       </Col>
       <Col span={showModel ? 8 : 12}>
@@ -297,7 +297,7 @@ const Settings = () => {
             </Col>
             <Col span={18}>
               <Form.Item label="Agent API Token" name={['settings', 'externalAgent', 'api_token']}>
-                <Input.Password autoComplete="new-password" placeholder="外部 Agent 调用 /api/agent/* 时使用 Bearer Token" />
+                <Input.Password autoComplete="new-password" placeholder="留空保留现有 token；输入新值则更新" />
               </Form.Item>
             </Col>
           </Row>
@@ -324,7 +324,7 @@ const Settings = () => {
             </Col>
             <Col span={8}>
               <Form.Item label="Feishu App Secret" name={['settings', 'cloudStorage', 'feishu', 'app_secret']}>
-                <Input.Password autoComplete="new-password" placeholder="留空表示暂不启用同步" />
+                <Input.Password autoComplete="new-password" placeholder="留空保留现有 secret；输入新值则更新" />
               </Form.Item>
             </Col>
             <Col span={8}>
@@ -336,7 +336,7 @@ const Settings = () => {
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item label="Base/App Token" name={['settings', 'cloudStorage', 'feishu', 'app_token']}>
-                <Input placeholder="多维表格 app_token" />
+                <Input.Password autoComplete="new-password" placeholder="留空保留现有 app_token；输入新值则更新" />
               </Form.Item>
             </Col>
             <Col span={6}>

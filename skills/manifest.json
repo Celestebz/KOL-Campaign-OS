@@ -1,0 +1,9 @@
+{
+  "name": "kol-campaign-os",
+  "entry_skill": "kol-campaign-os-agent",
+  "skills": [
+    "kol-campaign-os-agent",
+    "kol-strategy",
+    "kol-finder"
+  ]
+}

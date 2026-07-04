@@ -32,6 +32,9 @@ const PROVIDER_LABELS = {
   youtube_native_search: 'YouTube Native Search',
   google_web_to_youtube: 'Google/Web -> YouTube',
   google_web_to_tiktok: 'Google/Web -> TikTok',
+  youtube_to_tiktok: 'YouTube -> TikTok',
+  instagram_to_tiktok: 'Instagram -> TikTok',
+  reddit_to_tiktok: 'Reddit -> TikTok',
   tiktok_native_small_batch: 'TikTok Native Small Batch',
   google_official: 'Google Official',
   scrapecreators: 'ScrapeCreators'
@@ -48,6 +51,9 @@ const DISCOVERY_ROUTES = [
   'instagram_native_small_batch',
   'reddit_to_instagram',
   'google_web_to_tiktok',
+  'youtube_to_tiktok',
+  'instagram_to_tiktok',
+  'reddit_to_tiktok',
   'tiktok_native_small_batch',
   'spider_web_expansion'
 ];
@@ -71,6 +77,9 @@ const ROUTE_SOURCE_TARGETS = {
   instagram_native_small_batch: [{ searchSource: 'instagram_search', targetPlatform: 'instagram', sourcePlatform: 'instagram' }],
   reddit_to_instagram: [{ searchSource: 'google_web', targetPlatform: 'instagram', sourcePlatform: 'reddit' }],
   google_web_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'google_web' }],
+  youtube_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'youtube' }],
+  instagram_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'instagram' }],
+  reddit_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'reddit' }],
   tiktok_native_small_batch: [{ searchSource: 'tiktok_search', targetPlatform: 'tiktok', sourcePlatform: 'tiktok' }],
   spider_web_expansion: TARGET_PLATFORMS.map((platform) => ({ searchSource: 'maton_agent', targetPlatform: platform, sourcePlatform: 'cross_platform' }))
 };
@@ -84,6 +93,9 @@ const ROUTE_PREFERRED_CYCLES = {
   seed_posts_to_profile: ['C7', 'C6'],
   instagram_native_small_batch: ['C6'],
   google_web_to_tiktok: ['C2', 'C3', 'C4'],
+  youtube_to_tiktok: ['C1', 'C3', 'C4'],
+  instagram_to_tiktok: ['C3', 'C6'],
+  reddit_to_tiktok: ['C5', 'C3'],
   tiktok_native_small_batch: ['C6'],
   spider_web_expansion: ['C7']
 };
@@ -264,7 +276,7 @@ function defaultSubagentRoutesForTargets(targets) {
   if (targets.includes('instagram')) {
     routes.push('youtube_to_instagram', 'google_web_to_instagram', 'reddit_to_instagram', 'seed_posts_to_profile', 'instagram_native_small_batch');
   }
-  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'seed_posts_to_profile', 'tiktok_native_small_batch');
+  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok');
   return [...new Set(routes.length ? routes : ['youtube_native_search'])];
 }
 
@@ -316,6 +328,37 @@ function routeMappingsForTargets(route, targets) {
   return (ROUTE_SOURCE_TARGETS[route] || []).filter((mapped) => targets.includes(mapped.targetPlatform));
 }
 
+function routeExecutor(route) {
+  if (route === 'seed_posts_to_profile' || route === 'spider_web_expansion') return 'seed_expansion';
+  if (route === 'tiktok_native_small_batch') return 'native_unavailable';
+  if (route.includes('_to_tiktok') && route !== 'google_web_to_tiktok') return 'cross_platform_lookup';
+  if (route.includes('_to_instagram') && route !== 'google_web_to_instagram') return 'cross_platform_lookup';
+  if (route.includes('_to_youtube') && route !== 'google_web_to_youtube') return 'cross_platform_lookup';
+  return 'web_search';
+}
+
+function routePlanItem(route, targets, required, reason) {
+  return {
+    route,
+    label: routeLabel(route),
+    executor: routeExecutor(route),
+    mappings: routeMappingsForTargets(route, targets),
+    required: Boolean(required),
+    reason
+  };
+}
+
+function skippedRouteItem(route, reason) {
+  return {
+    route,
+    label: routeLabel(route),
+    executor: routeExecutor(route),
+    required: false,
+    skipped: true,
+    reason
+  };
+}
+
 function closestSelectedCycle(preferred, selectedCycleIds) {
   const selected = selectedCycleIds.filter((cycle) => CYCLE_ORDER.includes(cycle));
   if (!selected.length) return '';
@@ -334,11 +377,21 @@ function buildRouteCoveragePlan(cycles, strategy, requestedTargets = [], request
   const selectedCycleIds = cycles.map((cycle) => cycle.cycle);
   const targets = [...new Set((requestedTargets.length ? requestedTargets : cycles.flatMap((cycle) => targetPlatformsForCycle(cycle, strategy))).filter((p) => TARGET_PLATFORMS.includes(p)))];
   const fallbackRoutes = defaultSubagentRoutesForTargets(targets);
-  const routes = [...new Set((requestedRoutes.length ? requestedRoutes : fallbackRoutes).filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route)))];
+  const baseRoutes = requestedRoutes.length ? requestedRoutes : fallbackRoutes;
+  const routes = [...new Set([
+    ...baseRoutes,
+    ...(targets.includes('tiktok') ? ['google_web_to_tiktok'] : [])
+  ].filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route)))];
   const usableRoutes = routes.filter((route) => routeMappingsForTargets(route, targets).length);
+  const hasSeedUrls = seedUrls.length > 0;
+  const unavailableRoutes = usableRoutes.filter((route) => route === 'tiktok_native_small_batch');
+  const executableRoutes = usableRoutes.filter((route) => (
+    route !== 'tiktok_native_small_batch'
+    && (route !== 'seed_posts_to_profile' || hasSeedUrls)
+  ));
   const requiredByCycle = Object.fromEntries(selectedCycleIds.map((cycle) => [cycle, []]));
 
-  for (const route of usableRoutes) {
+  for (const route of executableRoutes.filter((route) => !(targets.includes('tiktok') && route !== 'seed_posts_to_profile' && route !== 'google_web_to_tiktok'))) {
     const preferred = ROUTE_PREFERRED_CYCLES[route] || ['C2'];
     const assignedCycle = closestSelectedCycle(preferred, selectedCycleIds);
     if (assignedCycle) requiredByCycle[assignedCycle].push(route);
@@ -346,23 +399,65 @@ function buildRouteCoveragePlan(cycles, strategy, requestedTargets = [], request
 
   return cycles.map((cycle) => {
     const cycleTargets = targetPlatformsForCycle(cycle, strategy, targets);
-    const requiredRoutes = (requiredByCycle[cycle.cycle] || []).map((route) => ({
+    const cycleTargetSet = cycleTargets.length ? cycleTargets : targets;
+    const isTikTokCycle = cycleTargetSet.includes('tiktok') && targets.includes('tiktok');
+    const skippedRoutes = [
+      ...(!hasSeedUrls && targets.includes('tiktok') ? [skippedRouteItem('seed_posts_to_profile', 'no_seed')] : []),
+      ...unavailableRoutes.map((route) => skippedRouteItem(route, 'native_unavailable_no_login_v1'))
+    ].filter((item, index, list) => item.route && list.findIndex((other) => other.route === item.route) === index);
+
+    if (isTikTokCycle && cycle.cycle === 'C7' && !hasSeedUrls) {
+      return {
+        cycle: cycle.cycle,
+        cycle_name: cycle.name,
+        purpose: cycle.purpose || '',
+        target_platforms: cycleTargets.length ? cycleTargets : targets,
+        source_query: keywordString(cycle, strategy),
+        seed_urls: seedUrls,
+        target_count: 0,
+        cycle_status: 'skipped',
+        cycle_status_reason: 'no_seed',
+        required_routes: [],
+        optional_routes: [],
+        skipped_routes: skippedRoutes,
+        cycle_status_rule: 'Skipped because C7 is seed expansion and no seed URLs were provided.',
+        coverage_rule: 'Return route_coverage with skipped/no_seed and do not import candidates for this cycle.'
+      };
+    }
+
+    const requiredRouteNames = isTikTokCycle
+      ? cycle.cycle === 'C7' && hasSeedUrls
+        ? ['seed_posts_to_profile']
+        : executableRoutes.includes('google_web_to_tiktok')
+          ? ['google_web_to_tiktok']
+          : []
+      : [...new Set([
+        ...(requiredByCycle[cycle.cycle] || []),
+        ...((requiredByCycle[cycle.cycle] || []).length ? [] : executableRoutes.find((route) => routeMappingsForTargets(route, cycleTargetSet).length) ? [executableRoutes.find((route) => routeMappingsForTargets(route, cycleTargetSet).length)] : [])
+      ])];
+    const requiredRoutes = requiredRouteNames.map((route) => routePlanItem(
       route,
-      label: routeLabel(route),
-      mappings: routeMappingsForTargets(route, targets),
-      required: true,
-      reason: `Primary coverage for ${cycle.cycle} ${cycle.name || ''}`.trim()
-    }));
+      targets,
+      true,
+      isTikTokCycle
+        ? route === 'seed_posts_to_profile'
+          ? 'Required seed expansion path for C7 when seed URLs are available'
+          : `Baseline executable route for ${cycle.cycle} ${cycle.name || ''}`.trim()
+        : (requiredByCycle[cycle.cycle] || []).includes(route)
+          ? `Primary coverage for ${cycle.cycle} ${cycle.name || ''}`.trim()
+          : `Required executable route for ${cycle.cycle} ${cycle.name || ''}`.trim()
+    ));
     const optionalRoutes = usableRoutes
       .filter((route) => !requiredRoutes.some((item) => item.route === route))
-      .filter((route) => routeMappingsForTargets(route, cycleTargets.length ? cycleTargets : targets).length)
-      .map((route) => ({
+      .filter((route) => !skippedRoutes.some((item) => item.route === route))
+      .filter((route) => routeMappingsForTargets(route, cycleTargetSet).length)
+      .filter((route) => !(isTikTokCycle && route === 'seed_posts_to_profile' && cycle.cycle !== 'C7'))
+      .map((route) => routePlanItem(
         route,
-        label: routeLabel(route),
-        mappings: routeMappingsForTargets(route, cycleTargets.length ? cycleTargets : targets),
-        required: false,
-        reason: 'Optional evidence path if it fits this cycle intent'
-      }));
+        cycleTargetSet,
+        false,
+        'Optional evidence path if it fits this cycle intent'
+      ));
     return {
       cycle: cycle.cycle,
       cycle_name: cycle.name,
@@ -370,9 +465,13 @@ function buildRouteCoveragePlan(cycles, strategy, requestedTargets = [], request
       target_platforms: cycleTargets.length ? cycleTargets : targets,
       source_query: keywordString(cycle, strategy),
       seed_urls: seedUrls,
+      target_count: cycle.target_count || 10,
+      cycle_status: 'pending',
       required_routes: requiredRoutes,
       optional_routes: optionalRoutes,
-      coverage_rule: 'Required routes must be attempted or reported with a skip reason. Candidates must record their actual discovery_route.'
+      skipped_routes: skippedRoutes,
+      cycle_status_rule: 'completed = required routes attempted with coverage/no_result notes; skipped = system says this cycle should not run; blocked = required route cannot be attempted.',
+      coverage_rule: 'Required routes must be attempted or reported with a skip/no_result/block reason. Optional routes should be attempted when useful and reported when skipped. Candidates must record their actual discovery_route.'
     };
   });
 }
@@ -485,8 +584,12 @@ function buildSubagentPrompt({ subtaskId, task, strategy, cycle, pair, routePlan
     '- Every candidate must include its real discovery_route, source_platform, target_platform, evidence_url, source_query, and search_cycle.',
     '- For cycle_multi_route subtasks, do not import candidates with discovery_route = cycle_multi_route. Use the actual route that found the candidate.',
     '- For Instagram targets, accepted candidates must have a reachable profile_url and verified handle attribution. Do not rely only on a listicle, directory, Reddit mention, or search snippet.',
+    '- For TikTok targets, accepted candidates must use the real TikTok profile_url and the handle must be attributable to the creator through the TikTok profile, creator-owned page, YouTube/Instagram bio, brand collaboration page, or a trustworthy article. Do not rely only on listicles, search snippets, or Reddit mentions.',
     '- Import meaningful rejected candidates with a clear reject_reason so the same bad path is not repeated.',
-    isCycleSubtask ? '- Attempt every required route in route_plan. If a required route cannot be searched or produces no useful leads, include it in route_coverage with a skip_reason or no_result reason.' : '',
+    isCycleSubtask ? '- Required routes must be attempted. If a required route cannot be searched or produces no useful leads, include it in route_coverage with a blocked, skip_reason, or no_result reason.' : '',
+    isCycleSubtask ? '- Optional routes should be attempted when useful. If skipped, include a short reason in route_coverage or route_attempts.' : '',
+    isCycleSubtask ? '- Skipped routes must not be forced. Record the skipped reason and do not fabricate candidates for them.' : '',
+    isCycleSubtask ? '- If route_plan.cycle_status is skipped, return empty accepted_candidates and rejected_candidates plus route_coverage explaining the skip.' : '',
     isCycleSubtask ? '- Do not include candidates from other search cycles in this subtask output.' : '',
     '',
     'Required output shape:',
@@ -1110,7 +1213,17 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
 async function runProvider(request, allowFallback) {
   const attempts = [];
   const source = request.search_source;
-  const externalAgentRoute = ['youtube_to_instagram', 'google_web_to_instagram', 'seed_posts_to_profile', 'google_web_to_tiktok', 'spider_web_expansion'].includes(request.discovery_route);
+  const externalAgentRoute = [
+    'youtube_to_instagram',
+    'google_web_to_instagram',
+    'reddit_to_instagram',
+    'seed_posts_to_profile',
+    'google_web_to_tiktok',
+    'youtube_to_tiktok',
+    'instagram_to_tiktok',
+    'reddit_to_tiktok',
+    'spider_web_expansion'
+  ].includes(request.discovery_route);
   try {
     if (externalAgentRoute && request.target_platform !== 'youtube') {
       throw new Error(`${PROVIDER_LABELS[request.discovery_route] || request.discovery_route} is an External Agent route. Use the Agent Brief/API import flow; Instagram native search is not used by default.`);
@@ -1342,8 +1455,25 @@ router.post('/:id/subtasks/generate', async (req, res) => {
         const routePlan = routePlans.find((plan) => plan.cycle === cycle.cycle);
         const sourceQuery = routePlan?.source_query || keywordString(cycle, strategy);
         const targetPlatforms = routePlan?.target_platforms || requestedTargets;
-        const routeNames = [...(routePlan?.required_routes || []), ...(routePlan?.optional_routes || [])].map((route) => route.route);
+        const routeNames = [...(routePlan?.required_routes || []), ...(routePlan?.optional_routes || []), ...(routePlan?.skipped_routes || [])].map((route) => route.route);
         const name = `${cycle.cycle} ${cycle.name || 'Cycle Research'} → ${(targetPlatforms || []).join(', ') || 'targets'}`;
+        const initialStatus = routePlan?.cycle_status === 'skipped' ? 'completed' : 'pending';
+        const initialSummary = {
+          cycle_status: routePlan?.cycle_status === 'skipped' ? 'skipped' : 'pending',
+          cycle_status_reason: routePlan?.cycle_status_reason || routePlan?.skipped_reason || '',
+          route_plan: routePlan,
+          route_coverage: routePlan?.cycle_status === 'skipped'
+            ? (routePlan.skipped_routes || []).map((route) => ({
+              route: route.route,
+              status: 'skipped',
+              reason: route.reason || routePlan.cycle_status_reason || routePlan.skipped_reason || 'skipped'
+            }))
+            : [],
+          route_attempts: [],
+          accepted_count: 0,
+          rejected_count: 0,
+          failed_count: 0
+        };
         const inserted = await dbOperations.run(
           `INSERT INTO finder_subtasks
            (finder_task_id, strategy_id, campaign_id, name, status, discovery_route, source_platform, target_platform, search_cycle, source_query, agent_prompt, agent_result_summary)
@@ -1353,14 +1483,14 @@ router.post('/:id/subtasks/generate', async (req, res) => {
             strategy.id,
             strategy.campaign_id,
             name,
-            'pending',
+            initialStatus,
             'cycle_multi_route',
             'multi',
             (targetPlatforms || []).join(','),
             cycle.cycle,
             sourceQuery,
             '',
-            JSON.stringify({ route_plan: routePlan, route_coverage: [], route_attempts: [] })
+            JSON.stringify(initialSummary)
           ]
         );
         const prompt = buildSubagentPrompt({
@@ -1382,7 +1512,7 @@ router.post('/:id/subtasks/generate', async (req, res) => {
     await updateTask(task.id, {
       status: 'draft',
       total_cycles: created.length,
-      completed_cycles: 0,
+      completed_cycles: created.filter((row) => row.status === 'completed').length,
       raw_response_summary: JSON.stringify(created.map((row) => ({
         subtask_id: row.id,
         discovery_route: row.discovery_route,
@@ -1390,6 +1520,8 @@ router.post('/:id/subtasks/generate', async (req, res) => {
         target_platform: row.target_platform,
         search_cycle: row.search_cycle,
         route_plan_routes: row.route_plan_routes || [],
+        cycle_status: parseJson(row.agent_result_summary, {})?.cycle_status || 'pending',
+        cycle_status_reason: parseJson(row.agent_result_summary, {})?.cycle_status_reason || '',
         status: row.status
       })))
     });

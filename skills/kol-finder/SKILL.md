@@ -49,6 +49,9 @@ Use `discovery_route` to explain how a candidate was discovered:
 - `instagram_native_small_batch`: fallback only. Use short queries, inspect every result, and reject noisy profile-search matches.
 - `youtube_native_search`: direct YouTube discovery for YouTube targets.
 - `google_web_to_youtube` / `google_web_to_tiktok`: web discovery for target profiles.
+- `youtube_to_tiktok`: find relevant YouTube creators first, then verify their TikTok profile through channel links, descriptions, bios, or public web evidence.
+- `instagram_to_tiktok`: find relevant Instagram creators first, then verify their TikTok profile through bio links, creator-owned pages, or public web evidence.
+- `reddit_to_tiktok`: use Reddit discussions as leads, then verify the TikTok profile with independent public evidence before accepting.
 - `spider_web_expansion`: expand from approved/seed creators, collaborations, tagged accounts, and links.
 
 For every accepted or rejected result, include `discovery_route`, `source_platform`, `target_platform`, `evidence_url`, `evidence_type`, and `source_query`.
@@ -58,7 +61,8 @@ For every accepted or rejected result, include `discovery_route`, `source_platfo
 - YouTube: competitor reviews, category search, and feature search work well. Prefer channels with real review/demo history and usable evidence videos.
 - Instagram: do not trust profile search, listicles, or snippets alone. Prefer `youtube_to_instagram`, `google_web_to_instagram`, and `seed_posts_to_profile`. For every accepted Instagram candidate, verify the `profile_url` is reachable and the handle is attributable to the creator through profile bio/name/content or a second public source. Reject stores, tiny personal accounts, caption-only weak matches, and non-target-market profiles.
 - Reddit: treat mentions as leads, not proof. Verify the creator's public profile, target-platform account, category fit, and evidence URL before accepting.
-- TikTok: prefer creator profile + recent video evidence. Reject viral-only accounts without category fit.
+- TikTok: v1 does not rely on TikTok login. For first-run discovery, C1-C6 use `google_web_to_tiktok` as the required baseline route. Use `youtube_to_tiktok`, `instagram_to_tiktok`, and `reddit_to_tiktok` as optional evidence paths. Accepted TikTok candidates must have a target TikTok `profile_url`, reachable profile evidence, and handle attribution through the TikTok profile, creator-owned page, YouTube/Instagram bio, brand collaboration page, or trustworthy article. Do not rely only on listicles, search snippets, or Reddit mentions. Reject viral-only accounts without category fit.
+- C7 Spider-web Expansion: use it only after seeds exist or when the user supplied seed URLs. If no seeds exist, C7 should be explicitly skipped with `cycle_status: "skipped"` and `cycle_status_reason: "no_seed"`. Do not run a web fallback under C7 or import pseudo seed-expansion candidates.
 
 ## Candidate Quality Rules
 

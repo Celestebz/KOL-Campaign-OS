@@ -5,6 +5,8 @@ description: One-skill external agent for KOL Campaign OS. Use when Kimi Code, W
 
 # KOL Campaign OS External Agent
 
+This is the entry skill for KOL Campaign OS external-agent workflows. The installed skill set is declared by `skills/manifest.json`; this skill coordinates the workflow while `kol-strategy` and `kol-finder` provide focused phase rules.
+
 ## Default Click Behavior
 
 When a user selects or installs this skill and asks for KOL Campaign OS help, assume they want the full workflow unless they explicitly narrow the task:
@@ -23,6 +25,7 @@ Default Finder execution behavior:
 - Do not collapse multiple generated cycle subtasks into one `/api/agent/raw-candidates/import` call when subtask APIs are available.
 - Use `/api/agent/raw-candidates/import` only when subtask APIs are unavailable or the user explicitly asks for a single external-agent run.
 - If the user asks for Instagram KOLs, use `youtube_to_instagram`, `google_web_to_instagram`, and `reddit_to_instagram` as the primary routes.
+- If the user asks for TikTok KOLs, use `google_web_to_tiktok` as the required baseline route, with `youtube_to_tiktok`, `instagram_to_tiktok`, and `reddit_to_tiktok` as optional evidence paths.
 - For Instagram accepted candidates, verify that `profile_url` is reachable and that the handle belongs to the named creator. Do not rely only on a listicle, directory, Reddit mention, or search snippet.
 - Write accepted and useful rejected candidates into Raw Candidates when API access is available.
 - If API write access is not available, return import-ready JSON for Raw Candidates.
@@ -344,6 +347,10 @@ Supported `target_platforms`: `youtube`, `instagram`, `tiktok`.
 - Do not recommend existing KOL Master or existing Raw Candidates as new people.
 - Do not let all cycle subtasks silently skip the same selected route. Required routes in each prompt must be attempted or reported in `route_coverage` with a reason.
 - Do not import cycle-level candidates with `discovery_route: "cycle_multi_route"`. Use the real evidence path such as `youtube_to_instagram`, `google_web_to_instagram`, or `reddit_to_instagram`.
+- Use these `cycle_status` values in the cycle's `agent_result_summary`: `completed` when required routes were attempted, including 0 accepted candidates if `route_coverage` records a no-result reason; `skipped` when the system explicitly skips the cycle with `cycle_status_reason`; `blocked` when a required route cannot be attempted because of login, permission, API, network, or missing capability.
+- For TikTok first-run discovery, v1 does not rely on TikTok login. C1-C6 use `google_web_to_tiktok` as the required baseline route. `youtube_to_tiktok`, `instagram_to_tiktok`, and `reddit_to_tiktok` are optional evidence paths.
+- For TikTok accepted candidates, `profile_url` must be the target TikTok profile and the handle must be attributable through the TikTok profile, creator-owned page, YouTube/Instagram bio, brand collaboration page, or trustworthy article. Do not rely only on listicles, search snippets, or Reddit mentions.
+- C7 Spider-web Expansion is a second-stage expansion cycle. If no seeds exist, C7 must be explicitly skipped with `cycle_status: "skipped"` and `cycle_status_reason: "no_seed"`. Do not run a web fallback or import pseudo seed-expansion candidates under C7.
 - If a field is unknown, leave it blank and explain uncertainty in `ai_match_reason` or `reject_reason`.
 
 ## Candidate Fields

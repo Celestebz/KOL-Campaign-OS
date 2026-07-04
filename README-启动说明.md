@@ -22,6 +22,31 @@ npm run dev
 - 后端 API：http://localhost:5001
 - 健康检查：http://localhost:5001/api/health
 
+## 安装 Agent Skills
+
+如果要让 Codex、Hermes、WorkBuddy、Kimi、Trae 等外部智能体使用 KOL Campaign OS，运行：
+
+```bash
+npm run install-skills
+```
+
+安装清单由 `skills/manifest.json` 管理。入口 skill 是 `kol-campaign-os-agent`，它会协同 `kol-strategy` 和 `kol-finder` 完成 Strategy -> Finder -> Raw Candidates 流程。
+
+如果智能体使用自定义 skills 目录，可以指定目标：
+
+```bash
+npm run install-skills -- --target ~/.agents/skills
+```
+
+使用 skill 前请确认后端 API 已运行：`http://localhost:5001`。
+
+推荐对外部智能体这样说：
+
+```text
+使用 KOL Campaign OS Agent，帮我为这个产品找 KOL。
+产品 brief：...
+```
+
 ## 停止应用
 
 双击：

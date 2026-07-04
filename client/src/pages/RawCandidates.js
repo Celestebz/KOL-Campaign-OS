@@ -28,6 +28,9 @@ const discoveryRouteOptions = [
   { value: 'seed_posts_to_profile', label: 'Seed Posts/Reels -> Profile' },
   { value: 'instagram_native_small_batch', label: 'Instagram Native Small Batch (fallback)' },
   { value: 'google_web_to_tiktok', label: 'Google/Web -> TikTok' },
+  { value: 'youtube_to_tiktok', label: 'YouTube -> TikTok' },
+  { value: 'instagram_to_tiktok', label: 'Instagram -> TikTok' },
+  { value: 'reddit_to_tiktok', label: 'Reddit -> TikTok' },
   { value: 'tiktok_native_small_batch', label: 'TikTok Native Small Batch (fallback)' },
   { value: 'spider_web_expansion', label: 'Spider-web Expansion' }
 ];
@@ -44,7 +47,7 @@ const defaultSubagentRoutesForTargets = (targets = []) => {
   const routes = [];
   if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube', 'spider_web_expansion');
   if (targets.includes('instagram')) routes.push('youtube_to_instagram', 'google_web_to_instagram', 'reddit_to_instagram', 'seed_posts_to_profile', 'instagram_native_small_batch');
-  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'seed_posts_to_profile', 'tiktok_native_small_batch');
+  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok');
   return [...new Set(routes.length ? routes : ['youtube_native_search'])];
 };
 
@@ -84,11 +87,35 @@ const subtaskSummary = (subtask) => safeParseJson(subtask?.agent_result_summary)
 
 const routePlanRoutes = (subtask) => {
   const plan = subtaskSummary(subtask).route_plan || {};
-  const routes = [...(plan.required_routes || []), ...(plan.optional_routes || [])];
+  const routes = [...(plan.required_routes || []), ...(plan.optional_routes || []), ...(plan.skipped_routes || [])];
   return routes.map((item) => ({
     route: item.route,
-    required: Boolean(item.required)
+    required: Boolean(item.required),
+    skipped: Boolean(item.skipped)
   })).filter((item) => item.route);
+};
+
+const routeCoverageLabel = (subtask) => {
+  const summary = subtaskSummary(subtask);
+  const plan = summary.route_plan || {};
+  if (summary.cycle_status === 'skipped' || plan.cycle_status === 'skipped') {
+    return { color: 'default', text: `Skipped: ${summary.cycle_status_reason || plan.cycle_status_reason || plan.skipped_reason || 'skipped'}` };
+  }
+  if (summary.cycle_status === 'blocked') {
+    return { color: 'red', text: summary.cycle_status_reason || 'Blocked' };
+  }
+  const required = plan.required_routes || [];
+  const coverage = summary.route_coverage || [];
+  const attempts = summary.route_attempts || [];
+  const attemptedRoutes = new Set([...coverage, ...attempts].map((item) => item.route).filter(Boolean));
+  const missing = required.filter((item) => !attemptedRoutes.has(item.route));
+  const optionalAttempted = (plan.optional_routes || []).filter((item) => attemptedRoutes.has(item.route)).length;
+  if (subtask.status === 'pending' && !coverage.length && !attempts.length) {
+    return { color: 'default', text: `Required ${required.length} / optional ${(plan.optional_routes || []).length}` };
+  }
+  if (required.length && !missing.length) return { color: 'green', text: `Required done / optional ${optionalAttempted}` };
+  if (required.length) return { color: 'orange', text: `Required missing ${missing.length}` };
+  return { color: 'default', text: 'No required route' };
 };
 
 const normalizeHandle = (value) => String(value || '').trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
@@ -651,13 +678,22 @@ const RawCandidates = () => {
                           return (
                             <Space wrap size={[4, 4]}>
                               {routes.slice(0, 6).map((item) => (
-                                <Tag key={`${subtask.id}-${item.route}`} color={item.required ? 'geekblue' : 'default'}>
-                                  {item.required ? '必跑 ' : '可选 '}{item.route}
+                                <Tag key={`${subtask.id}-${item.route}`} color={item.skipped ? 'default' : item.required ? 'geekblue' : 'cyan'}>
+                                  {item.skipped ? '跳过 ' : item.required ? '必跑 ' : '可选 '}{item.route}
                                 </Tag>
                               ))}
                               {routes.length > 6 ? <Tag>+{routes.length - 6}</Tag> : null}
                             </Space>
                           );
+                        }
+                      },
+                      {
+                        title: 'Coverage',
+                        key: 'coverage',
+                        width: 190,
+                        render: (_, subtask) => {
+                          const coverage = routeCoverageLabel(subtask);
+                          return <Tag color={coverage.color}>{coverage.text}</Tag>;
                         }
                       },
                       { title: 'Target', dataIndex: 'target_platform', key: 'target_platform', width: 130 },
@@ -815,6 +851,27 @@ const RawCandidates = () => {
         <Button key="copy" type="primary" onClick={copyPrompt}>复制 Prompt</Button>,
         <Button key="close" onClick={() => setPromptModal(null)}>关闭</Button>
       ]} width={900}>
+        {promptModal ? (
+          <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
+            {['required_routes', 'optional_routes', 'skipped_routes'].map((key) => {
+              const plan = subtaskSummary(promptModal).route_plan || {};
+              const routes = plan[key] || [];
+              if (!routes.length) return null;
+              const title = key === 'required_routes' ? 'Required' : key === 'optional_routes' ? 'Optional' : 'Skipped';
+              const color = key === 'required_routes' ? 'geekblue' : key === 'optional_routes' ? 'cyan' : 'default';
+              return (
+                <div key={key}>
+                  <strong>{title}: </strong>
+                  <Space wrap size={[4, 4]}>
+                    {routes.map((route) => (
+                      <Tag key={`${key}-${route.route}`} color={color}>{route.route}</Tag>
+                    ))}
+                  </Space>
+                </div>
+              );
+            })}
+          </Space>
+        ) : null}
         <TextArea value={promptModal?.agent_prompt || ''} rows={22} readOnly />
       </Modal>
 
