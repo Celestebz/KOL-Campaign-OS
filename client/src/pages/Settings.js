@@ -287,7 +287,7 @@ const Settings = () => {
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="给 Codex / WorkBuddy 等外部高级 Agent 使用：Agent 可读取 Strategy Brief 并自动写入 Raw Candidates，但不能 Approve 到 KOL Master。"
+            message="给 Codex / WorkBuddy 等外部高级 Agent 使用：Agent 可读取策略简报并自动写入候选池，但不能直接写入 KOL 管理。"
           />
           <Row gutter={16}>
             <Col span={6}>
@@ -302,7 +302,7 @@ const Settings = () => {
             </Col>
           </Row>
           <Form.Item label="Agent 使用备注" name={['settings', 'externalAgent', 'notes']}>
-            <Input placeholder="例如：只允许写 Raw Candidates；Approve 永远人工确认。" />
+            <Input placeholder="例如：只允许写候选池；通过永远人工确认。" />
           </Form.Item>
           <Text type="secondary">
             Brief API: GET /api/agent/brief/:strategyId；写入 API: POST /api/agent/raw-candidates/import；请求头使用 Authorization: Bearer &lt;Agent API Token&gt;。
@@ -314,7 +314,7 @@ const Settings = () => {
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="飞书多维表格作为 Approved KOL 的云端主库；每个 Campaign 可以同步到自己的项目子表，Raw Candidates 默认只保存在本地。"
+            message="飞书多维表格作为已通过 KOL 的云端主库；每个项目可以同步到自己的项目子表，候选池默认只保存在本地。"
           />
           <Row gutter={16}>
             <Col span={8}>
@@ -340,25 +340,25 @@ const Settings = () => {
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item label="KOL Master Table ID" name={['settings', 'cloudStorage', 'feishu', 'kol_table_id']}>
+              <Form.Item label="飞书 KOL总表 ID" name={['settings', 'cloudStorage', 'feishu', 'kol_table_id']}>
                 <Input placeholder="tbl..." />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item label="默认 Campaign KOL 表" name={['settings', 'cloudStorage', 'feishu', 'campaign_kol_table_id']}>
+              <Form.Item label="默认项目 KOL 子表" name={['settings', 'cloudStorage', 'feishu', 'campaign_kol_table_id']}>
                 <Input placeholder="tbl...（无子表映射时使用）" />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item label="Campaigns Table ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_table_id']}>
+              <Form.Item label="项目表 ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_table_id']}>
                 <Input placeholder="tbl...（预留）" />
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item label="Campaign 子表映射" name={['settings', 'cloudStorage', 'feishu', 'campaign_subtable_map']}>
+          <Form.Item label="项目子表映射" name={['settings', 'cloudStorage', 'feishu', 'campaign_subtable_map']}>
             <Input.TextArea
               autoSize={{ minRows: 2, maxRows: 5 }}
-              placeholder={`Campaign Name=tbl_xxx\n或 {"Campaign Name":"tbl_xxx"}`}
+              placeholder={`项目名称=tbl_xxx\n或 {"项目名称":"tbl_xxx"}`}
             />
           </Form.Item>
           <Form.Item label="同步备注" name={['settings', 'cloudStorage', 'feishu', 'notes']}>
@@ -366,7 +366,7 @@ const Settings = () => {
           </Form.Item>
         </Card>
 
-        <Card title="Fallback Strategy" className="content-card" style={{ marginBottom: 16 }}>
+        <Card title="备用策略" className="content-card" style={{ marginBottom: 16 }}>
           <Alert
             type="warning"
             showIcon
@@ -395,7 +395,7 @@ const Settings = () => {
               </Form.Item>
             </Col>
           </Row>
-          <Text type="secondary">当前版本会保存 Provider 配置和策略；AI 自动调用工具将在 KOL Finder / 自动报告阶段接入。</Text>
+          <Text type="secondary">当前版本会保存 Provider 配置和策略；AI 自动调用工具将在 KOL 寻找 / 自动报告阶段接入。</Text>
         </Card>
 
         <Form.Item>

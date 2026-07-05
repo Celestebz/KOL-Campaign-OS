@@ -182,8 +182,8 @@ const Customers = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">KOL Master</h1>
-        <p className="page-subtitle">Approved KOL 主库：Raw Candidates 通过 Approve 后会沉淀到这里。</p>
+        <h1 className="page-title">KOL 管理</h1>
+        <p className="page-subtitle">已通过审核的 KOL 会沉淀到这里，并可同步到飞书 KOL总表。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
@@ -220,7 +220,7 @@ const Customers = () => {
           <Button onClick={() => setSelectedRowKeys([])} disabled={!selectedRowKeys.length}>清空选择</Button>
           <Popconfirm
             title={`确定删除选中的 ${selectedRowKeys.length} 个 KOL？`}
-            description="删除后会同时移除这些 KOL 在 Campaign KOL 项目子表里的关联。"
+            description="删除后会同时移除这些 KOL 在项目 KOL 子表里的关联。"
             onConfirm={handleBatchDelete}
             disabled={!selectedRowKeys.length}
           >

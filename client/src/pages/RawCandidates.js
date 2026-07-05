@@ -58,11 +58,11 @@ const sortCycles = (cycles = []) => [...cycles].sort((a, b) => (
 ));
 
 const statusOptions = [
-  { value: 'new', label: 'New' },
-  { value: 'approved', label: 'Approved' },
-  { value: 'duplicate', label: 'Duplicate' },
-  { value: 'ignored', label: 'Ignored' },
-  { value: 'error', label: 'Error' }
+  { value: 'new', label: '待审核' },
+  { value: 'approved', label: '已通过' },
+  { value: 'duplicate', label: '重复' },
+  { value: 'ignored', label: '已忽略' },
+  { value: 'error', label: '错误' }
 ];
 
 const statusColor = {
@@ -99,10 +99,10 @@ const routeCoverageLabel = (subtask) => {
   const summary = subtaskSummary(subtask);
   const plan = summary.route_plan || {};
   if (summary.cycle_status === 'skipped' || plan.cycle_status === 'skipped') {
-    return { color: 'default', text: `Skipped: ${summary.cycle_status_reason || plan.cycle_status_reason || plan.skipped_reason || 'skipped'}` };
+    return { color: 'default', text: `已跳过：${summary.cycle_status_reason || plan.cycle_status_reason || plan.skipped_reason || 'skipped'}` };
   }
   if (summary.cycle_status === 'blocked') {
-    return { color: 'red', text: summary.cycle_status_reason || 'Blocked' };
+    return { color: 'red', text: summary.cycle_status_reason || '已阻塞' };
   }
   const required = plan.required_routes || [];
   const coverage = summary.route_coverage || [];
@@ -111,11 +111,11 @@ const routeCoverageLabel = (subtask) => {
   const missing = required.filter((item) => !attemptedRoutes.has(item.route));
   const optionalAttempted = (plan.optional_routes || []).filter((item) => attemptedRoutes.has(item.route)).length;
   if (subtask.status === 'pending' && !coverage.length && !attempts.length) {
-    return { color: 'default', text: `Required ${required.length} / optional ${(plan.optional_routes || []).length}` };
+    return { color: 'default', text: `必跑 ${required.length} / 可选 ${(plan.optional_routes || []).length}` };
   }
-  if (required.length && !missing.length) return { color: 'green', text: `Required done / optional ${optionalAttempted}` };
-  if (required.length) return { color: 'orange', text: `Required missing ${missing.length}` };
-  return { color: 'default', text: 'No required route' };
+  if (required.length && !missing.length) return { color: 'green', text: `必跑已完成 / 可选 ${optionalAttempted}` };
+  if (required.length) return { color: 'orange', text: `缺少必跑 ${missing.length}` };
+  return { color: 'default', text: '无必跑路径' };
 };
 
 const normalizeHandle = (value) => String(value || '').trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
@@ -270,7 +270,7 @@ const RawCandidates = () => {
       const res = await axios.get('/api/raw-candidates', { params: filters });
       setCandidates(res.data.data || []);
     } catch (error) {
-      message.error(error.response?.data?.error || '获取 Raw Candidates 失败');
+      message.error(error.response?.data?.error || '获取候选池失败');
     } finally {
       setLoading(false);
     }
@@ -282,7 +282,7 @@ const RawCandidates = () => {
       const res = await axios.get('/api/finder-tasks', { params });
       setFinderTasks(res.data.data || []);
     } catch (error) {
-      message.error(error.response?.data?.error || '获取 Finder Task 失败');
+      message.error(error.response?.data?.error || '获取寻找任务失败');
     }
   };
 
@@ -292,7 +292,7 @@ const RawCandidates = () => {
       const res = await axios.get(`/api/finder-tasks/${finderTaskId}/subtasks`);
       setFinderSubtasks(res.data.data || []);
     } catch (error) {
-      message.error(error.response?.data?.error || '获取 Subagent 任务失败');
+      message.error(error.response?.data?.error || '获取子任务失败');
     }
   };
 
@@ -312,7 +312,7 @@ const RawCandidates = () => {
 
   const openTaskModal = () => {
     if (!selectedStrategy) {
-      message.warning('请先选择一个 Ready Strategy');
+      message.warning('请先选择一个已发布策略');
       return;
     }
     const strategyCycles = sortCycles(selectedStrategy.search_strategy || []);
@@ -346,7 +346,7 @@ const RawCandidates = () => {
 
   const startFinderTask = async () => {
     if (!selectedStrategy) {
-      message.warning('请先选择一个 Ready Strategy');
+      message.warning('请先选择一个已发布策略');
       return;
     }
     const values = await taskForm.validateFields();
@@ -360,7 +360,7 @@ const RawCandidates = () => {
       if (values.execution_mode === 'subagent_hybrid') {
         const generated = await axios.post(`/api/finder-tasks/${task.id}/subtasks/generate`);
         setFinderSubtasks(generated.data.data || []);
-        message.success(`已生成 ${generated.data.data?.length || 0} 个 Subagent 任务`);
+        message.success(`已生成 ${generated.data.data?.length || 0} 个子任务`);
       } else {
         message.success('7 轮搜索任务已启动');
       }
@@ -368,7 +368,7 @@ const RawCandidates = () => {
       fetchFinderTasks(selectedStrategy.id);
       fetchCandidates();
     } catch (error) {
-      message.error(error.response?.data?.error || '启动 Finder 任务失败');
+      message.error(error.response?.data?.error || '启动寻找任务失败');
     } finally {
       setTaskLoading(false);
     }
@@ -425,7 +425,7 @@ const RawCandidates = () => {
     setTaskLoading(true);
     try {
       await axios.post(`/api/finder-subtasks/${importModal.id}/import`, payload);
-      message.success('Subagent 结果已导入 Raw Candidates');
+      message.success('Subagent 结果已导入候选池');
       setImportModal(null);
       setImportPayload('');
       fetchSubtasks(importModal.finder_task_id);
@@ -440,7 +440,7 @@ const RawCandidates = () => {
 
   const openCreate = () => {
     if (!selectedStrategy) {
-      message.warning('请先选择一个 Ready Strategy');
+      message.warning('请先选择一个已发布策略');
       return;
     }
     form.resetFields();
@@ -456,7 +456,7 @@ const RawCandidates = () => {
 
   const handleCreate = async () => {
     if (!selectedStrategy) {
-      message.warning('请先选择一个 Ready Strategy');
+      message.warning('请先选择一个已发布策略');
       return;
     }
     const values = await form.validateFields();
@@ -473,20 +473,20 @@ const RawCandidates = () => {
   const approveOne = async (record) => {
     const strategyId = record.strategy_id || selectedStrategy?.id;
     if (!strategyId) {
-      message.warning('请先选择一个 Ready Strategy');
+      message.warning('请先选择一个已发布策略');
       return;
     }
     await axios.post(`/api/raw-candidates/${record.id}/approve`, {
       strategy_id: strategyId,
       campaign_id: record.campaign_id || selectedStrategy?.campaign_id || filters.campaign_id || 1
     });
-    message.success('已加入 KOL Master 和项目子表');
+    message.success('已加入 KOL 管理和当前项目子表');
     fetchCandidates();
   };
 
   const batchApprove = async () => {
     if (!selectedStrategy) {
-      message.warning('请先选择一个 Ready Strategy');
+      message.warning('请先选择一个已发布策略');
       return;
     }
     const res = await axios.post('/api/raw-candidates/batch-approve', {
@@ -535,21 +535,21 @@ const RawCandidates = () => {
     },
     { title: '项目', dataIndex: 'campaign_name', key: 'campaign_name', width: 150, render: (v) => v || '-' },
     {
-      title: 'Strategy',
+      title: '策略',
       key: 'strategy',
       width: 190,
       render: (_, r) => (
         <Space direction="vertical" size={2}>
-          <span>{r.strategy_name || '未绑定 Strategy'}</span>
+          <span>{r.strategy_name || '未绑定策略'}</span>
           {r.strategy_status ? <Tag color={r.strategy_status === 'ready' ? 'green' : 'default'}>{r.strategy_status}</Tag> : null}
         </Space>
       )
     },
     { title: '搜索轮次', dataIndex: 'search_cycle', key: 'search_cycle', width: 110, render: (v) => v || '-' },
-    { title: 'Persona', dataIndex: 'matched_persona', key: 'matched_persona', width: 150, render: (v) => v || '-' },
-    { title: 'Discovery Route', dataIndex: 'discovery_route', key: 'discovery_route', width: 170, render: (v) => v ? <Tag color="blue">{v}</Tag> : '-' },
-    { title: 'Source Platform', dataIndex: 'source_platform', key: 'source_platform', width: 140, render: (v) => v || '-' },
-    { title: 'Target Platform', dataIndex: 'target_platform', key: 'target_platform', width: 140, render: (v, r) => v || r.platform || '-' },
+    { title: 'KOL画像', dataIndex: 'matched_persona', key: 'matched_persona', width: 150, render: (v) => v || '-' },
+    { title: '发现路径', dataIndex: 'discovery_route', key: 'discovery_route', width: 170, render: (v) => v ? <Tag color="blue">{v}</Tag> : '-' },
+    { title: '来源平台', dataIndex: 'source_platform', key: 'source_platform', width: 140, render: (v) => v || '-' },
+    { title: '目标平台', dataIndex: 'target_platform', key: 'target_platform', width: 140, render: (v, r) => v || r.platform || '-' },
     { title: '来源', dataIndex: 'source', key: 'source', width: 130, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     { title: '平台', dataIndex: 'platform', key: 'platform', width: 110, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     {
@@ -589,7 +589,7 @@ const RawCandidates = () => {
       render: (_, record) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />} onClick={() => setDetail(record)}>详情</Button>
-          <Button size="small" type="primary" icon={<CheckOutlined />} disabled={['approved', 'duplicate'].includes(record.status) || (!record.strategy_id && !selectedStrategy)} onClick={() => approveOne(record)}>Approve</Button>
+          <Button size="small" type="primary" icon={<CheckOutlined />} disabled={['approved', 'duplicate'].includes(record.status) || (!record.strategy_id && !selectedStrategy)} onClick={() => approveOne(record)}>通过</Button>
           <Button size="small" icon={<StopOutlined />} disabled={record.status === 'ignored'} onClick={() => ignoreOne(record)}>忽略</Button>
         </Space>
       )
@@ -597,13 +597,13 @@ const RawCandidates = () => {
   ];
 
   const cycleOptions = sortCycles(selectedStrategy?.search_strategy?.length ? selectedStrategy.search_strategy : [
-    { cycle: 'C1', name: 'Competitor Reviews' },
-    { cycle: 'C2', name: 'Category Search' },
-    { cycle: 'C3', name: 'Use-case Search' },
-    { cycle: 'C4', name: 'Feature / Technical Search' },
-    { cycle: 'C5', name: 'Community / Audience Search' },
-    { cycle: 'C6', name: 'Platform Native Search' },
-    { cycle: 'C7', name: 'Spider-web Expansion' }
+    { cycle: 'C1', name: '竞品评测' },
+    { cycle: 'C2', name: '品类搜索' },
+    { cycle: 'C3', name: '使用场景搜索' },
+    { cycle: 'C4', name: '功能/技术搜索' },
+    { cycle: 'C5', name: '社区/受众搜索' },
+    { cycle: 'C6', name: '平台内搜索' },
+    { cycle: 'C7', name: '线索扩展' }
   ]).map((cycle) => ({
     label: `${cycle.cycle} ${cycle.name}`,
     value: cycle.cycle
@@ -617,13 +617,13 @@ const RawCandidates = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">KOL Finder</h1>
-        <p className="page-subtitle">Raw Candidates 用来承接 Finder 找到的候选，Approve 后进入 KOL Master 和当前项目子表。</p>
+        <h1 className="page-title">KOL 寻找</h1>
+        <p className="page-subtitle">这里承接搜索找到的候选 KOL，人工通过后进入 KOL 管理和当前项目子表。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Select allowClear placeholder="选择 Ready Strategy" value={filters.strategy_id} onChange={updateStrategyFilter} options={strategyOptions} style={{ width: 300 }} />
+          <Select allowClear placeholder="选择已发布策略" value={filters.strategy_id} onChange={updateStrategyFilter} options={strategyOptions} style={{ width: 300 }} />
           <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 180 }} />
           <Select allowClear placeholder="平台" value={filters.platform} onChange={(v) => updateFilter('platform', v)} options={platformOptions} style={{ width: 140 }} />
           <Select allowClear placeholder="状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={statusOptions} style={{ width: 140 }} />
@@ -638,7 +638,7 @@ const RawCandidates = () => {
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Space wrap>
-            <strong>最近 Finder Task</strong>
+            <strong>最近寻找任务</strong>
             {latestTask ? <Tag color={latestTask.status === 'success' ? 'green' : latestTask.status === 'failed' ? 'red' : latestTask.status === 'partial_failed' ? 'orange' : 'blue'}>{latestTask.status}</Tag> : <Tag>暂无任务</Tag>}
             {latestTask ? <span>候选 {latestTask.success_count || 0} / 失败 {latestTask.failed_count || 0}</span> : null}
             <Button size="small" icon={<ReloadOutlined />} onClick={() => fetchFinderTasks()}>刷新任务</Button>
@@ -667,10 +667,10 @@ const RawCandidates = () => {
                     dataSource={finderSubtasks}
                     pagination={false}
                     columns={[
-                      { title: 'Cycle', dataIndex: 'search_cycle', key: 'search_cycle', width: 90, render: (v) => <Tag color="blue">{v}</Tag> },
+                      { title: '搜索轮次', dataIndex: 'search_cycle', key: 'search_cycle', width: 90, render: (v) => <Tag color="blue">{v}</Tag> },
                       { title: '任务', dataIndex: 'name', key: 'name', width: 220 },
                       {
-                        title: 'Route Plan',
+                        title: '发现路径',
                         key: 'route_plan',
                         render: (_, subtask) => {
                           const routes = routePlanRoutes(subtask);
@@ -688,7 +688,7 @@ const RawCandidates = () => {
                         }
                       },
                       {
-                        title: 'Coverage',
+                        title: '路径覆盖',
                         key: 'coverage',
                         width: 190,
                         render: (_, subtask) => {
@@ -696,10 +696,10 @@ const RawCandidates = () => {
                           return <Tag color={coverage.color}>{coverage.text}</Tag>;
                         }
                       },
-                      { title: 'Target', dataIndex: 'target_platform', key: 'target_platform', width: 130 },
-                      { title: 'Status', dataIndex: 'status', key: 'status', width: 110, render: (v) => <Tag color={v === 'completed' ? 'green' : v === 'failed' ? 'red' : v === 'running' ? 'blue' : 'default'}>{v}</Tag> },
-                      { title: 'Accepted', dataIndex: 'accepted_count', key: 'accepted_count', width: 90, render: (v) => v || 0 },
-                      { title: 'Rejected', dataIndex: 'rejected_count', key: 'rejected_count', width: 90, render: (v) => v || 0 },
+                      { title: '目标平台', dataIndex: 'target_platform', key: 'target_platform', width: 130 },
+                      { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: (v) => <Tag color={v === 'completed' ? 'green' : v === 'failed' ? 'red' : v === 'running' ? 'blue' : 'default'}>{v}</Tag> },
+                      { title: '通过', dataIndex: 'accepted_count', key: 'accepted_count', width: 90, render: (v) => v || 0 },
+                      { title: '拒绝', dataIndex: 'rejected_count', key: 'rejected_count', width: 90, render: (v) => v || 0 },
                       {
                         title: '操作',
                         key: 'actions',
@@ -717,7 +717,7 @@ const RawCandidates = () => {
               ) : null}
             </>
           ) : (
-            <span style={{ color: '#666' }}>选择 Ready Strategy 后，可以启动自动 7 轮搜索。搜索源负责发现线索，目标 KOL 平台负责最终沉淀。</span>
+            <span style={{ color: '#666' }}>选择已发布策略后，可以启动自动 7 轮搜索。搜索源负责发现线索，目标 KOL 平台负责最终沉淀。</span>
           )}
         </Space>
       </Card>
@@ -725,9 +725,9 @@ const RawCandidates = () => {
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <span>已选 {selectedRowKeys.length} 个候选</span>
-          <Button icon={<CheckOutlined />} disabled={!selectedRowKeys.length || !selectedStrategy} onClick={batchApprove}>批量 Approve</Button>
+          <Button icon={<CheckOutlined />} disabled={!selectedRowKeys.length || !selectedStrategy} onClick={batchApprove}>批量通过</Button>
           <Button icon={<StopOutlined />} disabled={!selectedRowKeys.length} onClick={batchIgnore}>批量忽略</Button>
-          <Popconfirm title="确定删除选中的 Raw Candidate？" onConfirm={batchDelete}>
+          <Popconfirm title="确定删除选中的候选？" onConfirm={batchDelete}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
           </Popconfirm>
         </Space>
@@ -745,9 +745,9 @@ const RawCandidates = () => {
         />
       </Card>
 
-      <Modal title="新增 Raw Candidate" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={handleCreate} width={820}>
+      <Modal title="新增候选" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={handleCreate} width={820}>
         <Form form={form} layout="vertical">
-          <Form.Item label="Strategy" name="strategy_id">
+          <Form.Item label="策略" name="strategy_id">
             <Select disabled options={strategyOptions} />
           </Form.Item>
           <Form.Item label="KOL 名称" name="kol_name" rules={[{ required: true, message: '请输入 KOL 名称' }]}>
@@ -797,8 +797,8 @@ const RawCandidates = () => {
             <Form.Item label="搜索轮次" name="search_cycle">
               <Input placeholder="C1 / C2 / Competitor Reviews..." style={{ width: 220 }} />
             </Form.Item>
-            <Form.Item label="匹配 Persona" name="matched_persona">
-              <Input placeholder="Primary Persona / Secondary..." style={{ width: 260 }} />
+            <Form.Item label="匹配 KOL画像" name="matched_persona">
+              <Input placeholder="主画像 / 次画像..." style={{ width: 260 }} />
             </Form.Item>
           </Space>
           <Form.Item label="AI匹配理由 / 备注" name="ai_match_reason">
@@ -807,9 +807,9 @@ const RawCandidates = () => {
         </Form>
       </Modal>
 
-      <Modal title="创建 Finder 任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText={executionMode === 'subagent_hybrid' ? '生成 Cycle Subagent 任务' : '启动搜索'} width={760}>
+      <Modal title="创建寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText={executionMode === 'subagent_hybrid' ? '生成搜索轮次子任务' : '启动搜索'} width={760}>
         <Form form={taskForm} layout="vertical">
-          <Form.Item label="Strategy">
+          <Form.Item label="策略">
             <Input value={selectedStrategy?.name || ''} disabled />
           </Form.Item>
           <Form.Item label="执行模式" name="execution_mode" rules={[{ required: true, message: '请选择执行模式' }]}>
@@ -820,19 +820,19 @@ const RawCandidates = () => {
           </Form.Item>
           {executionMode === 'subagent_hybrid' ? (
             <div style={{ marginBottom: 16, color: '#666' }}>
-              将按搜索意图生成 Cycle Subagent 任务，预计 {selectedTaskCycles.length || 0} 个。每个任务会包含必跑/可选 route plan，候选导入时仍需记录真实 discovery route。
+              将按搜索意图生成 Subagent Hybrid 子任务，预计 {selectedTaskCycles.length || 0} 个。每个任务会包含必跑/可选发现路径，候选导入时仍需记录真实发现路径。
             </div>
           ) : null}
-          <Form.Item label="Discovery Routes" name="discovery_routes" rules={[{ required: true, message: 'Please select at least one Discovery Route' }]}>
+          <Form.Item label="发现路径" name="discovery_routes" rules={[{ required: true, message: '请选择至少一个发现路径' }]}>
             <Checkbox.Group options={discoveryRouteOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
           </Form.Item>
-          <Form.Item label="Seed URLs" name="seed_urls" tooltip="Paste Instagram post, reel, or profile URLs. One URL per line.">
+          <Form.Item label="种子链接" name="seed_urls" tooltip="粘贴 Instagram post、reel 或 profile 链接，每行一个。">
             <TextArea rows={3} placeholder={"https://www.instagram.com/reel/...\nhttps://www.instagram.com/example/"} />
           </Form.Item>
           <Form.Item label="搜索轮次" name="cycles" rules={[{ required: true, message: '请选择至少一个搜索轮次' }]}>
             <Checkbox.Group options={cycleOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
           </Form.Item>
-          <Form.Item label="Advanced Search Sources" name="search_sources" tooltip="Advanced compatibility for old Finder executors. Instagram V2 does not use native profile search by default.">
+          <Form.Item label="高级搜索源" name="search_sources" tooltip="兼容旧版寻找执行器的高级设置。Instagram V2 默认不使用站内主页搜索。">
             <Checkbox.Group options={searchSourceOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
           </Form.Item>
           <Form.Item label="目标 KOL 平台" name="target_platforms" rules={[{ required: true, message: '请选择至少一个目标平台' }]}>
@@ -857,7 +857,7 @@ const RawCandidates = () => {
               const plan = subtaskSummary(promptModal).route_plan || {};
               const routes = plan[key] || [];
               if (!routes.length) return null;
-              const title = key === 'required_routes' ? 'Required' : key === 'optional_routes' ? 'Optional' : 'Skipped';
+              const title = key === 'required_routes' ? '必跑' : key === 'optional_routes' ? '可选' : '跳过';
               const color = key === 'required_routes' ? 'geekblue' : key === 'optional_routes' ? 'cyan' : 'default';
               return (
                 <div key={key}>
@@ -877,25 +877,25 @@ const RawCandidates = () => {
 
       <Modal title="导入 Subagent 结果" open={Boolean(importModal)} onCancel={() => setImportModal(null)} onOk={importSubtaskResult} confirmLoading={taskLoading} width={900}>
         <Space direction="vertical" style={{ width: '100%' }}>
-          <span style={{ color: '#666' }}>粘贴 subagent 返回的 JSON。导入后会写入 Raw Candidates，仍需人工 Approve。</span>
+          <span style={{ color: '#666' }}>粘贴 subagent 返回的 JSON。导入后会写入候选池，仍需人工通过。</span>
           <TextArea value={importPayload} onChange={(e) => setImportPayload(e.target.value)} rows={20} />
         </Space>
       </Modal>
 
-      <Modal title="Raw Candidate 详情" open={Boolean(detail)} onCancel={() => setDetail(null)} footer={null} width={760}>
+      <Modal title="候选详情" open={Boolean(detail)} onCancel={() => setDetail(null)} footer={null} width={760}>
         {detail ? (
           <Space direction="vertical" style={{ width: '100%' }}>
             <div><strong>KOL：</strong>{detail.kol_name}</div>
             <div><strong>项目：</strong>{detail.campaign_name || '-'}</div>
-            <div><strong>Strategy：</strong>{detail.strategy_name || '未绑定 Strategy'}</div>
+            <div><strong>策略：</strong>{detail.strategy_name || '未绑定策略'}</div>
             <div><strong>搜索轮次：</strong>{detail.search_cycle || '-'}</div>
-            <div><strong>匹配 Persona：</strong>{detail.matched_persona || '-'}</div>
+            <div><strong>匹配 KOL画像：</strong>{detail.matched_persona || '-'}</div>
             <div><strong>平台：</strong>{detail.platform || '-'}</div>
             <div><strong>来源视频：</strong>{detail.video_url ? <a href={detail.video_url} target="_blank" rel="noreferrer">{detail.video_title || detail.video_url}</a> : '-'}</div>
             <div><strong>来源：</strong>{detail.source || '-'}</div>
-            <div><strong>Discovery Route: </strong>{detail.discovery_route || '-'}</div>
-            <div><strong>Source Platform: </strong>{detail.source_platform || '-'}</div>
-            <div><strong>Target Platform: </strong>{detail.target_platform || detail.platform || '-'}</div>
+            <div><strong>发现路径：</strong>{detail.discovery_route || '-'}</div>
+            <div><strong>来源平台：</strong>{detail.source_platform || '-'}</div>
+            <div><strong>目标平台：</strong>{detail.target_platform || detail.platform || '-'}</div>
             <div>
               <strong>目标平台主页：</strong>
               {getTargetProfileUrl(detail) ? (
@@ -904,11 +904,11 @@ const RawCandidates = () => {
                 </a>
               ) : '-'}
             </div>
-            <div><strong>Source Agent: </strong>{detail.source_agent || '-'}</div>
+            <div><strong>来源 Agent：</strong>{detail.source_agent || '-'}</div>
             <div><strong>证据：</strong>{detail.evidence_url ? <a href={detail.evidence_url} target="_blank" rel="noreferrer">{detail.evidence_title || detail.evidence_url}</a> : '-'}</div>
             <div><strong>证据类型：</strong>{detail.evidence_type || '-'}</div>
             <div><strong>搜索 Query：</strong>{detail.source_query || '-'}</div>
-            <div><strong>Finder Task：</strong>{detail.finder_task_name || detail.finder_task_id || '-'}</div>
+            <div><strong>寻找任务：</strong>{detail.finder_task_name || detail.finder_task_id || '-'}</div>
             <div><strong>匹配关键词：</strong>{detail.matched_keywords || '-'}</div>
             <div><strong>评分拆解：</strong>{detail.scoring_breakdown || '-'}</div>
             <div><strong>AI匹配理由：</strong>{detail.ai_match_reason || '-'}</div>

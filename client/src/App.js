@@ -32,10 +32,10 @@ function App() {
 
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-    { key: '/strategy', icon: <ProfileOutlined />, label: 'KOL Strategy' },
-    { key: '/finder', icon: <SearchOutlined />, label: 'KOL Finder' },
-    { key: '/customers', icon: <UserOutlined />, label: 'KOL Master' },
-    { key: '/campaign-kols', icon: <TeamOutlined />, label: 'Campaign KOL' },
+    { key: '/strategy', icon: <ProfileOutlined />, label: 'KOL 策略' },
+    { key: '/finder', icon: <SearchOutlined />, label: 'KOL 寻找' },
+    { key: '/customers', icon: <UserOutlined />, label: 'KOL 管理' },
+    { key: '/campaign-kols', icon: <TeamOutlined />, label: '项目 KOL' },
     { key: '/send', icon: <PlayCircleOutlined />, label: '视频数据' },
     { key: '/records', icon: <BarChartOutlined />, label: '分析记录' },
     { key: '/templates', icon: <FileTextOutlined />, label: 'AI Prompt 模板' },

@@ -30,7 +30,7 @@ npm run dev
 npm run install-skills
 ```
 
-安装清单由 `skills/manifest.json` 管理。入口 skill 是 `kol-campaign-os-agent`，它会协同 `kol-strategy` 和 `kol-finder` 完成 Strategy -> Finder -> Raw Candidates 流程。
+安装清单由 `skills/manifest.json` 管理。入口 skill 是 `kol-campaign-os-agent`，它会协同 `kol-strategy` 和 `kol-finder` 完成 KOL 策略 -> KOL 寻找 -> 候选池流程。
 
 如果智能体使用自定义 skills 目录，可以指定目标：
 
@@ -59,13 +59,13 @@ npm run install-skills -- --target ~/.agents/skills
 
 ## 当前 MVP
 
-当前版本包含视频分析闭环和 KOL Finder 审批流：
+当前版本包含视频分析闭环和 KOL 寻找审批流：
 
 ```text
 视频链接导入 -> 抓取表现数据/评论 -> AI 分析 -> 导出视频分析 XLSX
-Strategy -> Finder/Subagent 任务 -> Raw Candidates -> 人工 Approve
+KOL 策略 -> KOL 寻找/Subagent 任务 -> 候选池 -> 人工通过
 ```
 
-KOL Finder 已支持 System Provider 和 Subagent Hybrid 两种模式。Subagent Hybrid 会生成 YouTube / Google Web / Reddit / Seed / Instagram small batch 子任务和可复制 Prompt，由 Codex / WorkBuddy / 外部 agent 搜索后把 JSON 导入 Raw Candidates。
+KOL 寻找已支持 System Provider 和 Subagent Hybrid 两种模式。Subagent Hybrid 会生成 YouTube / Google Web / Reddit / Seed / Instagram small batch 子任务和可复制 Prompt，由 Codex / WorkBuddy / 外部 agent 搜索后把 JSON 导入候选池。
 
 Outreach、HTML 报告、完整自动网页登录搜索暂不在本版实现。

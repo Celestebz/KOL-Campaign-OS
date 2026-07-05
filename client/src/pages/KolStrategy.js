@@ -13,17 +13,23 @@ const platformOptions = [
 ];
 
 const goalOptions = [
-  { value: 'awareness', label: 'Awareness' },
-  { value: 'review', label: 'Review' },
-  { value: 'affiliate_conversion', label: 'Affiliate / Conversion' },
-  { value: 'ugc_ads_asset', label: 'UGC / Ads Asset' },
-  { value: 'expert_credibility', label: 'Expert Credibility' }
+  { value: 'awareness', label: '品牌曝光' },
+  { value: 'review', label: '产品测评' },
+  { value: 'affiliate_conversion', label: '联盟转化' },
+  { value: 'ugc_ads_asset', label: 'UGC / 广告素材' },
+  { value: 'expert_credibility', label: '专家背书' }
 ];
 
 const statusColor = {
   draft: 'orange',
   ready: 'green',
   archived: 'default'
+};
+
+const statusLabel = {
+  draft: '草稿',
+  ready: '已发布',
+  archived: '已归档'
 };
 
 const emptyJson = (fallback) => JSON.stringify(fallback, null, 2);
@@ -228,7 +234,7 @@ const KolStrategy = () => {
       const res = await axios.get('/api/kol-strategies', { params: filters });
       setStrategies(res.data.data || []);
     } catch (error) {
-      message.error(error.response?.data?.error || '获取 Strategy 失败');
+      message.error(error.response?.data?.error || '获取策略失败');
     } finally {
       setLoading(false);
     }
@@ -260,7 +266,7 @@ const KolStrategy = () => {
     const campaign = campaigns[0] || {};
     form.setFieldsValue({
       campaign_id: campaign.id || 1,
-      name: `${campaign.name || 'Campaign'} Strategy`,
+      name: `${campaign.name || '项目'} KOL 策略`,
       brand: campaign.brand || '',
       product: campaign.product || campaign.name || '',
       status: 'draft',
@@ -287,15 +293,15 @@ const KolStrategy = () => {
 
   const buildPayload = async () => {
     const values = await form.validateFields();
-    const finderHandoff = parseSection(values.finder_handoff_text, 'Finder Handoff');
+    const finderHandoff = parseSection(values.finder_handoff_text, '寻找任务交接');
     finderHandoff.minimum_followers = values.minimum_followers ? String(values.minimum_followers) : '';
     finderHandoff.maximum_followers = values.maximum_followers ? String(values.maximum_followers) : '';
     finderHandoff.minimum_avg_views = values.minimum_avg_views ? String(values.minimum_avg_views) : '';
     return {
       ...values,
       product_context: parseSection(values.product_context_text, 'Product Breakdown'),
-      persona_config: parseSection(values.persona_config_text, 'KOL Persona'),
-      search_strategy: parseSection(values.search_strategy_text, 'Search Strategy'),
+      persona_config: parseSection(values.persona_config_text, 'KOL画像'),
+      search_strategy: parseSection(values.search_strategy_text, '7轮搜索策略'),
       scoring_weights: parseSection(values.scoring_weights_text, 'Scoring Weights'),
       finder_handoff: finderHandoff
     };
@@ -308,7 +314,7 @@ const KolStrategy = () => {
       const res = editing
         ? await axios.put(`/api/kol-strategies/${editing.id}`, payload)
         : await axios.post('/api/kol-strategies', payload);
-      message.success('Strategy 已保存');
+      message.success('策略已保存');
       setEditing(res.data.data);
       applyStrategyToForm(res.data.data);
       fetchStrategies();
@@ -344,7 +350,7 @@ const KolStrategy = () => {
       if (res.data.meta?.truncated) {
         message.warning(`材料较长，已截断到 ${res.data.meta.used_chars} 字符后生成草稿`);
       } else {
-        message.success('AI 已分析材料并生成 Strategy 草稿');
+        message.success('AI 已分析材料并生成策略草稿');
       }
     } catch (error) {
       message.error(error.response?.data?.error || error.message || 'AI 分析材料失败');
@@ -355,14 +361,14 @@ const KolStrategy = () => {
 
   const generateDraft = async () => {
     if (!editing?.id) {
-      message.warning('请先保存 Strategy 草稿，再生成 AI 草稿');
+      message.warning('请先保存策略草稿，再生成 AI 草稿');
       return;
     }
     setGenerating(true);
     try {
       const saved = await saveStrategy();
       const res = await axios.post(`/api/kol-strategies/${saved.id}/generate-draft`);
-      message.success('AI 草稿已生成，请人工检查后发布到 Finder');
+      message.success('AI 草稿已生成，请人工检查后发布给 KOL 寻找');
       setEditing(res.data.data);
       applyStrategyToForm(res.data.data);
       fetchStrategies();
@@ -377,14 +383,14 @@ const KolStrategy = () => {
     if (!record?.id) return;
     try {
       const res = await axios.post(`/api/kol-strategies/${record.id}/mark-ready`);
-      message.success('Strategy 已发布到 Finder');
+      message.success('策略已发布给 KOL 寻找');
       if (editing?.id === record.id) {
         setEditing(res.data.data);
         applyStrategyToForm(res.data.data);
       }
       fetchStrategies();
     } catch (error) {
-      message.error(error.response?.data?.error || '发布到 Finder 失败');
+      message.error(error.response?.data?.error || '发布给 KOL 寻找失败');
     }
   };
 
@@ -411,14 +417,14 @@ const KolStrategy = () => {
   };
 
   const columns = [
-    { title: 'Strategy', dataIndex: 'name', key: 'name', width: 220, fixed: 'left' },
+    { title: '策略', dataIndex: 'name', key: 'name', width: 220, fixed: 'left' },
     { title: '项目/产品', dataIndex: 'campaign_name', key: 'campaign_name', width: 150, render: (v) => v || '-' },
     { title: '品牌', dataIndex: 'brand', key: 'brand', width: 120, render: (v) => v || '-' },
     { title: '品类', dataIndex: 'category', key: 'category', width: 140, render: (v) => v || '-' },
     { title: '市场/语言', key: 'market', width: 160, render: (_, r) => [r.target_market, r.language].filter(Boolean).join(' / ') || '-' },
     { title: '主平台', dataIndex: 'primary_platform', key: 'primary_platform', width: 110, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     { title: '目标', dataIndex: 'campaign_goal', key: 'campaign_goal', width: 160, render: (v) => v || '-' },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (v) => <Tag color={statusColor[v] || 'default'}>{v || 'draft'}</Tag> },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusLabel[v] || statusLabel.draft}</Tag> },
     {
       title: '操作',
       key: 'actions',
@@ -427,9 +433,9 @@ const KolStrategy = () => {
       render: (_, record) => (
         <Space>
           <Button type="link" onClick={() => openEdit(record)}>编辑</Button>
-          <Button type="link" icon={<PlayCircleOutlined />} disabled={record.status === 'ready'} onClick={() => markReady(record)}>发布到 Finder</Button>
+          <Button type="link" icon={<PlayCircleOutlined />} disabled={record.status === 'ready'} onClick={() => markReady(record)}>发布给 KOL 寻找</Button>
           <Button type="link" icon={<CopyOutlined />} onClick={() => duplicateStrategy(record)}>复制</Button>
-          <Popconfirm title="归档后 Finder 不会再使用该 Strategy，确定归档？" onConfirm={() => archiveStrategy(record)}>
+          <Popconfirm title="归档后 KOL 寻找不会再使用该策略，确定归档？" onConfirm={() => archiveStrategy(record)}>
             <Button type="link" danger>归档</Button>
           </Popconfirm>
         </Space>
@@ -450,7 +456,7 @@ const KolStrategy = () => {
           <Button size="small" icon={<EditOutlined />} onClick={(event) => handleRenameCampaign(campaign, event)}>重命名</Button>
           <Popconfirm
             title="删除这个产品/活动？"
-            description={campaign.id === 1 ? 'Default Campaign 不能删除。' : '仅未被视频、Strategy、Raw Candidate 或 Campaign KOL 使用的产品/活动可以删除。'}
+            description={campaign.id === 1 ? 'Default Campaign 不能删除。' : '仅未被视频、策略、候选池或项目 KOL 使用的产品/活动可以删除。'}
             disabled={campaign.id === 1}
             onConfirm={(event) => handleDeleteCampaign(campaign, event)}
           >
@@ -464,22 +470,22 @@ const KolStrategy = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">KOL Strategy</h1>
-        <p className="page-subtitle">先拆解项目和 KOL Persona，再发布到 Finder。发布后可在 KOL Finder 中启动 System Provider 搜索，或生成 Subagent Hybrid 任务与 Prompt。</p>
+        <h1 className="page-title">KOL 策略</h1>
+        <p className="page-subtitle">先拆解产品、目标用户和 KOL画像，再发布给 KOL 寻找使用。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => setFilters((prev) => ({ ...prev, campaign_id: v || undefined }))} options={campaignOptions} style={{ width: 180 }} />
           <Select allowClear placeholder="状态" value={filters.status} onChange={(v) => setFilters((prev) => ({ ...prev, status: v || undefined }))} options={[
-            { value: 'draft', label: 'draft' },
-            { value: 'ready', label: 'ready' },
-            { value: 'archived', label: 'archived' }
+            { value: 'draft', label: '草稿' },
+            { value: 'ready', label: '已发布' },
+            { value: 'archived', label: '已归档' }
           ]} style={{ width: 140 }} />
-          <Input.Search allowClear placeholder="搜索 Strategy、品牌、产品、品类" value={filters.search} onChange={(e) => setFilters((prev) => ({ ...prev, search: e.target.value || undefined }))} onSearch={fetchStrategies} style={{ width: 300 }} />
+          <Input.Search allowClear placeholder="搜索策略、品牌、产品、品类" value={filters.search} onChange={(e) => setFilters((prev) => ({ ...prev, search: e.target.value || undefined }))} onSearch={fetchStrategies} style={{ width: 300 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchStrategies}>刷新</Button>
           <Button icon={<EditOutlined />} onClick={() => setCampaignManageVisible(true)}>管理产品/活动</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增 Strategy</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增策略</Button>
         </Space>
       </Card>
 
@@ -488,22 +494,22 @@ const KolStrategy = () => {
       </Card>
 
       <Modal
-        title={editing ? 'KOL Strategy Agent 工作台' : '新增 KOL Strategy'}
+        title={editing ? 'KOL 策略 Agent 工作台' : '新增 KOL 策略'}
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         width={1180}
         footer={[
           <Button key="cancel" onClick={() => setModalOpen(false)}>关闭</Button>,
           <Button key="ai" icon={<RobotOutlined />} loading={generating} disabled={!editing?.id} onClick={generateDraft}>无材料生成草稿</Button>,
-          <Button key="ready" icon={<PlayCircleOutlined />} disabled={!editing?.id || editing?.status === 'ready'} onClick={() => markReady()}>发布到 Finder</Button>,
+          <Button key="ready" icon={<PlayCircleOutlined />} disabled={!editing?.id || editing?.status === 'ready'} onClick={() => markReady()}>发布给 KOL 寻找</Button>,
           <Button key="save" type="primary" icon={<SaveOutlined />} loading={saving} onClick={saveStrategy}>保存草稿</Button>
         ]}
       >
-        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="Strategy 发布到 Finder 后，可在 KOL Finder 中启动 System Provider 搜索，或生成 Subagent Hybrid 任务与 Prompt。" />
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="策略发布给 KOL 寻找后，可启动 System Provider 搜索，或生成 Subagent Hybrid 任务与 Prompt。" />
         <Form form={form} layout="vertical">
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item label="Strategy 名称" name="name" rules={[{ required: true, message: '请输入 Strategy 名称' }]}>
+              <Form.Item label="策略名称" name="name" rules={[{ required: true, message: '请输入策略名称' }]}>
                 <Input />
               </Form.Item>
             </Col>
@@ -535,7 +541,7 @@ const KolStrategy = () => {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="Campaign Goal" name="campaign_goal">
+              <Form.Item label="合作目标" name="campaign_goal">
                 <Select options={goalOptions} />
               </Form.Item>
             </Col>
@@ -552,20 +558,20 @@ const KolStrategy = () => {
             <Col span={12}><Form.Item label="次平台" name="secondary_platforms"><Select mode="multiple" allowClear options={platformOptions} /></Form.Item></Col>
           </Row>
 
-          <Card size="small" title="Finder Entry Rules" style={{ marginBottom: 16 }}>
+          <Card size="small" title="寻找准入规则" style={{ marginBottom: 16 }}>
             <Row gutter={16}>
               <Col span={8}>
-                <Form.Item label="Minimum Followers" name="minimum_followers">
+                <Form.Item label="最低粉丝数" name="minimum_followers">
                   <InputNumber min={0} precision={0} placeholder="e.g. 1000" style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item label="Maximum Followers" name="maximum_followers">
+                <Form.Item label="最高粉丝数" name="maximum_followers">
                   <InputNumber min={0} precision={0} placeholder="optional, e.g. 200000" style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item label="Minimum Avg Views" name="minimum_avg_views">
+                <Form.Item label="最低平均播放" name="minimum_avg_views">
                   <InputNumber min={0} precision={0} placeholder="optional, e.g. 3000" style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
@@ -573,7 +579,7 @@ const KolStrategy = () => {
             <Alert
               type="info"
               showIcon
-              message="Finder will ignore candidates that clearly fall outside these rules. If followers or views are unknown, the candidate stays New for manual review."
+              message="KOL 寻找会过滤明显不符合规则的候选；粉丝数或播放量未知时，候选会留在候选池等待人工判断。"
             />
           </Card>
 
@@ -608,7 +614,7 @@ const KolStrategy = () => {
                 </Upload>
                 <Space style={{ marginTop: 12 }}>
                   <Button type="primary" icon={<RobotOutlined />} loading={materialAnalyzing} onClick={handleAnalyzeMaterials}>
-                    AI 分析材料并生成 Strategy
+                    AI 分析材料并生成策略
                   </Button>
                   <Button disabled>AI 自动调研资料（预留）</Button>
                 </Space>
@@ -642,28 +648,28 @@ const KolStrategy = () => {
           </Row>
 
           <Collapse defaultActiveKey={['editor']} style={{ marginTop: 16 }}>
-            <Panel header="结构化 Strategy 编辑器" key="editor">
-              <Card size="small" title="Product Breakdown" style={{ marginBottom: 12 }}>
+            <Panel header="结构化策略编辑器" key="editor">
+              <Card size="small" title="产品拆解" style={{ marginBottom: 12 }}>
                 <Form.Item name="product_context_text">
                   <TextArea rows={8} />
                 </Form.Item>
               </Card>
-              <Card size="small" title="KOL Persona" style={{ marginBottom: 12 }}>
+              <Card size="small" title="KOL画像" style={{ marginBottom: 12 }}>
                 <Form.Item name="persona_config_text">
                   <TextArea rows={8} />
                 </Form.Item>
               </Card>
-              <Card size="small" title="Search Strategy - 7 Cycles" style={{ marginBottom: 12 }}>
+              <Card size="small" title="7轮搜索策略" style={{ marginBottom: 12 }}>
                 <Form.Item name="search_strategy_text">
                   <TextArea rows={10} />
                 </Form.Item>
               </Card>
-              <Card size="small" title="Scoring Weights" style={{ marginBottom: 12 }}>
+              <Card size="small" title="评分权重" style={{ marginBottom: 12 }}>
                 <Form.Item name="scoring_weights_text">
                   <TextArea rows={8} />
                 </Form.Item>
               </Card>
-              <Card size="small" title="Finder Handoff">
+              <Card size="small" title="寻找任务交接">
                 <Form.Item name="finder_handoff_text">
                   <TextArea rows={8} />
                 </Form.Item>

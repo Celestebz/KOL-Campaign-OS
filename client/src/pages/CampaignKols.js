@@ -179,8 +179,8 @@ const CampaignKols = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">Campaign KOL</h1>
-        <p className="page-subtitle">项目子表：继承 KOL Master 信息，但项目报价、状态、备注和发布链接可单独编辑。</p>
+        <h1 className="page-title">项目 KOL</h1>
+        <p className="page-subtitle">每个项目维护自己的 KOL 执行名单，报价、状态、备注和发布链接可单独编辑。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
@@ -194,7 +194,7 @@ const CampaignKols = () => {
           ]} style={{ width: 160 }} />
           <Input.Search allowClear placeholder="搜索 KOL、Email、国家、备注、视频链接" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchRows} style={{ width: 320 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchRows}>刷新</Button>
-          <Button icon={<SyncOutlined />} loading={syncing} onClick={syncSelected}>{selectedRowKeys.length ? '同步选中到飞书' : '同步待同步到飞书'}</Button>
+          <Button icon={<SyncOutlined />} loading={syncing} onClick={syncSelected}>{selectedRowKeys.length ? '同步选中到飞书项目子表' : '同步待同步到飞书项目子表'}</Button>
           <Popconfirm title="确定删除选中的项目 KOL？" onConfirm={batchDelete}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
           </Popconfirm>
