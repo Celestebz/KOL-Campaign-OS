@@ -375,15 +375,15 @@ router.post('/:id/import', async (req, res) => {
       results.push({ ...(await upsertCandidate(normalized)), kol_name: normalized.kol_name, profile_url: normalized.profile_url });
     }
 
+    const existingSummary = mergeSummary(subtask.agent_result_summary);
+    const cycleStatus = clean(body.cycle_status || body.cycleStatus || existingSummary.cycle_status)
+      || 'completed';
+    const cycleStatusReason = clean(body.cycle_status_reason || body.cycleStatusReason || body.skipped_reason || body.skippedReason || existingSummary.cycle_status_reason || existingSummary.skipped_reason)
+      || (cycleStatus === 'blocked' ? 'required route could not be completed' : '');
     const successCount = results.filter((item) => item.success && item.status !== 'ignored').length;
     const rejectedCount = results.filter((item) => item.success && item.status === 'ignored').length;
     const failedCount = results.filter((item) => !item.success).length;
-    const finalStatus = failedCount > 0 && successCount === 0 && rejectedCount === 0 ? 'failed' : 'completed';
-    const existingSummary = mergeSummary(subtask.agent_result_summary);
-    const cycleStatus = clean(body.cycle_status || body.cycleStatus || existingSummary.cycle_status)
-      || (finalStatus === 'failed' ? 'blocked' : 'completed');
-    const cycleStatusReason = clean(body.cycle_status_reason || body.cycleStatusReason || body.skipped_reason || body.skippedReason || existingSummary.cycle_status_reason || existingSummary.skipped_reason)
-      || (cycleStatus === 'blocked' ? 'required route could not be completed' : '');
+    const finalStatus = cycleStatus === 'blocked' || (failedCount > 0 && successCount === 0 && rejectedCount === 0) ? 'failed' : 'completed';
     await dbOperations.run(
       `UPDATE finder_subtasks SET
        status = ?, accepted_count = ?, rejected_count = ?, failed_count = ?,

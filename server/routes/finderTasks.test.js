@@ -2,15 +2,19 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { dbOperations } = require('../database');
 
-const tiktokCycles = [
-  { cycle: 'C1', name: 'Competitor Reviews', keywords: 'Battle Born battery review', target_platforms: ['tiktok'] },
-  { cycle: 'C2', name: 'Category Search', keywords: 'lifepo4 battery', target_platforms: ['tiktok'] },
-  { cycle: 'C3', name: 'Use-case Search', keywords: 'rv lithium upgrade', target_platforms: ['tiktok'] },
-  { cycle: 'C4', name: 'Feature / Technical Search', keywords: 'bms bluetooth battery', target_platforms: ['tiktok'] },
-  { cycle: 'C5', name: 'Community / Audience Search', keywords: 'rv battery reddit', target_platforms: ['tiktok'] },
-  { cycle: 'C6', name: 'Platform Native Search', keywords: '#lifepo4', target_platforms: ['tiktok'] },
-  { cycle: 'C7', name: 'Spider-web Expansion', keywords: 'tagged accounts', target_platforms: ['tiktok'] }
+const baseCycles = [
+  { cycle: 'C1', name: 'Competitor Reviews', keywords: 'competitor review', target_platforms: [] },
+  { cycle: 'C2', name: 'Category Search', keywords: 'category creator', target_platforms: [] },
+  { cycle: 'C3', name: 'Use-case Search', keywords: 'use case creator', target_platforms: [] },
+  { cycle: 'C4', name: 'Feature / Technical Search', keywords: 'feature review', target_platforms: [] },
+  { cycle: 'C5', name: 'Community / Audience Search', keywords: 'community creator', target_platforms: [] },
+  { cycle: 'C6', name: 'Platform Native Search', keywords: 'native search', target_platforms: [] },
+  { cycle: 'C7', name: 'Spider-web Expansion', keywords: 'seed expansion', target_platforms: [] }
 ];
+
+function cyclesFor(platform) {
+  return baseCycles.map((cycle) => ({ ...cycle, target_platforms: [platform] }));
+}
 
 function findGenerateHandler(router) {
   const layer = router.stack.find((item) => (
@@ -38,13 +42,26 @@ function callHandler(handler, { params, body }) {
   });
 }
 
-async function withMockedFinderTask(rawRequest, assertions) {
+async function withMockedFinderTask(options, assertions) {
   const original = {
     get: dbOperations.get,
     query: dbOperations.query,
     run: dbOperations.run
   };
+  const platform = options.platform || 'tiktok';
+  const rawRequest = {
+    strategy_id: 4,
+    execution_mode: 'subagent_hybrid',
+    subtask_mode: 'cycle',
+    search_intensity: options.search_intensity || 'standard',
+    cycles_source: options.cycles_source || 'intensity',
+    target_platforms: [platform],
+    discovery_routes: options.discovery_routes || [],
+    seed_urls: options.seed_urls || [],
+    ...(options.raw_request || {})
+  };
   const insertedSubtasks = new Map();
+  const taskUpdates = [];
   let nextSubtaskId = 100;
 
   dbOperations.get = async (sql, params = []) => {
@@ -54,16 +71,10 @@ async function withMockedFinderTask(rawRequest, assertions) {
         id: 9,
         strategy_id: 4,
         campaign_id: 6,
-        target_platforms: JSON.stringify(['tiktok']),
+        target_platforms: JSON.stringify([platform]),
         discovery_routes: JSON.stringify(rawRequest.discovery_routes),
-        search_cycles: JSON.stringify(tiktokCycles),
-        raw_request: JSON.stringify({
-          strategy_id: 4,
-          execution_mode: 'subagent_hybrid',
-          subtask_mode: 'cycle',
-          target_platforms: ['tiktok'],
-          ...rawRequest
-        })
+        search_cycles: JSON.stringify(cyclesFor(platform)),
+        raw_request: JSON.stringify(rawRequest)
       };
     }
     if (text.includes('FROM kol_strategies')) {
@@ -71,18 +82,18 @@ async function withMockedFinderTask(rawRequest, assertions) {
         id: 4,
         campaign_id: 6,
         status: 'ready',
-        name: 'TikTok Battery Strategy',
+        name: `${platform} Strategy`,
         brand: 'WEIZE',
         product: 'Mini LiFePO4 Battery',
         category: 'LiFePO4 Battery',
-        primary_platform: 'tiktok',
+        primary_platform: platform,
         secondary_platforms: JSON.stringify([]),
-        search_strategy: JSON.stringify(tiktokCycles),
+        search_strategy: JSON.stringify(cyclesFor(platform)),
         product_context: '{}',
         persona_config: '{}',
         scoring_weights: '{}',
         finder_handoff: JSON.stringify({
-          required_platforms: ['tiktok'],
+          required_platforms: [platform],
           required_keywords: ['lifepo4', 'rv battery']
         })
       };
@@ -118,6 +129,9 @@ async function withMockedFinderTask(rawRequest, assertions) {
       const row = insertedSubtasks.get(params[1]);
       insertedSubtasks.set(params[1], { ...row, agent_prompt: params[0] });
     }
+    if (text.includes('UPDATE finder_tasks SET')) {
+      taskUpdates.push({ sql: text, params });
+    }
     return { id: 1 };
   };
 
@@ -125,10 +139,9 @@ async function withMockedFinderTask(rawRequest, assertions) {
     const handler = findGenerateHandler(require('./finderTasks'));
     const response = await callHandler(handler, {
       params: { id: '9' },
-      body: {}
+      body: options.body || {}
     });
-
-    await assertions(response);
+    await assertions(response, taskUpdates);
   } finally {
     dbOperations.get = original.get;
     dbOperations.query = original.query;
@@ -136,59 +149,108 @@ async function withMockedFinderTask(rawRequest, assertions) {
   }
 }
 
-test('TikTok first-run no-seed subtasks make C1-C6 executable and skip C7 seed expansion', async () => {
-  await withMockedFinderTask({
-    discovery_routes: ['google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok', 'seed_posts_to_profile'],
-    seed_urls: []
-  }, async (response) => {
-    assert.equal(response.statusCode, 200);
-    assert.equal(response.payload.data.length, 7);
+function searchCycles(response) {
+  return response.payload.data.map((row) => row.search_cycle);
+}
 
-    for (const subtask of response.payload.data.filter((row) => row.search_cycle !== 'C7')) {
-      const summary = typeof subtask.agent_result_summary === 'string'
-        ? JSON.parse(subtask.agent_result_summary)
-        : subtask.agent_result_summary;
-      const plan = summary.route_plan;
+function latestTaskSummary(taskUpdates) {
+  const update = taskUpdates.findLast((item) => item.sql.includes('raw_response_summary'));
+  assert.ok(update, 'expected task update with raw_response_summary');
+  return JSON.parse(update.params.at(-2));
+}
+
+test('TikTok standard first-run no-seed generates C2/C3/C5/C6 and defers C7', async () => {
+  await withMockedFinderTask({
+    platform: 'tiktok',
+    search_intensity: 'standard',
+    discovery_routes: ['google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok', 'seed_posts_to_profile']
+  }, async (response, taskUpdates) => {
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(searchCycles(response), ['C2', 'C3', 'C5', 'C6']);
+    assert.equal(response.payload.meta.expansion.expansion_status, 'deferred');
+    assert.equal(response.payload.meta.expansion.expansion_reason, 'waiting_for_seeds');
+    const summary = latestTaskSummary(taskUpdates);
+    assert.ok(summary.some((item) => item.expansion_cycle === 'C7' && item.expansion_status === 'deferred'));
+
+    for (const subtask of response.payload.data) {
+      const plan = subtask.agent_result_summary.route_plan;
       const requiredRoutes = plan.required_routes.map((item) => item.route);
       const optionalRoutes = plan.optional_routes.map((item) => item.route);
-      const skippedRoutes = plan.skipped_routes.map((item) => item.route);
-
-      assert.equal(summary.cycle_status, 'pending');
-      assert.ok(requiredRoutes.includes('google_web_to_tiktok'), `${subtask.search_cycle} should require google_web_to_tiktok`);
-      assert.ok(optionalRoutes.includes('youtube_to_tiktok'), `${subtask.search_cycle} should offer youtube_to_tiktok`);
-      assert.ok(optionalRoutes.includes('instagram_to_tiktok'), `${subtask.search_cycle} should offer instagram_to_tiktok`);
-      assert.ok(optionalRoutes.includes('reddit_to_tiktok'), `${subtask.search_cycle} should offer reddit_to_tiktok`);
-      assert.ok(skippedRoutes.includes('seed_posts_to_profile'), `${subtask.search_cycle} should mark seed route skipped without seed URLs`);
-      assert.ok(!requiredRoutes.includes('seed_posts_to_profile'), `${subtask.search_cycle} should not require seed without seed URLs`);
+      assert.ok(requiredRoutes.includes('google_web_to_tiktok'));
+      assert.ok(optionalRoutes.includes('youtube_to_tiktok'));
+      assert.ok(optionalRoutes.includes('instagram_to_tiktok'));
+      assert.ok(optionalRoutes.includes('reddit_to_tiktok'));
     }
-
-    const c7 = response.payload.data.find((row) => row.search_cycle === 'C7');
-    const c7Summary = typeof c7.agent_result_summary === 'string'
-      ? JSON.parse(c7.agent_result_summary)
-      : c7.agent_result_summary;
-    assert.equal(c7.status, 'completed');
-    assert.equal(c7Summary.cycle_status, 'skipped');
-    assert.equal(c7Summary.cycle_status_reason, 'no_seed');
-    assert.equal(c7Summary.route_plan.target_count, 0);
-    assert.equal(c7Summary.route_plan.required_routes.length, 0);
-    assert.ok(c7Summary.route_plan.skipped_routes.some((item) => item.route === 'seed_posts_to_profile'));
   });
 });
 
-test('TikTok C7 requires seed expansion when seed URLs are supplied', async () => {
+test('Instagram standard first-run generates C1/C2/C3/C5', async () => {
   await withMockedFinderTask({
-    discovery_routes: ['google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok', 'seed_posts_to_profile'],
-    seed_urls: ['https://www.tiktok.com/@example']
+    platform: 'instagram',
+    search_intensity: 'standard',
+    discovery_routes: ['youtube_to_instagram', 'google_web_to_instagram', 'reddit_to_instagram', 'seed_posts_to_profile']
   }, async (response) => {
     assert.equal(response.statusCode, 200);
-    const c7 = response.payload.data.find((row) => row.search_cycle === 'C7');
-    const c7Summary = typeof c7.agent_result_summary === 'string'
-      ? JSON.parse(c7.agent_result_summary)
-      : c7.agent_result_summary;
-    const requiredRoutes = c7Summary.route_plan.required_routes.map((item) => item.route);
-    assert.equal(c7.status, 'pending');
-    assert.equal(c7Summary.cycle_status, 'pending');
-    assert.ok(requiredRoutes.includes('seed_posts_to_profile'));
-    assert.ok(!c7Summary.route_plan.skipped_routes.some((item) => item.route === 'seed_posts_to_profile'));
+    assert.deepEqual(searchCycles(response), ['C1', 'C2', 'C3', 'C5']);
+    assert.equal(response.payload.meta.expansion.expansion_status, 'deferred');
+  });
+});
+
+test('YouTube quick first-run generates C1/C2/C4', async () => {
+  await withMockedFinderTask({
+    platform: 'youtube',
+    search_intensity: 'quick',
+    discovery_routes: ['youtube_native_search', 'google_web_to_youtube']
+  }, async (response) => {
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(searchCycles(response), ['C1', 'C2', 'C4']);
+  });
+});
+
+test('Full first-run generates C1-C6 and excludes C7', async () => {
+  await withMockedFinderTask({
+    platform: 'tiktok',
+    search_intensity: 'full',
+    discovery_routes: ['google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok', 'seed_posts_to_profile']
+  }, async (response) => {
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(searchCycles(response), ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']);
+    assert.equal(response.payload.data.some((row) => row.search_cycle === 'C7'), false);
+  });
+});
+
+test('Expansion phase with seed generates only C7', async () => {
+  await withMockedFinderTask({
+    platform: 'tiktok',
+    search_intensity: 'standard',
+    discovery_routes: ['google_web_to_tiktok', 'seed_posts_to_profile'],
+    body: {
+      phase: 'expansion',
+      cycles: ['C7'],
+      seed_urls: ['https://www.tiktok.com/@example']
+    }
+  }, async (response) => {
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(searchCycles(response), ['C7']);
+    const plan = response.payload.data[0].agent_result_summary.route_plan;
+    assert.ok(plan.required_routes.some((item) => item.route === 'seed_posts_to_profile'));
+    assert.equal(response.payload.meta.expansion, null);
+  });
+});
+
+test('Expansion phase without seed defers C7 and creates no subtask', async () => {
+  await withMockedFinderTask({
+    platform: 'tiktok',
+    search_intensity: 'standard',
+    discovery_routes: ['google_web_to_tiktok', 'seed_posts_to_profile'],
+    body: {
+      phase: 'expansion',
+      cycles: ['C7']
+    }
+  }, async (response) => {
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.payload.data.length, 0);
+    assert.equal(response.payload.meta.expansion.expansion_status, 'deferred');
+    assert.equal(response.payload.meta.expansion.expansion_reason, 'waiting_for_seeds');
   });
 });

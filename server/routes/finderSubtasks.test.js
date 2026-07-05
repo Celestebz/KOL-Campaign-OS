@@ -90,3 +90,64 @@ test('cycle-level subtask import rejects candidates that use cycle_multi_route a
     dbOperations.run = original.run;
   }
 });
+
+test('cycle-level subtask import preserves blocked cycle status', async () => {
+  const original = {
+    get: dbOperations.get,
+    query: dbOperations.query,
+    run: dbOperations.run
+  };
+  const updates = [];
+
+  dbOperations.get = async (sql) => {
+    if (String(sql).includes('FROM finder_subtasks fs')) {
+      return {
+        id: 13,
+        finder_task_id: 8,
+        strategy_id: 3,
+        campaign_id: 2,
+        discovery_route: 'cycle_multi_route',
+        source_platform: 'multi',
+        target_platform: 'tiktok',
+        search_cycle: 'C2',
+        source_query: 'lifepo4 battery',
+        agent_result_summary: '{}'
+      };
+    }
+    return null;
+  };
+  dbOperations.query = async () => [];
+  dbOperations.run = async (sql, params = []) => {
+    if (String(sql).includes('UPDATE finder_subtasks SET')) updates.push({ sql: String(sql), params });
+    return { id: 1 };
+  };
+
+  try {
+    const handler = findImportHandler(require('./finderSubtasks'));
+    const response = await callHandler(handler, {
+      params: { id: '13' },
+      body: {
+        finder_subtask_id: 13,
+        strategy_id: 3,
+        cycle_status: 'blocked',
+        cycle_status_reason: 'WebSearch tool unavailable',
+        route_coverage: [
+          { route: 'google_web_to_tiktok', status: 'blocked', reason: 'WebSearch tool unavailable' }
+        ],
+        accepted_candidates: [],
+        rejected_candidates: []
+      }
+    });
+
+    assert.equal(response.statusCode, 200);
+    const subtaskUpdate = updates[0];
+    assert.equal(subtaskUpdate.params[0], 'failed');
+    const summary = JSON.parse(subtaskUpdate.params[4]);
+    assert.equal(summary.cycle_status, 'blocked');
+    assert.equal(summary.cycle_status_reason, 'WebSearch tool unavailable');
+  } finally {
+    dbOperations.get = original.get;
+    dbOperations.query = original.query;
+    dbOperations.run = original.run;
+  }
+});

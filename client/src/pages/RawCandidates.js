@@ -45,13 +45,43 @@ const defaultRoutesForTargets = (targets = []) => {
 
 const defaultSubagentRoutesForTargets = (targets = []) => {
   const routes = [];
-  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube', 'spider_web_expansion');
+  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube');
   if (targets.includes('instagram')) routes.push('youtube_to_instagram', 'google_web_to_instagram', 'reddit_to_instagram', 'seed_posts_to_profile', 'instagram_native_small_batch');
   if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok');
   return [...new Set(routes.length ? routes : ['youtube_native_search'])];
 };
 
 const cycleOrder = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
+
+const searchIntensityOptions = [
+  { value: 'quick', label: '快速验证' },
+  { value: 'standard', label: '标准搜索（推荐）' },
+  { value: 'full', label: '全量搜索' }
+];
+
+const searchIntensityCycles = {
+  youtube: {
+    quick: ['C1', 'C2', 'C4'],
+    standard: ['C1', 'C2', 'C3', 'C4'],
+    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
+  },
+  instagram: {
+    quick: ['C2', 'C3', 'C5'],
+    standard: ['C1', 'C2', 'C3', 'C5'],
+    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
+  },
+  tiktok: {
+    quick: ['C2', 'C3', 'C5'],
+    standard: ['C2', 'C3', 'C5', 'C6'],
+    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
+  }
+};
+
+const recommendedCyclesForTargets = (targets = [], intensity = 'standard') => {
+  const normalizedTargets = [...new Set((targets.length ? targets : ['youtube']).filter((target) => searchIntensityCycles[target]))];
+  const ids = normalizedTargets.flatMap((target) => searchIntensityCycles[target]?.[intensity] || searchIntensityCycles[target]?.standard || []);
+  return cycleOrder.filter((cycle) => ids.includes(cycle) && cycle !== 'C7');
+};
 
 const sortCycles = (cycles = []) => [...cycles].sort((a, b) => (
   cycleOrder.indexOf(a.cycle) - cycleOrder.indexOf(b.cycle)
@@ -193,7 +223,10 @@ const RawCandidates = () => {
   const [form] = Form.useForm();
   const [taskForm] = Form.useForm();
   const executionMode = Form.useWatch('execution_mode', taskForm);
+  const searchIntensity = Form.useWatch('search_intensity', taskForm) || 'standard';
+  const selectedTargetPlatforms = Form.useWatch('target_platforms', taskForm) || [];
   const selectedTaskCycles = Form.useWatch('cycles', taskForm) || [];
+  const recommendedTaskCycles = recommendedCyclesForTargets(selectedTargetPlatforms, searchIntensity);
 
   const campaignOptions = useMemo(() => campaigns.map((item) => ({
     value: item.id,
@@ -243,6 +276,23 @@ const RawCandidates = () => {
     fetchSubtasks(finderTasks[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finderTasks[0]?.id]);
+
+  useEffect(() => {
+    if (!taskModalOpen) return;
+    taskForm.setFieldValue('cycles', recommendedTaskCycles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskModalOpen, searchIntensity, selectedTargetPlatforms.join(',')]);
+
+  useEffect(() => {
+    if (!taskModalOpen || !selectedTargetPlatforms.length) return;
+    taskForm.setFieldValue(
+      'discovery_routes',
+      executionMode === 'subagent_hybrid'
+        ? defaultSubagentRoutesForTargets(selectedTargetPlatforms)
+        : defaultRoutesForTargets(selectedTargetPlatforms)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskModalOpen, executionMode]);
 
   useEffect(() => {
     if (!taskModalOpen) return;
@@ -316,9 +366,6 @@ const RawCandidates = () => {
       return;
     }
     const strategyCycles = sortCycles(selectedStrategy.search_strategy || []);
-    const cycles = strategyCycles.length
-      ? strategyCycles.filter((cycle) => String(cycle.keywords || '').trim()).map((cycle) => cycle.cycle)
-      : ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
     const targetPlatforms = [
       selectedStrategy.primary_platform,
       ...(selectedStrategy.secondary_platforms || []),
@@ -331,8 +378,10 @@ const RawCandidates = () => {
       Array.isArray(cycle.discovery_routes) ? cycle.discovery_routes : String(cycle.discovery_routes || '').split(/[,，;]/)
     )).map((value) => String(value || '').trim()).filter(Boolean);
     const uniqueTargetPlatforms = [...new Set(targetPlatforms.length ? targetPlatforms : ['youtube'])];
+    const searchIntensityValue = 'standard';
     taskForm.setFieldsValue({
-      cycles,
+      search_intensity: searchIntensityValue,
+      cycles: recommendedCyclesForTargets(uniqueTargetPlatforms, searchIntensityValue),
       discovery_routes: [...new Set(discoveryRoutes.length ? discoveryRoutes : defaultRoutesForTargets(uniqueTargetPlatforms))],
       search_sources: [...new Set(searchSources.length ? searchSources : ['maton_agent', 'google_web', 'youtube_search'])],
       target_platforms: uniqueTargetPlatforms,
@@ -352,23 +401,50 @@ const RawCandidates = () => {
     const values = await taskForm.validateFields();
     setTaskLoading(true);
     try {
+      const recommendedCycles = recommendedCyclesForTargets(values.target_platforms || [], values.search_intensity || 'standard');
+      const selectedCycles = [...(values.cycles || [])].sort().join(',');
+      const expectedCycles = [...recommendedCycles].sort().join(',');
       const res = await axios.post('/api/finder-tasks', {
         strategy_id: selectedStrategy.id,
-        ...values
+        ...values,
+        cycles_source: selectedCycles === expectedCycles ? 'intensity' : 'manual'
       });
       const task = res.data.data;
       if (values.execution_mode === 'subagent_hybrid') {
-        const generated = await axios.post(`/api/finder-tasks/${task.id}/subtasks/generate`);
+        const generated = await axios.post(`/api/finder-tasks/${task.id}/subtasks/generate`, {
+          phase: 'first_run',
+          search_intensity: values.search_intensity,
+          seed_urls: values.seed_urls
+        });
         setFinderSubtasks(generated.data.data || []);
         message.success(`已生成 ${generated.data.data?.length || 0} 个子任务`);
       } else {
-        message.success('7 轮搜索任务已启动');
+        message.success('Finder 搜索任务已启动');
       }
       setTaskModalOpen(false);
       fetchFinderTasks(selectedStrategy.id);
       fetchCandidates();
     } catch (error) {
       message.error(error.response?.data?.error || '启动寻找任务失败');
+    } finally {
+      setTaskLoading(false);
+    }
+  };
+
+  const generateExpansionSubtask = async () => {
+    if (!latestTask?.id) return;
+    setTaskLoading(true);
+    try {
+      const res = await axios.post(`/api/finder-tasks/${latestTask.id}/subtasks/generate`, {
+        phase: 'expansion',
+        cycles: ['C7']
+      });
+      const count = res.data.data?.length || 0;
+      setFinderSubtasks(res.data.data || []);
+      message.success(count ? `已生成 ${count} 个 C7 线索扩展任务` : 'C7 仍在等待种子候选');
+      fetchFinderTasks(selectedStrategy?.id);
+    } catch (error) {
+      message.error(error.response?.data?.error || '生成 C7 线索扩展任务失败');
     } finally {
       setTaskLoading(false);
     }
@@ -398,6 +474,7 @@ const RawCandidates = () => {
       'discovery_routes',
       executionMode === 'subagent_hybrid' ? defaultSubagentRoutesForTargets(targets) : defaultRoutesForTargets(targets)
     );
+    taskForm.setFieldValue('cycles', recommendedCyclesForTargets(targets, taskForm.getFieldValue('search_intensity') || 'standard'));
   };
 
   const openImport = (subtask) => {
@@ -610,6 +687,7 @@ const RawCandidates = () => {
   }));
 
   const latestTask = finderTasks[0];
+  const expansionSummary = (latestTask?.raw_response_summary || []).find((item) => item.expansion_cycle === 'C7' && item.expansion_status === 'deferred');
   const taskPercent = latestTask?.total_cycles
     ? Math.round(((latestTask.completed_cycles || 0) / latestTask.total_cycles) * 100)
     : 0;
@@ -630,7 +708,7 @@ const RawCandidates = () => {
           <InputNumber placeholder="最低评分" min={0} max={100} value={filters.min_score} onChange={(v) => updateFilter('min_score', v)} style={{ width: 120 }} />
           <Input.Search allowClear placeholder="搜索 KOL、链接、关键词、国家" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchCandidates} style={{ width: 300 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchCandidates}>刷新</Button>
-          <Button type="primary" icon={<SearchOutlined />} disabled={!selectedStrategy} onClick={openTaskModal}>开始 7 轮搜索</Button>
+          <Button type="primary" icon={<SearchOutlined />} disabled={!selectedStrategy} onClick={openTaskModal}>创建 Finder 任务</Button>
           <Button type="primary" icon={<PlusOutlined />} disabled={!selectedStrategy} onClick={openCreate}>新增候选</Button>
         </Space>
       </Card>
@@ -657,6 +735,13 @@ const RawCandidates = () => {
                       {attempt.cycle} / {attempt.search_source || attempt.provider} → {attempt.target_platform || attempt.platform}: {attempt.ok ? 'ok' : attempt.error}
                     </Tag>
                   ))}
+                </Space>
+              ) : null}
+              {expansionSummary ? (
+                <Space wrap>
+                  <Tag color="default">C7 线索扩展：等待种子候选</Tag>
+                  <span style={{ color: '#666' }}>{expansionSummary.expansion_reason || 'waiting_for_seeds'}</span>
+                  <Button size="small" onClick={generateExpansionSubtask} loading={taskLoading}>生成 C7 线索扩展任务</Button>
                 </Space>
               ) : null}
               {finderSubtasks.length ? (
@@ -717,7 +802,7 @@ const RawCandidates = () => {
               ) : null}
             </>
           ) : (
-            <span style={{ color: '#666' }}>选择已发布策略后，可以启动自动 7 轮搜索。搜索源负责发现线索，目标 KOL 平台负责最终沉淀。</span>
+            <span style={{ color: '#666' }}>选择已发布策略后，可以按搜索强度创建 Finder 任务。C7 线索扩展会在有种子候选后再生成。</span>
           )}
         </Space>
       </Card>
@@ -820,16 +905,22 @@ const RawCandidates = () => {
           </Form.Item>
           {executionMode === 'subagent_hybrid' ? (
             <div style={{ marginBottom: 16, color: '#666' }}>
-              将按搜索意图生成 Subagent Hybrid 子任务，预计 {selectedTaskCycles.length || 0} 个。每个任务会包含必跑/可选发现路径，候选导入时仍需记录真实发现路径。
+              将按搜索强度生成 Subagent Hybrid 子任务，预计 {selectedTaskCycles.length || 0} 个。支持并行的外部 agent 可同时跑这些 cycle；不支持并行时会更慢。
             </div>
           ) : null}
+          <Form.Item label="搜索强度" name="search_intensity" rules={[{ required: true, message: '请选择搜索强度' }]}>
+            <Select options={searchIntensityOptions} />
+          </Form.Item>
+          <div style={{ marginBottom: 16, color: '#666' }}>
+            推荐轮次：{recommendedTaskCycles.length ? recommendedTaskCycles.join(' / ') : '请先选择目标平台'}。C7 线索扩展会在有种子候选后作为二阶段任务生成。
+          </div>
           <Form.Item label="发现路径" name="discovery_routes" rules={[{ required: true, message: '请选择至少一个发现路径' }]}>
             <Checkbox.Group options={discoveryRouteOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
           </Form.Item>
           <Form.Item label="种子链接" name="seed_urls" tooltip="粘贴 Instagram post、reel 或 profile 链接，每行一个。">
             <TextArea rows={3} placeholder={"https://www.instagram.com/reel/...\nhttps://www.instagram.com/example/"} />
           </Form.Item>
-          <Form.Item label="搜索轮次" name="cycles" rules={[{ required: true, message: '请选择至少一个搜索轮次' }]}>
+          <Form.Item label="高级：手动搜索轮次" name="cycles" rules={[{ required: true, message: '请选择至少一个搜索轮次' }]} tooltip="默认按搜索强度推荐。手动选择会随任务一起提交；无种子时 C7 会延后。">
             <Checkbox.Group options={cycleOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
           </Form.Item>
           <Form.Item label="高级搜索源" name="search_sources" tooltip="兼容旧版寻找执行器的高级设置。Instagram V2 默认不使用站内主页搜索。">
