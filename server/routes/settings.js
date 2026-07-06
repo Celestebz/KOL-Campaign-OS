@@ -156,11 +156,11 @@ async function upsertProvider(key, row = {}) {
   await dbOperations.run(
     `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(provider) DO UPDATE SET
-       api_key = excluded.api_key,
-       base_url = excluded.base_url,
-       model = excluded.model,
-       extra_config = excluded.extra_config,
+     ON DUPLICATE KEY UPDATE
+       api_key = VALUES(api_key),
+       base_url = VALUES(base_url),
+       model = VALUES(model),
+       extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [
       key,
@@ -176,8 +176,8 @@ async function upsertSelection(selection) {
   await dbOperations.run(
     `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
      VALUES (?, '', '', '', ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(provider) DO UPDATE SET
-       extra_config = excluded.extra_config,
+     ON DUPLICATE KEY UPDATE
+       extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [SYSTEM_SELECTION_KEY, JSON.stringify(selection)]
   );
@@ -199,10 +199,10 @@ async function upsertFeishu(row = {}) {
   await dbOperations.run(
     `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
      VALUES (?, ?, ?, '', ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(provider) DO UPDATE SET
-       api_key = excluded.api_key,
-       base_url = excluded.base_url,
-       extra_config = excluded.extra_config,
+     ON DUPLICATE KEY UPDATE
+       api_key = VALUES(api_key),
+       base_url = VALUES(base_url),
+       extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [
       FEISHU_PROVIDER_KEY,
@@ -222,9 +222,9 @@ async function upsertExternalAgent(row = {}) {
   await dbOperations.run(
     `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
      VALUES (?, ?, '', '', ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(provider) DO UPDATE SET
-       api_key = excluded.api_key,
-       extra_config = excluded.extra_config,
+     ON DUPLICATE KEY UPDATE
+       api_key = VALUES(api_key),
+       extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [
       EXTERNAL_AGENT_PROVIDER_KEY,

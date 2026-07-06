@@ -3,6 +3,15 @@ const { dbOperations } = require('../database');
 
 const router = express.Router();
 
+const GLOBAL_RISK_CATEGORIES = new Set([
+  'historical_refusal',
+  'communication_risk',
+  'price_mismatch',
+  'brand_safety',
+  'delivery_issue',
+  'other'
+]);
+
 function clean(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
@@ -92,6 +101,11 @@ async function findExistingCustomer(candidate) {
     if (existing) return existing;
   }
   return null;
+}
+
+function normalizeRiskCategory(value) {
+  const category = clean(value);
+  return GLOBAL_RISK_CATEGORIES.has(category) ? category : 'other';
 }
 
 async function createCustomerFromCandidate(candidate) {
@@ -238,11 +252,23 @@ router.get('/', async (req, res) => {
     const { campaign_id, strategy_id, platform, status, min_score, search } = req.query;
     let sql = `
       SELECT rc.*, c.name as campaign_name, ft.name as finder_task_name,
-        ks.name as strategy_name, ks.status as strategy_status
+        ks.name as strategy_name, ks.status as strategy_status,
+        mk.id as matched_customer_id,
+        mk.cooperation_status as global_cooperation_status,
+        mk.cooperation_risk_category as global_cooperation_risk_category,
+        mk.cooperation_risk_reason as global_cooperation_risk_reason,
+        mk.cooperation_status_updated_at as global_cooperation_status_updated_at
       FROM raw_candidates rc
       LEFT JOIN campaigns c ON c.id = rc.campaign_id
       LEFT JOIN finder_tasks ft ON ft.id = rc.finder_task_id
       LEFT JOIN kol_strategies ks ON ks.id = rc.strategy_id
+      LEFT JOIN customers mk ON (
+        (rc.profile_url IS NOT NULL AND rc.profile_url != '' AND (
+          mk.profile_url = rc.profile_url OR mk.youtube_url = rc.profile_url OR mk.instagram_url = rc.profile_url OR mk.tiktok_url = rc.profile_url
+        ))
+        OR (rc.email IS NOT NULL AND rc.email != '' AND mk.email = rc.email)
+        OR (rc.kol_name IS NOT NULL AND rc.kol_name != '' AND mk.name = rc.kol_name)
+      )
       WHERE 1=1
     `;
     const params = [];
@@ -293,13 +319,13 @@ router.post('/', async (req, res) => {
     const strategy = await getReadyStrategy(data.strategy_id);
 
     const fields = [
-      'finder_task_id', 'campaign_id', 'strategy_id', 'platform', 'kol_name', 'contact_name',
+        'finder_task_id', 'campaign_id', 'strategy_id', 'platform', 'kol_name', 'contact_name',
       'profile_url', 'video_url', 'video_title', 'followers', 'avg_views',
       'email', 'phone', 'country_region', 'matched_keywords', 'ai_score',
       'ai_match_reason', 'status', 'source', 'raw_data', 'search_cycle',
       'matched_persona', 'scoring_breakdown', 'discovery_route', 'source_platform',
       'target_platform', 'source_agent', 'evidence_url', 'evidence_title',
-      'evidence_type', 'source_query'
+      'evidence_type', 'source_query', 'rejection_scope', 'rejection_category', 'rejection_reason'
     ];
     const values = [
       data.finder_task_id || null,
@@ -332,7 +358,10 @@ router.post('/', async (req, res) => {
       clean(data.evidence_url),
       clean(data.evidence_title),
       clean(data.evidence_type),
-      clean(data.source_query)
+      clean(data.source_query),
+      clean(data.rejection_scope),
+      clean(data.rejection_category),
+      clean(data.rejection_reason)
     ];
     const placeholders = fields.map(() => '?').join(', ');
     const result = await dbOperations.run(
@@ -383,11 +412,55 @@ router.post('/batch-ignore', async (req, res) => {
     const ids = req.body.ids || req.body.candidateIds || [];
     if (!ids.length) return res.status(400).json({ success: false, error: 'Please select candidates' });
     const placeholders = ids.map(() => '?').join(',');
+    const category = clean(req.body.rejection_category);
+    const reason = clean(req.body.rejection_reason || req.body.reason);
     await dbOperations.run(
-      `UPDATE raw_candidates SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
-      ['ignored', ...ids]
+      `UPDATE raw_candidates
+       SET status = ?, rejection_scope = ?, rejection_category = COALESCE(NULLIF(?, ''), rejection_category),
+           rejection_reason = COALESCE(NULLIF(?, ''), rejection_reason), updated_at = CURRENT_TIMESTAMP
+       WHERE id IN (${placeholders})`,
+      ['ignored', 'project', category, reason, ...ids]
     );
     res.json({ success: true, message: `Ignored ${ids.length} candidates` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/mark-do-not-contact', async (req, res) => {
+  try {
+    const candidate = await dbOperations.get('SELECT * FROM raw_candidates WHERE id = ?', [req.params.id]);
+    if (!candidate) return res.status(404).json({ success: false, error: 'Raw candidate not found' });
+    const reason = clean(req.body.reason || req.body.cooperation_risk_reason);
+    if (!reason) return res.status(400).json({ success: false, error: 'Global cooperation risk reason is required' });
+    const category = normalizeRiskCategory(req.body.category || req.body.cooperation_risk_category);
+    const existing = await findExistingCustomer(candidate);
+    const customer = existing || await createCustomerFromCandidate(candidate);
+
+    await dbOperations.run(
+      `UPDATE customers SET
+       cooperation_status = ?,
+       cooperation_risk_category = ?,
+       cooperation_risk_reason = ?,
+       cooperation_status_updated_at = CURRENT_TIMESTAMP,
+       cooperation_status_source_raw_candidate_id = ?,
+       sync_status = 'sync_pending',
+       updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      ['do_not_contact', category, reason, candidate.id, customer.id]
+    );
+    await dbOperations.run(
+      `UPDATE raw_candidates SET
+       status = CASE WHEN status IN ('approved', 'duplicate') THEN status ELSE 'risk_review' END,
+       rejection_scope = 'global',
+       rejection_category = ?,
+       rejection_reason = ?,
+       updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [category, reason, candidate.id]
+    );
+    const updated = await dbOperations.get('SELECT * FROM customers WHERE id = ?', [customer.id]);
+    res.json({ success: true, data: updated, message: 'KOL marked as global do-not-contact' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -420,9 +493,14 @@ router.post('/:id/approve', async (req, res) => {
 
 router.post('/:id/ignore', async (req, res) => {
   try {
+    const category = clean(req.body.rejection_category);
+    const reason = clean(req.body.rejection_reason || req.body.reason);
     await dbOperations.run(
-      'UPDATE raw_candidates SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      ['ignored', req.params.id]
+      `UPDATE raw_candidates
+       SET status = ?, rejection_scope = ?, rejection_category = COALESCE(NULLIF(?, ''), rejection_category),
+           rejection_reason = COALESCE(NULLIF(?, ''), rejection_reason), updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      ['ignored', 'project', category, reason, req.params.id]
     );
     res.json({ success: true, message: 'Candidate ignored' });
   } catch (error) {

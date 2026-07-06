@@ -20,6 +20,7 @@ const searchSourceOptions = [
 ];
 
 const discoveryRouteOptions = [
+  { value: 'target_platform_first', label: 'Target Platform First' },
   { value: 'youtube_native_search', label: 'YouTube Native Search' },
   { value: 'google_web_to_youtube', label: 'Google/Web -> YouTube' },
   { value: 'youtube_to_instagram', label: 'YouTube -> Instagram' },
@@ -91,6 +92,7 @@ const statusOptions = [
   { value: 'new', label: '待审核' },
   { value: 'approved', label: '已通过' },
   { value: 'duplicate', label: '重复' },
+  { value: 'risk_review', label: '历史风险' },
   { value: 'ignored', label: '已忽略' },
   { value: 'error', label: '错误' }
 ];
@@ -99,9 +101,23 @@ const statusColor = {
   new: 'blue',
   approved: 'green',
   duplicate: 'purple',
+  risk_review: 'orange',
   ignored: 'default',
   error: 'red'
 };
+
+const cooperationRiskOptions = [
+  { value: 'historical_refusal', label: '历史拒绝合作' },
+  { value: 'communication_risk', label: '沟通风险' },
+  { value: 'price_mismatch', label: '报价不合适' },
+  { value: 'brand_safety', label: '品牌安全风险' },
+  { value: 'delivery_issue', label: '履约问题' },
+  { value: 'other', label: '其他' }
+];
+
+const cooperationRiskLabel = (value) => (
+  cooperationRiskOptions.find((item) => item.value === value)?.label || value || '-'
+);
 
 const safeParseJson = (value) => {
   if (!value) return null;
@@ -216,11 +232,15 @@ const RawCandidates = () => {
   const [filters, setFilters] = useState({ status: 'new' });
   const [modalOpen, setModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [videoEvidence, setVideoEvidence] = useState([]);
+  const [videoEvidenceLoading, setVideoEvidenceLoading] = useState(false);
   const [promptModal, setPromptModal] = useState(null);
   const [importModal, setImportModal] = useState(null);
   const [importPayload, setImportPayload] = useState('');
   const [detail, setDetail] = useState(null);
+  const [globalRiskRecord, setGlobalRiskRecord] = useState(null);
   const [form] = Form.useForm();
+  const [riskForm] = Form.useForm();
   const [taskForm] = Form.useForm();
   const executionMode = Form.useWatch('execution_mode', taskForm);
   const searchIntensity = Form.useWatch('search_intensity', taskForm) || 'standard';
@@ -271,9 +291,11 @@ const RawCandidates = () => {
   useEffect(() => {
     if (!finderTasks[0]?.id) {
       setFinderSubtasks([]);
+      setVideoEvidence([]);
       return;
     }
     fetchSubtasks(finderTasks[0].id);
+    fetchVideoEvidence(finderTasks[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finderTasks[0]?.id]);
 
@@ -287,7 +309,9 @@ const RawCandidates = () => {
     if (!taskModalOpen || !selectedTargetPlatforms.length) return;
     taskForm.setFieldValue(
       'discovery_routes',
-      executionMode === 'subagent_hybrid'
+      executionMode === 'video_evidence_finder'
+        ? ['target_platform_first']
+        : executionMode === 'subagent_hybrid'
         ? defaultSubagentRoutesForTargets(selectedTargetPlatforms)
         : defaultRoutesForTargets(selectedTargetPlatforms)
     );
@@ -300,8 +324,9 @@ const RawCandidates = () => {
     if (!targets.length) return;
     taskForm.setFieldValue(
       'discovery_routes',
-      executionMode === 'subagent_hybrid' ? defaultSubagentRoutesForTargets(targets) : defaultRoutesForTargets(targets)
+      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : executionMode === 'subagent_hybrid' ? defaultSubagentRoutesForTargets(targets) : defaultRoutesForTargets(targets)
     );
+    if (executionMode === 'video_evidence_finder') taskForm.setFieldValue('cycles', ['C2', 'C3', 'C6']);
   }, [executionMode, taskModalOpen, taskForm]);
 
   const fetchCampaigns = async () => {
@@ -346,6 +371,48 @@ const RawCandidates = () => {
     }
   };
 
+  const fetchVideoEvidence = async (finderTaskId = finderTasks[0]?.id) => {
+    if (!finderTaskId) return;
+    setVideoEvidenceLoading(true);
+    try {
+      const res = await axios.get(`/api/finder-tasks/${finderTaskId}/video-evidence`);
+      setVideoEvidence(res.data.data || []);
+    } catch (error) {
+      setVideoEvidence([]);
+    } finally {
+      setVideoEvidenceLoading(false);
+    }
+  };
+
+  const analyzeVideoEvidence = async () => {
+    if (!latestTask?.id) return;
+    setVideoEvidenceLoading(true);
+    try {
+      await axios.post(`/api/finder-tasks/${latestTask.id}/evidence-analysis`);
+      message.success('Video evidence scoring finished');
+      fetchVideoEvidence(latestTask.id);
+    } catch (error) {
+      message.error(error.response?.data?.error || 'Video evidence scoring failed');
+    } finally {
+      setVideoEvidenceLoading(false);
+    }
+  };
+
+  const generateCandidatesFromEvidence = async () => {
+    if (!latestTask?.id) return;
+    setVideoEvidenceLoading(true);
+    try {
+      const res = await axios.post(`/api/finder-tasks/${latestTask.id}/generate-candidates-from-evidence`);
+      message.success(`Generated ${res.data.data?.inserted_count || 0} Raw Candidates from video evidence`);
+      fetchVideoEvidence(latestTask.id);
+      fetchCandidates();
+    } catch (error) {
+      message.error(error.response?.data?.error || 'Generate candidates failed');
+    } finally {
+      setVideoEvidenceLoading(false);
+    }
+  };
+
   const updateFilter = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value || undefined }));
   };
@@ -386,7 +453,7 @@ const RawCandidates = () => {
       search_sources: [...new Set(searchSources.length ? searchSources : ['maton_agent', 'google_web', 'youtube_search'])],
       target_platforms: uniqueTargetPlatforms,
       seed_urls: '',
-      execution_mode: 'system_provider',
+      execution_mode: 'video_evidence_finder',
       limit_per_platform: 10,
       allow_fallback: true
     });
@@ -472,9 +539,9 @@ const RawCandidates = () => {
   const updateTaskRoutesForTargets = (targets = []) => {
     taskForm.setFieldValue(
       'discovery_routes',
-      executionMode === 'subagent_hybrid' ? defaultSubagentRoutesForTargets(targets) : defaultRoutesForTargets(targets)
+      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : executionMode === 'subagent_hybrid' ? defaultSubagentRoutesForTargets(targets) : defaultRoutesForTargets(targets)
     );
-    taskForm.setFieldValue('cycles', recommendedCyclesForTargets(targets, taskForm.getFieldValue('search_intensity') || 'standard'));
+    taskForm.setFieldValue('cycles', executionMode === 'video_evidence_finder' ? ['C2', 'C3', 'C6'] : recommendedCyclesForTargets(targets, taskForm.getFieldValue('search_intensity') || 'standard'));
   };
 
   const openImport = (subtask) => {
@@ -579,7 +646,7 @@ const RawCandidates = () => {
 
   const batchIgnore = async () => {
     await axios.post('/api/raw-candidates/batch-ignore', { ids: selectedRowKeys });
-    message.success('已忽略选中候选');
+    message.success('已忽略本项目候选');
     setSelectedRowKeys([]);
     fetchCandidates();
   };
@@ -593,7 +660,25 @@ const RawCandidates = () => {
 
   const ignoreOne = async (record) => {
     await axios.post(`/api/raw-candidates/${record.id}/ignore`);
-    message.success('已忽略');
+    message.success('已忽略本项目');
+    fetchCandidates();
+  };
+
+  const openGlobalRiskModal = (record) => {
+    setGlobalRiskRecord(record);
+    riskForm.resetFields();
+    riskForm.setFieldsValue({
+      category: record.global_cooperation_risk_category || record.rejection_category || 'historical_refusal',
+      reason: record.global_cooperation_risk_reason || record.rejection_reason || ''
+    });
+  };
+
+  const submitGlobalRisk = async () => {
+    if (!globalRiskRecord) return;
+    const values = await riskForm.validateFields();
+    await axios.post(`/api/raw-candidates/${globalRiskRecord.id}/mark-do-not-contact`, values);
+    message.success('已标记为全局不建议合作');
+    setGlobalRiskRecord(null);
     fetchCandidates();
   };
 
@@ -606,6 +691,13 @@ const RawCandidates = () => {
       render: (_, r) => (
         <Space direction="vertical" size={2}>
           <strong>{r.kol_name}</strong>
+          {r.global_cooperation_status === 'do_not_contact' || r.status === 'risk_review' ? (
+            <Space wrap size={[4, 4]}>
+              <Tag color="red">全局不建议合作</Tag>
+              <Tag color="orange">{cooperationRiskLabel(r.global_cooperation_risk_category || r.rejection_category)}</Tag>
+            </Space>
+          ) : null}
+          {r.status === 'ignored' && (r.rejection_scope || 'project') === 'project' ? <Tag>本项目已忽略</Tag> : null}
           <span style={{ color: '#666' }}>{r.ai_match_reason || r.matched_keywords || '-'}</span>
         </Space>
       )
@@ -657,17 +749,30 @@ const RawCandidates = () => {
     { title: 'Email', dataIndex: 'email', key: 'email', width: 190, render: (v) => v || '-' },
     { title: 'AI评分', dataIndex: 'ai_score', key: 'ai_score', width: 90, render: (v) => v ?? '-' },
     { title: '匹配关键词', dataIndex: 'matched_keywords', key: 'matched_keywords', width: 180, ellipsis: true, render: (v) => v || '-' },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: (v) => <Tag color={statusColor[v] || 'default'}>{v || 'new'}</Tag> },
+    {
+      title: '合作风险',
+      key: 'cooperation_risk',
+      width: 150,
+      render: (_, r) => (
+        r.global_cooperation_status === 'do_not_contact' || r.status === 'risk_review'
+          ? <Tag color="red">全局不建议合作</Tag>
+          : r.status === 'ignored'
+            ? <Tag>本项目不合适</Tag>
+            : '-'
+      )
+    },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 120, render: (v) => <Tag color={statusColor[v] || 'default'}>{v || 'new'}</Tag> },
     {
       title: '操作',
       key: 'actions',
-      width: 230,
+      width: 340,
       fixed: 'right',
       render: (_, record) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />} onClick={() => setDetail(record)}>详情</Button>
           <Button size="small" type="primary" icon={<CheckOutlined />} disabled={['approved', 'duplicate'].includes(record.status) || (!record.strategy_id && !selectedStrategy)} onClick={() => approveOne(record)}>通过</Button>
-          <Button size="small" icon={<StopOutlined />} disabled={record.status === 'ignored'} onClick={() => ignoreOne(record)}>忽略</Button>
+          <Button size="small" icon={<StopOutlined />} disabled={record.status === 'ignored'} onClick={() => ignoreOne(record)}>忽略本项目</Button>
+          <Button size="small" danger onClick={() => openGlobalRiskModal(record)}>标记不合作</Button>
         </Space>
       )
     }
@@ -744,6 +849,39 @@ const RawCandidates = () => {
                   <Button size="small" onClick={generateExpansionSubtask} loading={taskLoading}>生成 C7 线索扩展任务</Button>
                 </Space>
               ) : null}
+              {safeParseJson(latestTask?.raw_request)?.execution_mode === 'video_evidence_finder' || videoEvidence.length ? (
+                <div style={{ marginTop: 8 }}>
+                  <Space wrap style={{ marginBottom: 8 }}>
+                    <Tag color="blue">Stage 1 Video Evidence: {videoEvidence.length}</Tag>
+                    <Tag color="purple">Stage 2 Scored: {videoEvidence.filter((item) => item.finder_analysis_status === 'success').length}</Tag>
+                    <Tag color="green">Stage 3 Raw Candidates</Tag>
+                    <Button size="small" onClick={() => fetchVideoEvidence(latestTask.id)} loading={videoEvidenceLoading}>Refresh Evidence</Button>
+                    <Button size="small" type="primary" onClick={analyzeVideoEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.length}>Score Evidence</Button>
+                    <Button size="small" onClick={generateCandidatesFromEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.some((item) => item.recommendation === 'candidate_evidence')}>Generate Raw Candidates</Button>
+                  </Space>
+                  <Table
+                    size="small"
+                    rowKey="id"
+                    dataSource={videoEvidence}
+                    loading={videoEvidenceLoading}
+                    pagination={{ pageSize: 5 }}
+                    columns={[
+                      { title: 'Platform', dataIndex: 'target_platform', key: 'target_platform', width: 100, render: (v) => <Tag>{v}</Tag> },
+                      { title: 'Video', dataIndex: 'title', key: 'title', width: 260, render: (v, record) => <a href={record.video_url} target="_blank" rel="noreferrer">{v || record.video_url}</a> },
+                      { title: 'Author', dataIndex: 'author_name', key: 'author_name', width: 160 },
+                      { title: 'Source Query', dataIndex: 'source_query', key: 'source_query', width: 180 },
+                      { title: 'Signal', dataIndex: 'source_signal', key: 'source_signal', width: 120, render: (v) => <Tag color="cyan">{v}</Tag> },
+                      { title: 'Content', dataIndex: 'content_relevance_score', key: 'content_relevance_score', width: 90, render: (v) => v ?? '-' },
+                      { title: 'Creator', dataIndex: 'creator_fit_score', key: 'creator_fit_score', width: 90, render: (v) => v ?? '-' },
+                      { title: 'Evidence', dataIndex: 'evidence_strength_score', key: 'evidence_strength_score', width: 90, render: (v) => v ?? '-' },
+                      { title: 'Potential', dataIndex: 'kol_candidate_potential_score', key: 'kol_candidate_potential_score', width: 100, render: (v) => v ?? '-' },
+                      { title: 'Result', dataIndex: 'recommendation', key: 'recommendation', width: 150, render: (v) => <Tag color={v === 'candidate_evidence' ? 'green' : v === 'reject' ? 'red' : 'default'}>{v || 'not scored'}</Tag> },
+                      { title: 'Risk', dataIndex: 'brand_safety_risk', key: 'brand_safety_risk', width: 100, render: (v) => <Tag color={v === 'high' ? 'red' : v === 'medium' ? 'orange' : 'green'}>{v || '-'}</Tag> }
+                    ]}
+                    scroll={{ x: 1500 }}
+                  />
+                </div>
+              ) : null}
               {finderSubtasks.length ? (
                 <div style={{ marginTop: 8 }}>
                   <Table
@@ -811,7 +949,7 @@ const RawCandidates = () => {
         <Space wrap>
           <span>已选 {selectedRowKeys.length} 个候选</span>
           <Button icon={<CheckOutlined />} disabled={!selectedRowKeys.length || !selectedStrategy} onClick={batchApprove}>批量通过</Button>
-          <Button icon={<StopOutlined />} disabled={!selectedRowKeys.length} onClick={batchIgnore}>批量忽略</Button>
+          <Button icon={<StopOutlined />} disabled={!selectedRowKeys.length} onClick={batchIgnore}>批量忽略本项目</Button>
           <Popconfirm title="确定删除选中的候选？" onConfirm={batchDelete}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
           </Popconfirm>
@@ -899,6 +1037,7 @@ const RawCandidates = () => {
           </Form.Item>
           <Form.Item label="执行模式" name="execution_mode" rules={[{ required: true, message: '请选择执行模式' }]}>
             <Select options={[
+              { value: 'video_evidence_finder', label: 'Video Evidence Finder' },
               { value: 'system_provider', label: 'System Provider' },
               { value: 'subagent_hybrid', label: 'Subagent Hybrid' }
             ]} />
@@ -1000,12 +1139,28 @@ const RawCandidates = () => {
             <div><strong>证据类型：</strong>{detail.evidence_type || '-'}</div>
             <div><strong>搜索 Query：</strong>{detail.source_query || '-'}</div>
             <div><strong>寻找任务：</strong>{detail.finder_task_name || detail.finder_task_id || '-'}</div>
+            <div><strong>项目级拒绝：</strong>{detail.rejection_scope === 'project' || detail.status === 'ignored' ? `${cooperationRiskLabel(detail.rejection_category)} ${detail.rejection_reason || ''}` : '-'}</div>
+            <div><strong>全局合作状态：</strong>{detail.global_cooperation_status === 'do_not_contact' ? `全局不建议合作 / ${cooperationRiskLabel(detail.global_cooperation_risk_category)} / ${detail.global_cooperation_risk_reason || '-'}` : '-'}</div>
             <div><strong>匹配关键词：</strong>{detail.matched_keywords || '-'}</div>
             <div><strong>评分拆解：</strong>{detail.scoring_breakdown || '-'}</div>
             <div><strong>AI匹配理由：</strong>{detail.ai_match_reason || '-'}</div>
             <div><strong>错误原因：</strong>{detail.error_message || '-'}</div>
           </Space>
         ) : null}
+      </Modal>
+
+      <Modal title="标记为全局不建议合作" open={Boolean(globalRiskRecord)} onCancel={() => setGlobalRiskRecord(null)} onOk={submitGlobalRisk} width={560}>
+        <Form form={riskForm} layout="vertical">
+          <Form.Item label="KOL">
+            <Input value={globalRiskRecord?.kol_name || ''} disabled />
+          </Form.Item>
+          <Form.Item label="不建议合作类型" name="category" rules={[{ required: true, message: '请选择类型' }]}>
+            <Select options={cooperationRiskOptions} />
+          </Form.Item>
+          <Form.Item label="原因" name="reason" rules={[{ required: true, message: '请填写原因' }]}>
+            <TextArea rows={4} placeholder="例如：历史明确拒绝合作、沟通风险、报价长期不匹配、品牌安全风险等" />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );

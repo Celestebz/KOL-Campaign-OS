@@ -83,6 +83,9 @@ const CUSTOMER_FIELDS = [
   'exchange_rate',
   'price_rmb',
   'rating',
+  'cooperation_status',
+  'cooperation_risk_category',
+  'cooperation_risk_reason',
   'notes',
   'company',
   'group_id'
@@ -111,6 +114,12 @@ const upload = multer({
 function normalizeValue(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
+}
+
+function validateCooperationStatus(data) {
+  if (normalizeValue(data.cooperation_status) === 'do_not_contact' && !normalizeValue(data.cooperation_risk_reason)) {
+    throw new Error('Global do-not-contact KOLs require a cooperation risk reason');
+  }
 }
 
 function normalizeHeader(header) {
@@ -192,6 +201,12 @@ async function insertKol(data) {
     `INSERT INTO customers (${fields.join(', ')}) VALUES (${placeholders})`,
     values
   );
+  if (data.cooperation_status) {
+    await dbOperations.run(
+      'UPDATE customers SET cooperation_status_updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [result.id]
+    );
+  }
   return result.id;
 }
 
@@ -212,6 +227,12 @@ async function updateKol(id, data) {
     `UPDATE customers SET ${assignments}, sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [...values, id]
   );
+  if (data.cooperation_status) {
+    await dbOperations.run(
+      'UPDATE customers SET cooperation_status_updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [id]
+    );
+  }
 }
 
 function buildTemplateWorkbook() {
@@ -264,7 +285,7 @@ function buildTemplateWorkbook() {
 
 router.get('/', async (req, res) => {
   try {
-    const { group_id, status, search } = req.query;
+    const { group_id, status, cooperation_status, search } = req.query;
     let sql = `
       SELECT c.*, g.name as group_name
       FROM customers c
@@ -281,6 +302,11 @@ router.get('/', async (req, res) => {
     if (status) {
       sql += ' AND c.status = ?';
       params.push(status);
+    }
+
+    if (cooperation_status) {
+      sql += ' AND c.cooperation_status = ?';
+      params.push(cooperation_status);
     }
 
     if (search) {
@@ -381,6 +407,7 @@ router.post('/', async (req, res) => {
   try {
     const data = { ...req.body };
     data.group_id = data.group_id || null;
+    validateCooperationStatus(data);
 
     if (!data.name) {
       return res.status(400).json({ success: false, error: 'KOL 名称为必填字段' });
@@ -402,6 +429,7 @@ router.put('/:id', async (req, res) => {
   try {
     const data = { ...req.body };
     data.group_id = data.group_id || null;
+    validateCooperationStatus(data);
 
     if (!data.name) {
       return res.status(400).json({ success: false, error: 'KOL 名称为必填字段' });

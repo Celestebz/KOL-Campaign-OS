@@ -55,16 +55,16 @@ async function masterExists(candidate) {
   const name = clean(candidate.kol_name || candidate.name);
   if (profileUrl) {
     const row = await dbOperations.get(
-      'SELECT id FROM customers WHERE profile_url = ? OR youtube_url = ? OR instagram_url = ? OR tiktok_url = ? LIMIT 1',
+      'SELECT * FROM customers WHERE profile_url = ? OR youtube_url = ? OR instagram_url = ? OR tiktok_url = ? LIMIT 1',
       [profileUrl, profileUrl, profileUrl, profileUrl]
     );
     if (row) return row;
   }
   if (email) {
-    const row = await dbOperations.get('SELECT id FROM customers WHERE email = ? LIMIT 1', [email]);
+    const row = await dbOperations.get('SELECT * FROM customers WHERE email = ? LIMIT 1', [email]);
     if (row) return row;
   }
-  if (name) return dbOperations.get('SELECT id FROM customers WHERE name = ? LIMIT 1', [name]);
+  if (name) return dbOperations.get('SELECT * FROM customers WHERE name = ? LIMIT 1', [name]);
   return null;
 }
 
@@ -146,8 +146,18 @@ async function upsertCandidate(candidate) {
   }
   const existing = await rawExists(candidate, candidate.strategy_id);
   const shouldIgnore = candidate.status === 'ignored' || candidate.status === 'error';
-  const status = shouldIgnore ? candidate.status : (await masterExists(candidate) ? 'duplicate' : 'new');
-  const rawData = JSON.stringify(candidate.raw_data || candidate);
+  const master = await masterExists(candidate);
+  const globalRisk = master?.cooperation_status === 'do_not_contact';
+  const status = shouldIgnore ? candidate.status : globalRisk ? 'risk_review' : (master ? 'duplicate' : 'new');
+  const rawData = JSON.stringify({
+    ...(candidate.raw_data || candidate),
+    global_cooperation_risk: globalRisk ? {
+      customer_id: master.id,
+      cooperation_status: master.cooperation_status,
+      category: master.cooperation_risk_category || '',
+      reason: master.cooperation_risk_reason || ''
+    } : undefined
+  });
   const scoring = asJson(candidate.scoring_breakdown, {});
 
   if (existing) {
@@ -169,6 +179,10 @@ async function upsertCandidate(candidate) {
        ai_score = COALESCE(ai_score, ?),
        ai_match_reason = COALESCE(NULLIF(ai_match_reason, ''), ?),
        error_message = COALESCE(NULLIF(error_message, ''), ?),
+       status = CASE WHEN status IN ('approved', 'duplicate', 'ignored') THEN status WHEN ? = 'risk_review' THEN ? ELSE status END,
+       rejection_scope = CASE WHEN ? = 'risk_review' THEN 'global' ELSE rejection_scope END,
+       rejection_category = CASE WHEN ? = 'risk_review' THEN ? ELSE rejection_category END,
+       rejection_reason = CASE WHEN ? = 'risk_review' THEN ? ELSE rejection_reason END,
        scoring_breakdown = CASE WHEN scoring_breakdown IS NULL OR scoring_breakdown = '' OR scoring_breakdown = '{}' THEN ? ELSE scoring_breakdown END,
        raw_data = ?,
        updated_at = CURRENT_TIMESTAMP
@@ -190,6 +204,13 @@ async function upsertCandidate(candidate) {
         candidate.ai_score,
         candidate.ai_match_reason,
         candidate.error_message,
+        status,
+        status,
+        status,
+        status,
+        master?.cooperation_risk_category || '',
+        status,
+        master?.cooperation_risk_reason || '',
         scoring,
         rawData,
         existing.id
@@ -204,8 +225,8 @@ async function upsertCandidate(candidate) {
       followers, avg_views, email, phone, country_region, matched_keywords, ai_score, ai_match_reason,
       status, source, discovery_route, source_platform, target_platform, source_agent,
       raw_data, error_message, search_cycle, matched_persona, scoring_breakdown,
-      evidence_url, evidence_title, evidence_type, source_query)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      evidence_url, evidence_title, evidence_type, source_query, rejection_scope, rejection_category, rejection_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       candidate.finder_task_id,
       candidate.campaign_id,
@@ -238,10 +259,13 @@ async function upsertCandidate(candidate) {
       candidate.evidence_url,
       candidate.evidence_title,
       candidate.evidence_type,
-      candidate.source_query
+      candidate.source_query,
+      status === 'ignored' ? 'project' : status === 'risk_review' ? 'global' : '',
+      status === 'risk_review' ? master?.cooperation_risk_category || '' : '',
+      status === 'risk_review' ? master?.cooperation_risk_reason || '' : ''
     ]
   );
-  return { success: true, id: result.id, status };
+  return { success: true, id: result.id, status, global_cooperation_risk: globalRisk };
 }
 
 async function refreshParentSummary(finderTaskId) {

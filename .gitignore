@@ -106,3 +106,5 @@ Desktop.ini
 # Temporary files
 *.tmp
 *.temp
+server/scratch_*.js
+server/submit_candidates.js

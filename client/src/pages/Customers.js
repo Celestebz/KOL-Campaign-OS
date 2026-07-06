@@ -12,6 +12,28 @@ import axios from 'axios';
 
 const { TextArea } = Input;
 
+const cooperationStatusOptions = [
+  { value: 'available', label: '可合作' },
+  { value: 'do_not_contact', label: '全局不建议合作' }
+];
+
+const cooperationRiskOptions = [
+  { value: 'historical_refusal', label: '历史拒绝合作' },
+  { value: 'communication_risk', label: '沟通风险' },
+  { value: 'price_mismatch', label: '报价不合适' },
+  { value: 'brand_safety', label: '品牌安全风险' },
+  { value: 'delivery_issue', label: '履约问题' },
+  { value: 'other', label: '其他' }
+];
+
+const cooperationStatusLabel = (value) => (
+  cooperationStatusOptions.find((item) => item.value === value)?.label || value || '可合作'
+);
+
+const cooperationRiskLabel = (value) => (
+  cooperationRiskOptions.find((item) => item.value === value)?.label || value || '-'
+);
+
 const Customers = () => {
   const [kols, setKols] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -21,6 +43,7 @@ const Customers = () => {
   const [editingKol, setEditingKol] = useState(null);
   const [searchText, setSearchText] = useState('');
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const [selectedCooperationStatus, setSelectedCooperationStatus] = useState(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [currentPageKolIds, setCurrentPageKolIds] = useState([]);
   const [form] = Form.useForm();
@@ -37,6 +60,7 @@ const Customers = () => {
       const params = {};
       if (searchText) params.search = searchText;
       if (selectedGroup) params.group_id = selectedGroup;
+      if (selectedCooperationStatus) params.cooperation_status = selectedCooperationStatus;
       const response = await axios.get('/api/customers', { params });
       const rows = response.data.data || [];
       setKols(rows);
@@ -61,6 +85,7 @@ const Customers = () => {
   const handleAdd = () => {
     setEditingKol(null);
     form.resetFields();
+    form.setFieldsValue({ cooperation_status: 'available' });
     setModalVisible(true);
   };
 
@@ -160,6 +185,17 @@ const Customers = () => {
     { title: '视频价格', dataIndex: 'video_price', key: 'video_price', width: 120, render: (v) => v || '-' },
     { title: '价格（RMB）', dataIndex: 'price_rmb', key: 'price_rmb', width: 130, render: (v) => v || '-' },
     { title: '评分', dataIndex: 'rating', key: 'rating', width: 90, render: (v) => v || '-' },
+    {
+      title: '合作状态',
+      key: 'cooperation_status',
+      width: 170,
+      render: (_, r) => (
+        r.cooperation_status === 'do_not_contact'
+          ? <Tag color="red">全局不建议合作</Tag>
+          : <Tag color="green">{cooperationStatusLabel(r.cooperation_status)}</Tag>
+      )
+    },
+    { title: '风险原因', dataIndex: 'cooperation_risk_category', key: 'cooperation_risk_category', width: 150, render: (v) => cooperationRiskLabel(v) },
     { title: '同步状态', dataIndex: 'sync_status', key: 'sync_status', width: 120, render: (v) => <Tag>{v || 'sync_pending'}</Tag> },
     { title: '分组', dataIndex: 'group_name', key: 'group_name', width: 130, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     { title: '备注', dataIndex: 'notes', key: 'notes', width: 220, ellipsis: true, render: (v) => v || '-' },
@@ -203,6 +239,14 @@ const Customers = () => {
             onChange={setSelectedGroup}
             style={{ width: 180 }}
             options={groups.map((item) => ({ value: item.id, label: item.name }))}
+          />
+          <Select
+            allowClear
+            placeholder="合作状态"
+            value={selectedCooperationStatus}
+            onChange={setSelectedCooperationStatus}
+            style={{ width: 190 }}
+            options={cooperationStatusOptions}
           />
           <Button icon={<ReloadOutlined />} onClick={fetchKols}>刷新</Button>
           <Button icon={<DownloadOutlined />} onClick={handleDownloadTemplate}>下载模板</Button>
@@ -300,6 +344,24 @@ const Customers = () => {
           </Form.Item>
           <Form.Item label="评分" name="rating">
             <Input />
+          </Form.Item>
+          <Form.Item label="合作状态" name="cooperation_status">
+            <Select options={cooperationStatusOptions} />
+          </Form.Item>
+          <Form.Item label="不建议合作类型" name="cooperation_risk_category">
+            <Select allowClear options={cooperationRiskOptions} />
+          </Form.Item>
+          <Form.Item
+            label="不建议合作原因"
+            name="cooperation_risk_reason"
+            rules={[({ getFieldValue }) => ({
+              validator(_, value) {
+                if (getFieldValue('cooperation_status') !== 'do_not_contact' || value) return Promise.resolve();
+                return Promise.reject(new Error('标记全局不建议合作时必须填写原因'));
+              }
+            })]}
+          >
+            <TextArea rows={3} />
           </Form.Item>
           <Form.Item label="分组" name="group_id">
             <Select allowClear options={groups.map((item) => ({ value: item.id, label: item.name }))} />

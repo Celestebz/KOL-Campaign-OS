@@ -2,6 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const dotenv = require('dotenv');
+const { initDatabase } = require('./database');
+
+dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+dotenv.config();
 
 const customerRoutes = require('./routes/customers');
 const promptTemplateRoutes = require('./routes/promptTemplates');
@@ -88,6 +93,16 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`KOL Campaign OS server is running on http://localhost:${PORT}`);
-});
+async function startServer() {
+  try {
+    await initDatabase();
+    app.listen(PORT, () => {
+      console.log(`KOL Campaign OS server is running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to start KOL Campaign OS server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();

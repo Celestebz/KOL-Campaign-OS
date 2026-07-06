@@ -1,0 +1,22 @@
+services:
+  mysql:
+    image: mysql:8
+    container_name: kol-campaign-os-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: kol_campaign_os
+      MYSQL_USER: kol_user
+      MYSQL_PASSWORD: kol_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_password"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:

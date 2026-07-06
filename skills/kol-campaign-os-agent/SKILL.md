@@ -19,6 +19,7 @@ Do not ask the user to choose between `kol-strategy` and `kol-finder`. Use Strat
 
 Default Finder execution behavior:
 
+- If a ready Strategy already exists, do not assume its stored `primary_platform`, `secondary_platforms`, or Finder handoff platforms are the user's current Finder target. Before any Finder work, ask the user to confirm the current target KOL platform(s), such as YouTube, Instagram, or TikTok, unless the current request or UI/API payload already explicitly selected them.
 - If the external agent platform supports subagents or parallel workers, use KOL Campaign OS Subagent Hybrid by default for any target platform.
 - Create a Finder parent task, generate cycle-level Finder subtasks, execute each cycle subtask separately, and import each result through `/api/finder-subtasks/{finder_subtask_id}/import`.
 - Default Subagent Hybrid creates one subtask per selected first-run search cycle. Use search intensity to select cycles: quick, standard, or full. Routes are evidence paths inside each cycle subtask, not separate default subtasks.
@@ -33,6 +34,8 @@ Default Finder execution behavior:
 - If web search, browser, or relevant API tools are unavailable, mark the affected cycle `blocked` with a clear reason. Do not disguise tool failure as completed/no-result.
 - For Instagram accepted candidates, verify that `profile_url` is reachable and that the handle belongs to the named creator. Do not rely only on a listicle, directory, Reddit mention, or search snippet.
 - Write accepted and useful rejected candidates into Raw Candidates when API access is available.
+- Treat `ignored` Raw Candidates as project/current-search rejection only. Do not interpret project-level ignored candidates as a global blacklist or permanent do-not-contact decision.
+- If Finder discovers a KOL with `cooperation_status: "do_not_contact"` or a global cooperation risk, keep the candidate visible as `risk_review`, surface the risk category/reason, and do not silently remove it.
 - If API write access is not available, return import-ready JSON for Raw Candidates.
 - Never approve candidates into KOL Master or Campaign KOL.
 
@@ -58,11 +61,17 @@ You may create or improve a Strategy and write KOL discovery results to Raw Cand
 
 Do not approve candidates. Approval is always a human action in the UI.
 
+## Database Boundary
+
+KOL Campaign OS runs on MySQL in the current product setup. Agents should treat the database backend as an implementation detail and use the HTTP APIs documented in this skill. Do not look for or write to a local SQLite file such as `database.sqlite`, and do not use SQLite-only syntax such as `INSERT OR IGNORE`, `ON CONFLICT`, `PRAGMA`, or `AUTOINCREMENT`.
+
+If local code access is explicitly needed, go through the app's existing `dbOperations.query/get/run` abstraction or the HTTP API. Do not bypass KOL Campaign OS by writing direct ad hoc database scripts.
+
 ## Finder Parallel Execution Contract
 
 Finder search is the only phase that should use multi-agent parallelism by default. Strategy creation stays single-agent for consistency; approval stays human.
 
-When first-run Finder subtasks are generated and the agent platform has native multi-agent dispatch:
+When first-run Finder subtasks are generated and the agent platform has native multi-agent dispatch, native multi-agent dispatch is mandatory, not optional:
 
 1. The main agent MUST act as coordinator only.
 2. Assign one selected cycle subtask to one worker, such as C2 -> worker 1, C3 -> worker 2, C5 -> worker 3.
@@ -77,18 +86,22 @@ If sequential fallback is needed, say before starting:
 当前环境没有可用并行 worker，我只能串行执行 selected Finder cycles，预计更慢。是否继续？
 ```
 
-Final Finder reports must include:
+Final Finder reports must expose the actual parallel execution state, not only the planned mode. Include whether native dispatch was available, whether it was used, how many workers actually ran, which cycles were assigned, and any sequential fallback reason.
 
 ```json
 {
   "parallel_execution": true,
   "worker_count": 4,
   "execution_mode_actual": "parallel",
-  "cycles_assigned": ["C2", "C3", "C5", "C6"]
+  "native_dispatch_available": true,
+  "native_dispatch_used": true,
+  "cycles_assigned": ["C2", "C3", "C5", "C6"],
+  "cycles_completed": ["C2", "C3", "C5", "C6"],
+  "sequential_fallback_reason": ""
 }
 ```
 
-Use `parallel_execution: false`, `worker_count: 1`, and `execution_mode_actual: "sequential"` only when sequential fallback was explicitly disclosed and accepted.
+Use `parallel_execution: false`, `worker_count: 1`, `execution_mode_actual: "sequential"`, and a non-empty `sequential_fallback_reason` only when sequential fallback was explicitly disclosed and accepted.
 
 ## Required Inputs
 
@@ -106,9 +119,11 @@ You need:
 - Either a `strategy_id` or enough product/campaign brief text to create a Strategy
 - `agent_api_token`: External Agent API token for `/api/agent/*` endpoints
 - `campaign_id`, selected from existing Campaigns or created after user confirmation
-- target count, target platform, market, follower/tier requirement, and search notes
+- target count, current target platform, market, follower/tier requirement, and search notes
 
-If running on the same machine as KOL Campaign OS, you may read the token from the local system settings/database if available. Never print, log, or expose the token.
+When a ready Strategy is reused, its saved platform fields are historical context only. Ask for the current target platform again before Finder because the user may have searched YouTube last time and want TikTok or Instagram now.
+
+If running on the same machine as KOL Campaign OS, prefer reading the token through the Settings API or the app's database abstraction if available. Never print, log, or expose the token.
 
 ## User Interaction Contract
 
@@ -250,13 +265,14 @@ Subtask import does not approve candidates. It writes accepted and rejected resu
 
 1. Read the Finder brief from `/api/agent/brief/{strategy_id}`.
 2. Understand campaign, product, market, Strategy, target platforms, Finder rules, and existing records.
-3. Before creating Finder subtasks, ask the user to choose Quick, Standard, or Full search unless the user already selected an intensity or explicitly delegated the choice. Present Standard as the recommendation and mention token/time tradeoff.
-4. If you can use subagents or parallel workers, create a Finder parent task with `execution_mode: "subagent_hybrid"` and the confirmed `search_intensity`.
-5. Dispatch selected cycle subtasks through native multi-agent workers when that capability exists. Follow the Finder Parallel Execution Contract; the main agent should coordinate, not serially search every cycle.
-6. Import each subtask result through `/api/finder-subtasks/{finder_subtask_id}/import`.
-7. Use `/api/agent/raw-candidates/import` only if subtask APIs are unavailable or the user explicitly asks for a single external-agent run.
-8. Check candidates against existing KOL Master and Raw Candidates from the brief. Every candidate must still include its real `discovery_route`, `source_platform`, and `target_platform`.
-9. Report `strategy_id`, `finder_task_id`, search intensity, subtask count, accepted count, rejected count, and failures.
+3. Ask the user to confirm the current target platform(s) before creating Finder subtasks unless the current request or UI/API payload already explicitly selected them. Do not treat Strategy platforms as confirmation.
+4. Before creating Finder subtasks, ask the user to choose Quick, Standard, or Full search unless the user already selected an intensity or explicitly delegated the choice. Present Standard as the recommendation and mention token/time tradeoff.
+5. If you can use subagents or parallel workers, create a Finder parent task with `execution_mode: "subagent_hybrid"` and the confirmed `target_platforms` and `search_intensity`.
+6. Dispatch selected cycle subtasks through native multi-agent workers when that capability exists. Follow the Finder Parallel Execution Contract; the main agent should coordinate, not serially search every cycle.
+7. Import each subtask result through `/api/finder-subtasks/{finder_subtask_id}/import`.
+8. Use `/api/agent/raw-candidates/import` only if subtask APIs are unavailable or the user explicitly asks for a single external-agent run.
+9. Check candidates against existing KOL Master and Raw Candidates from the brief. Every candidate must still include its real `discovery_route`, `source_platform`, and `target_platform`.
+10. Report `strategy_id`, confirmed target platform(s), `finder_task_id`, search intensity, subtask count, accepted count, rejected count, and failures.
 
 ### A2. If the user provides a Finder Subtask Prompt
 
@@ -278,9 +294,10 @@ Subtask import does not approve candidates. It writes accepted and rejected resu
 5. Save it through `POST /api/kol-strategies` with `status: "draft"`.
 6. If the user asked you to find KOLs or complete the workflow, publish it with `POST /api/kol-strategies/{strategy_id}/mark-ready`.
 7. Read the Finder brief from `/api/agent/brief/{strategy_id}`.
-8. Ask the user to choose Quick, Standard, or Full search before starting Finder unless they already chose or explicitly delegated the choice. Recommend Standard and state the expected cycle list for the target platform.
-9. Run Finder through Subagent Hybrid and native multi-agent dispatch when subagents or parallel workers are available; otherwise tell the user it will be sequential/slower, wait for confirmation, then run sequential fallback and import Raw Candidates.
-10. Report `campaign_id`, `strategy_id`, whether it was published ready, search intensity, `finder_task_id`, subtask count, accepted count, rejected count, and assumptions.
+8. Ask the user to confirm the current target platform(s) before starting Finder unless they already chose them in the current request or UI/API payload. Do not silently reuse the Strategy's saved platform.
+9. Ask the user to choose Quick, Standard, or Full search before starting Finder unless they already chose or explicitly delegated the choice. Recommend Standard and state the expected cycle list for the confirmed target platform.
+10. Run Finder through Subagent Hybrid and native multi-agent dispatch when subagents or parallel workers are available; otherwise tell the user it will be sequential/slower, wait for confirmation, then run sequential fallback and import Raw Candidates.
+11. Report `campaign_id`, `strategy_id`, whether it was published ready, confirmed target platform(s), search intensity, `finder_task_id`, subtask count, accepted count, rejected count, and assumptions.
 
 If required fields are missing and one-shot execution is requested, make conservative assumptions, record them in the Strategy and final report, and continue. Ask the user only when the missing input would make the result misleading or unusable.
 
@@ -401,7 +418,10 @@ Supported `target_platforms`: `youtube`, `instagram`, `tiktok`.
 - Do not invent exact Strategy facts such as competitors, budgets, or price tiers. If unknown, use flexible rules and note uncertainty.
 - Do not accept Instagram candidates until handle attribution and profile reachability are verified. If attribution is unclear, import as `ignored` with a reject reason or leave the candidate out.
 - Do not hide important rejected results if they explain why a search route was bad.
+- Do not turn project-level rejection into global do-not-contact. Global no-cooperation status belongs to KOL Master and must include a reason.
+- Do not silently exclude KOLs marked globally not recommended. Report them as risk review candidates with the stored reason.
 - Do not treat the Finder brief as optional once a Strategy exists. Always read it before importing candidates.
+- Do not treat saved Strategy platforms as the user's current Finder target. Confirm current target platform(s) again before Finder unless they were explicitly selected in the current request or UI/API payload.
 - Do not recommend existing KOL Master or existing Raw Candidates as new people.
 - Do not silently run selected Finder cycles sequentially when native multi-agent dispatch is available. Use the platform's dispatch feature or explicitly report why it is unavailable.
 - Do not let all cycle subtasks silently skip the same selected route. Required routes in each prompt must be attempted or reported in `route_coverage` with a reason.

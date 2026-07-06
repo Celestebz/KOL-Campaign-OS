@@ -4,7 +4,7 @@ const { dbOperations } = require('../database');
 const router = express.Router();
 
 const AGENT_API_PROVIDER_KEY = 'agent.external_api';
-const ALLOWED_STATUSES = new Set(['new', 'ignored', 'duplicate', 'error']);
+const ALLOWED_STATUSES = new Set(['new', 'ignored', 'duplicate', 'risk_review', 'error']);
 const CYCLE_ORDER = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
 
 const DISCOVERY_ROUTE_OPTIONS = {
@@ -130,7 +130,8 @@ async function getReadyStrategy(strategyId) {
 
 async function existingProfiles(strategyId, campaignId) {
   const customers = await dbOperations.query(`
-    SELECT id, name, email, profile_url, youtube_url, instagram_url, tiktok_url
+    SELECT id, name, email, profile_url, youtube_url, instagram_url, tiktok_url,
+      cooperation_status, cooperation_risk_category, cooperation_risk_reason
     FROM customers
     ORDER BY updated_at DESC, id DESC
   `);
@@ -152,16 +153,16 @@ async function masterExists(candidate) {
   const name = clean(candidate.kol_name || candidate.name);
   if (profileUrl) {
     const row = await dbOperations.get(
-      'SELECT id FROM customers WHERE profile_url = ? OR youtube_url = ? OR instagram_url = ? OR tiktok_url = ? LIMIT 1',
+      'SELECT * FROM customers WHERE profile_url = ? OR youtube_url = ? OR instagram_url = ? OR tiktok_url = ? LIMIT 1',
       [profileUrl, profileUrl, profileUrl, profileUrl]
     );
     if (row) return row;
   }
   if (email) {
-    const row = await dbOperations.get('SELECT id FROM customers WHERE email = ? LIMIT 1', [email]);
+    const row = await dbOperations.get('SELECT * FROM customers WHERE email = ? LIMIT 1', [email]);
     if (row) return row;
   }
-  if (name) return dbOperations.get('SELECT id FROM customers WHERE name = ? LIMIT 1', [name]);
+  if (name) return dbOperations.get('SELECT * FROM customers WHERE name = ? LIMIT 1', [name]);
   return null;
 }
 
@@ -239,8 +240,18 @@ async function upsertCandidate(candidate) {
   }
   const existing = await rawExists(candidate, candidate.strategy_id);
   const shouldIgnore = candidate.status === 'ignored' || candidate.status === 'error';
-  const status = shouldIgnore ? candidate.status : (await masterExists(candidate) ? 'duplicate' : 'new');
-  const rawData = JSON.stringify(candidate.raw_data || candidate);
+  const master = await masterExists(candidate);
+  const globalRisk = master?.cooperation_status === 'do_not_contact';
+  const status = shouldIgnore ? candidate.status : globalRisk ? 'risk_review' : (master ? 'duplicate' : 'new');
+  const rawData = JSON.stringify({
+    ...(candidate.raw_data || candidate),
+    global_cooperation_risk: globalRisk ? {
+      customer_id: master.id,
+      cooperation_status: master.cooperation_status,
+      category: master.cooperation_risk_category || '',
+      reason: master.cooperation_risk_reason || ''
+    } : undefined
+  });
   const scoring = asJson(candidate.scoring_breakdown, {});
 
   if (existing) {
@@ -264,6 +275,10 @@ async function upsertCandidate(candidate) {
        ai_score = COALESCE(ai_score, ?),
        ai_match_reason = COALESCE(NULLIF(ai_match_reason, ''), ?),
        error_message = COALESCE(NULLIF(error_message, ''), ?),
+       status = CASE WHEN status IN ('approved', 'duplicate', 'ignored') THEN status WHEN ? = 'risk_review' THEN ? ELSE status END,
+       rejection_scope = CASE WHEN ? = 'risk_review' THEN 'global' ELSE rejection_scope END,
+       rejection_category = CASE WHEN ? = 'risk_review' THEN ? ELSE rejection_category END,
+       rejection_reason = CASE WHEN ? = 'risk_review' THEN ? ELSE rejection_reason END,
        scoring_breakdown = CASE WHEN scoring_breakdown IS NULL OR scoring_breakdown = '' OR scoring_breakdown = '{}' THEN ? ELSE scoring_breakdown END,
        raw_data = ?,
        updated_at = CURRENT_TIMESTAMP
@@ -287,6 +302,13 @@ async function upsertCandidate(candidate) {
         candidate.ai_score,
         candidate.ai_match_reason,
         candidate.error_message,
+        status,
+        status,
+        status,
+        status,
+        master?.cooperation_risk_category || '',
+        status,
+        master?.cooperation_risk_reason || '',
         scoring,
         rawData,
         existing.id
@@ -301,8 +323,8 @@ async function upsertCandidate(candidate) {
       followers, avg_views, email, phone, country_region, matched_keywords, ai_score, ai_match_reason,
       status, source, discovery_route, source_platform, target_platform, source_agent,
       raw_data, error_message, search_cycle, matched_persona, scoring_breakdown,
-      evidence_url, evidence_title, evidence_type, source_query)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      evidence_url, evidence_title, evidence_type, source_query, rejection_scope, rejection_category, rejection_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       candidate.finder_task_id,
       candidate.campaign_id,
@@ -335,10 +357,13 @@ async function upsertCandidate(candidate) {
       candidate.evidence_url,
       candidate.evidence_title,
       candidate.evidence_type,
-      candidate.source_query
+      candidate.source_query,
+      status === 'ignored' ? 'project' : status === 'risk_review' ? 'global' : '',
+      status === 'risk_review' ? master?.cooperation_risk_category || '' : '',
+      status === 'risk_review' ? master?.cooperation_risk_reason || '' : ''
     ]
   );
-  return { success: true, id: result.id, status };
+  return { success: true, id: result.id, status, global_cooperation_risk: globalRisk };
 }
 
 router.get('/brief/:strategyId', requireAgentToken, async (req, res) => {
@@ -362,6 +387,8 @@ router.get('/brief/:strategyId', requireAgentToken, async (req, res) => {
         strategy,
         finder_v2: {
           target_platforms: Object.keys(recommendedDiscoveryRoutes(strategy)),
+          target_platform_confirmation_required: true,
+          target_platform_confirmation_note: 'Saved Strategy platforms are historical context only. Confirm the current target KOL platform(s) before Finder unless the current request or UI/API payload explicitly selected them.',
           recommended_discovery_routes: recommendedDiscoveryRoutes(strategy),
           instagram_native_search_policy: {
             default_enabled: false,
@@ -380,7 +407,7 @@ router.get('/brief/:strategyId', requireAgentToken, async (req, res) => {
         existing,
         rules: {
           approve_is_manual: true,
-          agent_may_write_statuses: ['new', 'ignored', 'duplicate', 'error'],
+          agent_may_write_statuses: ['new', 'ignored', 'duplicate', 'risk_review', 'error'],
           agent_must_not_approve: true,
           raw_candidates_are_review_queue: true
         },
