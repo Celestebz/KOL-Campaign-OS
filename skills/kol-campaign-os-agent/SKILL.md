@@ -20,23 +20,29 @@ Do not ask the user to choose between `kol-strategy` and `kol-finder`. Use Strat
 Default Finder execution behavior:
 
 - If a ready Strategy already exists, do not assume its stored `primary_platform`, `secondary_platforms`, or Finder handoff platforms are the user's current Finder target. Before any Finder work, ask the user to confirm the current target KOL platform(s), such as YouTube, Instagram, or TikTok, unless the current request or UI/API payload already explicitly selected them.
-- If the external agent platform supports subagents or parallel workers, use KOL Campaign OS Subagent Hybrid by default for any target platform.
-- Create a Finder parent task, generate cycle-level Finder subtasks, execute each cycle subtask separately, and import each result through `/api/finder-subtasks/{finder_subtask_id}/import`.
+- Use Video Evidence Finder by default. Create or continue a Finder parent task with `execution_mode: "video_evidence_finder"`, `discovery_scope: "target_platform_only"`, and `allow_cross_platform_evidence: false`.
+- The final goal is still KOL profile links. In the new flow, `author_profile_url` is the final KOL identity and `video_url` is the evidence used to justify that profile.
+- Search profiles as leads when useful, but do not import a profile URL alone. Open/inspect the profile and find target-platform video evidence first.
+- Import video evidence through `/api/finder-tasks/{finder_task_id}/video-evidence/import`, crawl videos through `/api/videos/crawl`, then run `/api/finder-tasks/{finder_task_id}/evidence-analysis` and `/api/finder-tasks/{finder_task_id}/generate-candidates-from-evidence`.
+- If the external agent platform supports subagents or parallel workers, use them to find video evidence in parallel, but each worker should return video evidence objects, not final Raw Candidates, unless the user explicitly requests the legacy flow.
+- Use KOL Campaign OS Subagent Hybrid only as a legacy fallback when Video Evidence Finder APIs are unavailable or the user explicitly asks for the old Cycle/Subtask flow.
+- In the legacy fallback, create a Finder parent task, generate cycle-level Finder subtasks, execute each cycle subtask separately, and import each result through `/api/finder-subtasks/{finder_subtask_id}/import`.
 - Default Subagent Hybrid creates one subtask per selected first-run search cycle. Use search intensity to select cycles: quick, standard, or full. Routes are evidence paths inside each cycle subtask, not separate default subtasks.
 - Before starting Finder search, confirm search intensity with the user unless they already selected it in the UI/API or explicitly said "you decide", "default is fine", or "run it now". Recommend Standard by default.
 - Search intensity options: Quick = cheaper direction check; Standard = recommended balance; Full = most complete but slower and higher token cost. TikTok Standard = C2/C3/C5/C6, Instagram Standard = C1/C2/C3/C5, YouTube Standard = C1/C2/C3/C4. Full = C1-C6. C7 is second-stage seed expansion and is not part of first-run intensity.
 - If native multi-agent dispatch is available, you MUST use it for Finder first-run selected cycles. Native dispatch includes features named subagent, delegate task, task agent, worker, parallel worker, background worker, or equivalent. The main agent is the coordinator and should not personally run selected cycles one-by-one.
 - If native multi-agent dispatch is unavailable or fails, tell the user before starting sequential fallback and wait for confirmation. Do not silently switch to sequential execution.
-- Do not collapse multiple generated cycle subtasks into one `/api/agent/raw-candidates/import` call when subtask APIs are available.
-- Use `/api/agent/raw-candidates/import` only when subtask APIs are unavailable or the user explicitly asks for a single external-agent run.
-- If the user asks for Instagram KOLs, use `youtube_to_instagram`, `google_web_to_instagram`, and `reddit_to_instagram` as the primary routes.
-- If the user asks for TikTok KOLs, use `google_web_to_tiktok` as the required baseline route, with `youtube_to_tiktok`, `instagram_to_tiktok`, and `reddit_to_tiktok` as optional evidence paths.
+- Do not collapse multiple generated cycle subtasks into one `/api/agent/raw-candidates/import` call when subtask APIs are available in legacy mode.
+- Use `/api/agent/raw-candidates/import` only when Video Evidence Finder and subtask APIs are unavailable or the user explicitly asks for a single external-agent legacy run.
+- If the user asks for Instagram KOLs in the default flow, find Instagram Reels/Posts and include their `author_profile_url`. Do not import YouTube evidence for an Instagram task.
+- If the user asks for YouTube KOLs, find YouTube watch/Shorts URLs and include the channel/profile URL.
+- If the user asks for TikTok KOLs, find TikTok video URLs and include the TikTok profile URL.
 - If web search, browser, or relevant API tools are unavailable, mark the affected cycle `blocked` with a clear reason. Do not disguise tool failure as completed/no-result.
 - For Instagram accepted candidates, verify that `profile_url` is reachable and that the handle belongs to the named creator. Do not rely only on a listicle, directory, Reddit mention, or search snippet.
-- Write accepted and useful rejected candidates into Raw Candidates when API access is available.
+- Write video evidence first when API access is available. Raw Candidates are generated by KOL Campaign OS from scored evidence.
 - Treat `ignored` Raw Candidates as project/current-search rejection only. Do not interpret project-level ignored candidates as a global blacklist or permanent do-not-contact decision.
 - If Finder discovers a KOL with `cooperation_status: "do_not_contact"` or a global cooperation risk, keep the candidate visible as `risk_review`, surface the risk category/reason, and do not silently remove it.
-- If API write access is not available, return import-ready JSON for Raw Candidates.
+- If API write access is not available, return import-ready JSON for video evidence.
 - Never approve candidates into KOL Master or Campaign KOL.
 
 ## Role
@@ -197,7 +203,63 @@ Read the Finder brief:
 GET {base_url}/api/agent/brief/{strategy_id}
 ```
 
-Create a Finder parent task for Subagent Hybrid:
+Create a Finder parent task for the default Video Evidence Finder:
+
+```http
+POST {base_url}/api/finder-tasks
+Content-Type: application/json
+
+{
+  "strategy_id": 1,
+  "execution_mode": "video_evidence_finder",
+  "search_intensity": "standard",
+  "target_platforms": ["instagram"],
+  "discovery_scope": "target_platform_only",
+  "allow_cross_platform_evidence": false,
+  "limit_per_platform": 10,
+  "allow_fallback": true
+}
+```
+
+Import target-platform video evidence:
+
+```http
+POST {base_url}/api/finder-tasks/{finder_task_id}/video-evidence/import
+Content-Type: application/json
+
+{
+  "videos": [
+    {
+      "video_url": "https://www.instagram.com/reel/xxxx/",
+      "target_platform": "instagram",
+      "evidence_platform": "instagram",
+      "source_signal": "use_case",
+      "source_query": "vocal processor live performance",
+      "title": "optional visible title",
+      "author_name": "creator handle or display name",
+      "author_profile_url": "https://www.instagram.com/creator/",
+      "evidence_reason": "Why this video proves the creator may fit the KOL search."
+    }
+  ]
+}
+```
+
+Then run:
+
+```http
+POST {base_url}/api/videos/crawl
+Content-Type: application/json
+
+{ "videoIds": [123] }
+
+POST {base_url}/api/finder-tasks/{finder_task_id}/evidence-analysis
+
+POST {base_url}/api/finder-tasks/{finder_task_id}/generate-candidates-from-evidence
+```
+
+`videoIds` are the `video_source_id` values returned by video evidence import.
+
+Create a Finder parent task for legacy Subagent Hybrid only when needed:
 
 ```http
 POST {base_url}/api/finder-tasks
@@ -240,7 +302,7 @@ Content-Type: application/json
 }
 ```
 
-Write Raw Candidates:
+Write Raw Candidates directly only in legacy fallback mode:
 
 ```http
 POST {base_url}/api/agent/raw-candidates/import
@@ -267,12 +329,12 @@ Subtask import does not approve candidates. It writes accepted and rejected resu
 2. Understand campaign, product, market, Strategy, target platforms, Finder rules, and existing records.
 3. Ask the user to confirm the current target platform(s) before creating Finder subtasks unless the current request or UI/API payload already explicitly selected them. Do not treat Strategy platforms as confirmation.
 4. Before creating Finder subtasks, ask the user to choose Quick, Standard, or Full search unless the user already selected an intensity or explicitly delegated the choice. Present Standard as the recommendation and mention token/time tradeoff.
-5. If you can use subagents or parallel workers, create a Finder parent task with `execution_mode: "subagent_hybrid"` and the confirmed `target_platforms` and `search_intensity`.
-6. Dispatch selected cycle subtasks through native multi-agent workers when that capability exists. Follow the Finder Parallel Execution Contract; the main agent should coordinate, not serially search every cycle.
-7. Import each subtask result through `/api/finder-subtasks/{finder_subtask_id}/import`.
-8. Use `/api/agent/raw-candidates/import` only if subtask APIs are unavailable or the user explicitly asks for a single external-agent run.
-9. Check candidates against existing KOL Master and Raw Candidates from the brief. Every candidate must still include its real `discovery_route`, `source_platform`, and `target_platform`.
-10. Report `strategy_id`, confirmed target platform(s), `finder_task_id`, search intensity, subtask count, accepted count, rejected count, and failures.
+5. Create or continue a Finder parent task with `execution_mode: "video_evidence_finder"` and the confirmed `target_platforms`.
+6. Search the target platform for video evidence. A KOL profile URL is useful, but it must be paired with a target-platform `video_url`.
+7. Import evidence through `/api/finder-tasks/{finder_task_id}/video-evidence/import`.
+8. Crawl imported videos, then run evidence analysis and generate Raw Candidates from evidence.
+9. Check generated Raw Candidates against existing KOL Master and Raw Candidates from the brief.
+10. Report `strategy_id`, confirmed target platform(s), `finder_task_id`, video evidence count, scored evidence count, generated Raw Candidate count, profile leads still needing video evidence, and failures.
 
 ### A2. If the user provides a Finder Subtask Prompt
 
@@ -296,8 +358,8 @@ Subtask import does not approve candidates. It writes accepted and rejected resu
 7. Read the Finder brief from `/api/agent/brief/{strategy_id}`.
 8. Ask the user to confirm the current target platform(s) before starting Finder unless they already chose them in the current request or UI/API payload. Do not silently reuse the Strategy's saved platform.
 9. Ask the user to choose Quick, Standard, or Full search before starting Finder unless they already chose or explicitly delegated the choice. Recommend Standard and state the expected cycle list for the confirmed target platform.
-10. Run Finder through Subagent Hybrid and native multi-agent dispatch when subagents or parallel workers are available; otherwise tell the user it will be sequential/slower, wait for confirmation, then run sequential fallback and import Raw Candidates.
-11. Report `campaign_id`, `strategy_id`, whether it was published ready, confirmed target platform(s), search intensity, `finder_task_id`, subtask count, accepted count, rejected count, and assumptions.
+10. Run Finder through Video Evidence Finder. If subagents or parallel workers are available, use them to find video evidence in parallel, then import evidence into the same Finder task.
+11. Report `campaign_id`, `strategy_id`, whether it was published ready, confirmed target platform(s), `finder_task_id`, video evidence count, generated Raw Candidate count, and assumptions.
 
 If required fields are missing and one-shot execution is requested, make conservative assumptions, record them in the Strategy and final report, and continue. Ask the user only when the missing input would make the result misleading or unusable.
 
@@ -308,7 +370,7 @@ If required fields are missing and one-shot execution is requested, make conserv
 3. Ask the user which Campaign to use, or create a new one after collecting the minimum brief inputs.
 4. Ask for target count and follower/tier requirement.
 5. Ask for product/campaign information using the User Interaction Contract.
-6. After the user answers, create Strategy, publish it for Finder, read Finder brief, run Subagent Hybrid if available, and import Raw Candidates.
+6. After the user answers, create Strategy, publish it for Finder, read Finder brief, run Video Evidence Finder, import video evidence, score evidence, and generate Raw Candidates.
 7. Do not ask the user to restate the full API prompt.
 
 ## Strategy Creation Contract
@@ -413,6 +475,10 @@ Supported `target_platforms`: `youtube`, `instagram`, `tiktok`.
 
 - Do not call approve APIs.
 - Do not write directly to KOL Master or Campaign KOL.
+- Do not import a target-platform profile URL as video evidence. Profile URLs are final KOL identity or search leads; video evidence import requires a platform video/post URL.
+- Do not discard the profile URL. When importing video evidence, include `author_profile_url` whenever available so the generated Raw Candidate gets the correct `profile_url`.
+- Do not use cross-platform evidence in the default MVP flow. `target_platform` and `evidence_platform` must match unless the user explicitly enables a future cross-platform workflow.
+- Do not directly write Raw Candidates from profile search when a `video_evidence_finder` task exists. Import video evidence and let KOL Campaign OS score/generate Raw Candidates.
 - Do not run Finder against an unpublished Strategy unless you first publish it with explicit one-shot or publish instruction.
 - Do not invent follower counts, views, email, country, price, or engagement.
 - Do not invent exact Strategy facts such as competitors, budgets, or price tiers. If unknown, use flexible rules and note uncertainty.

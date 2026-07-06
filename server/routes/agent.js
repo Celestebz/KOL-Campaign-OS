@@ -386,9 +386,39 @@ router.get('/brief/:strategyId', requireAgentToken, async (req, res) => {
         },
         strategy,
         finder_v2: {
+          default_execution_mode: 'video_evidence_finder',
           target_platforms: Object.keys(recommendedDiscoveryRoutes(strategy)),
           target_platform_confirmation_required: true,
           target_platform_confirmation_note: 'Saved Strategy platforms are historical context only. Confirm the current target KOL platform(s) before Finder unless the current request or UI/API payload explicitly selected them.',
+          video_evidence_first: {
+            enabled: true,
+            principle: 'Final goal is KOL profile_url, but Finder import requires target-platform video evidence first.',
+            identity_field: 'author_profile_url becomes the generated Raw Candidate profile_url',
+            evidence_field: 'video_url is the proof used for Finder evidence scoring',
+            mvp_scope: {
+              discovery_scope: 'target_platform_only',
+              discovery_route: 'target_platform_first',
+              allow_cross_platform_evidence: false,
+              rule: 'target_platform must equal evidence_platform in MVP'
+            },
+            accepted_video_url_formats: {
+              youtube: ['youtube.com/watch?v=...', 'youtu.be/...', 'youtube.com/shorts/...'],
+              instagram: ['instagram.com/reel/...', 'instagram.com/p/...'],
+              tiktok: ['tiktok.com/@handle/video/...']
+            },
+            allowed_workflow: [
+              'Find possible KOL profile as a lead',
+              'Open/inspect the profile or platform search result',
+              'Find relevant target-platform video/post URL',
+              'Import video_url together with author_profile_url',
+              'Crawl videos, run evidence analysis, then generate Raw Candidates'
+            ],
+            disallowed_imports: [
+              'Do not import Instagram/YouTube/TikTok profile URL as video evidence',
+              'Do not use YouTube evidence for an Instagram Finder task',
+              'Do not directly write Raw Candidates from profile search when a video_evidence_finder task exists'
+            ]
+          },
           recommended_discovery_routes: recommendedDiscoveryRoutes(strategy),
           instagram_native_search_policy: {
             default_enabled: false,
@@ -412,16 +442,63 @@ router.get('/brief/:strategyId', requireAgentToken, async (req, res) => {
           raw_candidates_are_review_queue: true
         },
         write_api: {
-          method: 'POST',
-          path: '/api/agent/raw-candidates/import',
-          auth: 'Authorization: Bearer <External Agent API Token>',
-          accepted_shape: {
-            strategy_id: strategy.id,
-            source_agent: 'codex_agent | workbuddy_agent',
-            finder_run: { name: 'optional run name', notes: 'optional notes' },
-            target_platforms: ['instagram'],
-            discovery_routes: ['youtube_to_instagram', 'google_web_to_instagram'],
-            candidates: []
+          preferred_flow: {
+            create_task: {
+              method: 'POST',
+              path: '/api/finder-tasks',
+              body: {
+                strategy_id: strategy.id,
+                execution_mode: 'video_evidence_finder',
+                target_platforms: ['instagram'],
+                discovery_scope: 'target_platform_only',
+                allow_cross_platform_evidence: false,
+                limit_per_platform: 10
+              }
+            },
+            import_video_evidence: {
+              method: 'POST',
+              path: '/api/finder-tasks/{finder_task_id}/video-evidence/import',
+              accepted_shape: {
+                videos: [{
+                  video_url: 'https://www.instagram.com/reel/xxxx/',
+                  target_platform: 'instagram',
+                  evidence_platform: 'instagram',
+                  source_signal: 'use_case',
+                  source_query: 'vocal processor live performance',
+                  title: 'optional visible title',
+                  author_name: 'creator handle or display name',
+                  author_profile_url: 'https://www.instagram.com/creator/',
+                  evidence_reason: 'Why this video proves the creator may fit the KOL search.'
+                }]
+              }
+            },
+            crawl_videos: {
+              method: 'POST',
+              path: '/api/videos/crawl',
+              body: { videoIds: ['video_source_id values returned by evidence import'] }
+            },
+            score_evidence: {
+              method: 'POST',
+              path: '/api/finder-tasks/{finder_task_id}/evidence-analysis'
+            },
+            generate_candidates: {
+              method: 'POST',
+              path: '/api/finder-tasks/{finder_task_id}/generate-candidates-from-evidence'
+            }
+          },
+          legacy_raw_candidate_import: {
+            method: 'POST',
+            path: '/api/agent/raw-candidates/import',
+            auth: 'Authorization: Bearer <External Agent API Token>',
+            use_only_when: 'Video Evidence Finder APIs are unavailable or the user explicitly asks for legacy Raw Candidate import.',
+            accepted_shape: {
+              strategy_id: strategy.id,
+              source_agent: 'codex_agent | workbuddy_agent',
+              finder_run: { name: 'optional run name', notes: 'optional notes' },
+              target_platforms: ['instagram'],
+              discovery_routes: ['youtube_to_instagram', 'google_web_to_instagram'],
+              candidates: []
+            }
           }
         }
       }
