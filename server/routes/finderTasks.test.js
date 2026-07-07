@@ -161,6 +161,37 @@ test('finder subtasks routes return 410 Gone', async () => {
   assert.equal(res3.status, 410);
 });
 
+test('video evidence finder uses selected YouTube Maton Gateway provider', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+
+  await models.ApiSetting.create({
+    provider: 'system.provider_selection',
+    extra_config: JSON.stringify({
+      platforms: {
+        youtube: { primary: 'maton_gateway', fallbacks: [] }
+      }
+    })
+  });
+
+  const res = await request
+    .post('/api/finder-tasks')
+    .send({
+      strategy_id: strategy.id,
+      execution_mode: 'video_evidence_finder',
+      target_platforms: ['youtube'],
+      limit_per_platform: 5
+    });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+  assert.deepEqual(JSON.parse(res.body.data.search_sources), ['maton_agent']);
+  assert.deepEqual(JSON.parse(res.body.data.raw_request).search_sources, ['maton_agent']);
+});
+
 test('finder task -> video evidence -> video_sources reuse', async () => {
   await resetTestDatabase();
   await initDatabase();

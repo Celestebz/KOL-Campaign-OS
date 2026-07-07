@@ -411,12 +411,24 @@ function legacyKeysFor(scope, provider) {
   return [];
 }
 
+function hasUsableSetting(row) {
+  const extra = parseJson(row?.extra_config, {});
+  return Boolean(
+    row?.api_key ||
+    row?.base_url ||
+    row?.model ||
+    extra.connection_id ||
+    extra.auth_header_name ||
+    extra.custom_provider_name
+  );
+}
+
 async function getSetting(key, legacyKeys = []) {
   const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [key]);
-  if (direct?.api_key || direct?.base_url || direct?.model || direct?.extra_config) return direct;
+  if (hasUsableSetting(direct)) return direct;
   for (const legacyKey of legacyKeys) {
     const legacy = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [legacyKey]);
-    if (legacy?.api_key || legacy?.base_url || legacy?.model || legacy?.extra_config) return legacy;
+    if (hasUsableSetting(legacy)) return legacy;
   }
   return direct || null;
 }
@@ -424,6 +436,25 @@ async function getSetting(key, legacyKeys = []) {
 async function getSelection() {
   const row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ?', [SYSTEM_SELECTION_KEY]);
   return parseJson(row?.extra_config, {});
+}
+
+function searchSourceForPlatformProvider(platform, provider) {
+  if (provider === 'maton_gateway') return 'maton_agent';
+  if (platform === 'youtube') return 'youtube_search';
+  if (platform === 'instagram') return 'instagram_search';
+  if (platform === 'tiktok') return 'tiktok_search';
+  return '';
+}
+
+async function preferredSearchSourceForTargetPlatform(platform) {
+  const selection = await getSelection();
+  const provider = clean(selection.platforms?.[platform]?.primary);
+  return searchSourceForPlatformProvider(platform, provider) || searchSourceForPlatformProvider(platform);
+}
+
+async function preferredSearchSourcesForTargetPlatforms(platforms = []) {
+  const sources = await Promise.all(platforms.map((platform) => preferredSearchSourceForTargetPlatform(platform)));
+  return [...new Set(sources.filter((source) => SEARCH_SOURCES.includes(source)))];
 }
 
 async function fetchJson(url, options = {}) {
@@ -1671,6 +1702,7 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
   if (existing) {
     await dbOperations.run(
       `UPDATE raw_candidates SET
+       profile_url = COALESCE(NULLIF(profile_url, ''), ?),
        followers = COALESCE(NULLIF(followers, ''), ?),
        avg_views = COALESCE(NULLIF(avg_views, ''), ?),
        email = COALESCE(NULLIF(email, ''), ?),
@@ -1696,6 +1728,7 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
        updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
+        candidate.profile_url,
         candidate.followers,
         candidate.avg_views,
         candidate.email,
@@ -2085,7 +2118,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
     }
     await updateTask(taskId, { current_cycle: sourceSignalForCycle(cycle) });
     for (const targetPlatform of targets) {
-      const searchSource = targetPlatform === 'youtube' ? 'youtube_search' : `${targetPlatform}_search`;
+      const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
       const request = buildCycleRequest(strategy, cycle, searchSource, targetPlatform, options.limit || 10, 'target_platform_first', targetPlatform);
       try {
         const result = await runProvider(request, options.allowFallback !== false);
@@ -2354,7 +2387,8 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     const strategy = await getReadyStrategy(task.strategy_id);
     const ids = (req.body?.evidence_ids || req.body?.evidenceIds || []).map(Number).filter(Boolean);
     let sql = `
-      SELECT fve.*, vs.title as video_title, vs.author_name as video_author_name, vs.kol_name, vs.published_at, vs.content_type
+      SELECT fve.*, vs.source_url as video_url, vs.title as video_title, vs.author_name as video_author_name,
+        vs.author_profile_url, vs.kol_name, vs.published_at, vs.content_type
       FROM finder_video_evidence fve
       LEFT JOIN video_sources vs ON vs.id = fve.video_source_id
       WHERE fve.finder_task_id = ?
@@ -2451,8 +2485,11 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.risk.risk_level')) as risk_level,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.risk.risk_notes')) as risk_notes,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.hard_filter.hard_filter_notes')) as hard_filter_notes,
+        JSON_UNQUOTE(JSON_EXTRACT(fve.raw_data, '$.data.followers')) as followers,
+        JSON_UNQUOTE(JSON_EXTRACT(fve.raw_data, '$.data.country_region')) as country_region,
         vai.summary,
-        vs.kol_name, vs.author_name, vs.author_name as video_author_name, vs.title, vs.title as video_title, vs.source_url as video_url
+        vs.kol_name, vs.author_name, vs.author_name as video_author_name, vs.author_profile_url,
+        vs.title, vs.title as video_title, vs.source_url as video_url
       FROM finder_video_evidence fve
       JOIN video_ai_analysis_results vai ON vai.analysis_scope_id = fve.id AND vai.analysis_type = 'finder_evidence'
       LEFT JOIN video_sources vs ON vs.id = fve.video_source_id
@@ -2505,10 +2542,10 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
         evidence_type: 'video',
         source_query: clean(best.source_query),
         status: recommendedStatus,
-        followers: '',
+        followers: clean(best.followers),
         avg_views: '',
         email: '',
-        country_region: '',
+        country_region: clean(best.country_region),
         error_message: '',
         rejection_scope: '',
         rejection_category: '',
@@ -2610,6 +2647,9 @@ router.post('/', async (req, res) => {
       : executionMode === 'video_evidence_finder'
         ? ['C2', 'C3', 'C6']
         : recommendedCycleIdsForTargets(requestedTargets, searchIntensity);
+    const videoEvidenceSearchSources = executionMode === 'video_evidence_finder'
+      ? await preferredSearchSourcesForTargetPlatforms(requestedTargets)
+      : [];
     const fullStrategyCycles = (strategy.search_strategy || DEFAULT_SEARCH_CYCLES)
       .map((cycle) => ({ ...cycle, target_count: Math.min(Number(body.limit_per_platform || cycle.target_count || 10), 50) }));
     const cycles = fullStrategyCycles
@@ -2621,7 +2661,7 @@ router.post('/', async (req, res) => {
     const normalizedCycles = cycles.map((cycle) => ({
       ...cycle,
       discovery_routes: discoveryRoutes.length ? discoveryRoutes : discoveryRoutesForCycle(cycle, strategy, [], targetPlatforms),
-      search_sources: searchSources.length ? searchSources : searchSourcesForCycle(cycle),
+      search_sources: videoEvidenceSearchSources.length ? videoEvidenceSearchSources : searchSources.length ? searchSources : searchSourcesForCycle(cycle),
       target_platforms: targetPlatforms.length ? targetPlatforms : targetPlatformsForCycle(cycle, strategy)
     }));
     const rawRequest = {
@@ -2632,7 +2672,7 @@ router.post('/', async (req, res) => {
       cycles_source: hasManualCycles ? 'manual' : 'intensity',
       cycles: normalizedCycles.map((c) => c.cycle),
       discovery_routes: discoveryRoutes,
-      search_sources: searchSources,
+      search_sources: videoEvidenceSearchSources.length ? videoEvidenceSearchSources : searchSources,
       target_platforms: targetPlatforms.length ? targetPlatforms : [...new Set(normalizedCycles.flatMap((cycle) => cycle.target_platforms || []))],
       discovery_scope: executionMode === 'video_evidence_finder' ? 'target_platform_only' : clean(body.discovery_scope || body.discoveryScope || ''),
       discovery_route: executionMode === 'video_evidence_finder' ? 'target_platform_first' : '',
