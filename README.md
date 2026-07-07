@@ -26,10 +26,19 @@ KOL 策略 -> KOL 寻找/Subagent 任务 -> 候选池 -> 人工通过 -> KOL 管
 
 - 前端：React + Ant Design
 - 后端：Node.js + Express
-- 数据库：SQLite
+- 数据库：MySQL 8（通过 Docker Compose 启动）
 - 表格：xlsx
 
 ## 启动
+
+1. 确保已安装 Docker Desktop。
+2. 启动 MySQL：
+
+```powershell
+npm run db:up
+```
+
+3. 安装依赖并运行应用：
 
 ```powershell
 npm run install-all

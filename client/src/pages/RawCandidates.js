@@ -44,14 +44,6 @@ const defaultRoutesForTargets = (targets = []) => {
   return [...new Set(routes.length ? routes : ['youtube_native_search'])];
 };
 
-const defaultSubagentRoutesForTargets = (targets = []) => {
-  const routes = [];
-  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube');
-  if (targets.includes('instagram')) routes.push('youtube_to_instagram', 'google_web_to_instagram', 'reddit_to_instagram', 'seed_posts_to_profile', 'instagram_native_small_batch');
-  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok');
-  return [...new Set(routes.length ? routes : ['youtube_native_search'])];
-};
-
 const cycleOrder = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
 
 const searchIntensityOptions = [
@@ -129,41 +121,6 @@ const safeParseJson = (value) => {
   }
 };
 
-const subtaskSummary = (subtask) => safeParseJson(subtask?.agent_result_summary) || {};
-
-const routePlanRoutes = (subtask) => {
-  const plan = subtaskSummary(subtask).route_plan || {};
-  const routes = [...(plan.required_routes || []), ...(plan.optional_routes || []), ...(plan.skipped_routes || [])];
-  return routes.map((item) => ({
-    route: item.route,
-    required: Boolean(item.required),
-    skipped: Boolean(item.skipped)
-  })).filter((item) => item.route);
-};
-
-const routeCoverageLabel = (subtask) => {
-  const summary = subtaskSummary(subtask);
-  const plan = summary.route_plan || {};
-  if (summary.cycle_status === 'skipped' || plan.cycle_status === 'skipped') {
-    return { color: 'default', text: `已跳过：${summary.cycle_status_reason || plan.cycle_status_reason || plan.skipped_reason || 'skipped'}` };
-  }
-  if (summary.cycle_status === 'blocked') {
-    return { color: 'red', text: summary.cycle_status_reason || '已阻塞' };
-  }
-  const required = plan.required_routes || [];
-  const coverage = summary.route_coverage || [];
-  const attempts = summary.route_attempts || [];
-  const attemptedRoutes = new Set([...coverage, ...attempts].map((item) => item.route).filter(Boolean));
-  const missing = required.filter((item) => !attemptedRoutes.has(item.route));
-  const optionalAttempted = (plan.optional_routes || []).filter((item) => attemptedRoutes.has(item.route)).length;
-  if (subtask.status === 'pending' && !coverage.length && !attempts.length) {
-    return { color: 'default', text: `必跑 ${required.length} / 可选 ${(plan.optional_routes || []).length}` };
-  }
-  if (required.length && !missing.length) return { color: 'green', text: `必跑已完成 / 可选 ${optionalAttempted}` };
-  if (required.length) return { color: 'orange', text: `缺少必跑 ${missing.length}` };
-  return { color: 'default', text: '无必跑路径' };
-};
-
 const normalizeHandle = (value) => String(value || '').trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
 
 const platformProfileFromHandle = (platform, handle) => {
@@ -227,16 +184,12 @@ const RawCandidates = () => {
   const [finderTasks, setFinderTasks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [taskLoading, setTaskLoading] = useState(false);
-  const [finderSubtasks, setFinderSubtasks] = useState([]);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [filters, setFilters] = useState({ status: 'new' });
   const [modalOpen, setModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [videoEvidence, setVideoEvidence] = useState([]);
   const [videoEvidenceLoading, setVideoEvidenceLoading] = useState(false);
-  const [promptModal, setPromptModal] = useState(null);
-  const [importModal, setImportModal] = useState(null);
-  const [importPayload, setImportPayload] = useState('');
   const [detail, setDetail] = useState(null);
   const [globalRiskRecord, setGlobalRiskRecord] = useState(null);
   const [form] = Form.useForm();
@@ -245,7 +198,6 @@ const RawCandidates = () => {
   const executionMode = Form.useWatch('execution_mode', taskForm);
   const searchIntensity = Form.useWatch('search_intensity', taskForm) || 'standard';
   const selectedTargetPlatforms = Form.useWatch('target_platforms', taskForm) || [];
-  const selectedTaskCycles = Form.useWatch('cycles', taskForm) || [];
   const recommendedTaskCycles = recommendedCyclesForTargets(selectedTargetPlatforms, searchIntensity);
 
   const campaignOptions = useMemo(() => campaigns.map((item) => ({
@@ -290,11 +242,9 @@ const RawCandidates = () => {
 
   useEffect(() => {
     if (!finderTasks[0]?.id) {
-      setFinderSubtasks([]);
       setVideoEvidence([]);
       return;
     }
-    fetchSubtasks(finderTasks[0].id);
     fetchVideoEvidence(finderTasks[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finderTasks[0]?.id]);
@@ -309,11 +259,7 @@ const RawCandidates = () => {
     if (!taskModalOpen || !selectedTargetPlatforms.length) return;
     taskForm.setFieldValue(
       'discovery_routes',
-      executionMode === 'video_evidence_finder'
-        ? ['target_platform_first']
-        : executionMode === 'subagent_hybrid'
-        ? defaultSubagentRoutesForTargets(selectedTargetPlatforms)
-        : defaultRoutesForTargets(selectedTargetPlatforms)
+      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : defaultRoutesForTargets(selectedTargetPlatforms)
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskModalOpen, executionMode]);
@@ -324,7 +270,7 @@ const RawCandidates = () => {
     if (!targets.length) return;
     taskForm.setFieldValue(
       'discovery_routes',
-      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : executionMode === 'subagent_hybrid' ? defaultSubagentRoutesForTargets(targets) : defaultRoutesForTargets(targets)
+      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : defaultRoutesForTargets(targets)
     );
     if (executionMode === 'video_evidence_finder') taskForm.setFieldValue('cycles', ['C2', 'C3', 'C6']);
   }, [executionMode, taskModalOpen, taskForm]);
@@ -358,16 +304,6 @@ const RawCandidates = () => {
       setFinderTasks(res.data.data || []);
     } catch (error) {
       message.error(error.response?.data?.error || '获取寻找任务失败');
-    }
-  };
-
-  const fetchSubtasks = async (finderTaskId = finderTasks[0]?.id) => {
-    if (!finderTaskId) return;
-    try {
-      const res = await axios.get(`/api/finder-tasks/${finderTaskId}/subtasks`);
-      setFinderSubtasks(res.data.data || []);
-    } catch (error) {
-      message.error(error.response?.data?.error || '获取子任务失败');
     }
   };
 
@@ -471,23 +407,12 @@ const RawCandidates = () => {
       const recommendedCycles = recommendedCyclesForTargets(values.target_platforms || [], values.search_intensity || 'standard');
       const selectedCycles = [...(values.cycles || [])].sort().join(',');
       const expectedCycles = [...recommendedCycles].sort().join(',');
-      const res = await axios.post('/api/finder-tasks', {
+      await axios.post('/api/finder-tasks', {
         strategy_id: selectedStrategy.id,
         ...values,
         cycles_source: selectedCycles === expectedCycles ? 'intensity' : 'manual'
       });
-      const task = res.data.data;
-      if (values.execution_mode === 'subagent_hybrid') {
-        const generated = await axios.post(`/api/finder-tasks/${task.id}/subtasks/generate`, {
-          phase: 'first_run',
-          search_intensity: values.search_intensity,
-          seed_urls: values.seed_urls
-        });
-        setFinderSubtasks(generated.data.data || []);
-        message.success(`已生成 ${generated.data.data?.length || 0} 个子任务`);
-      } else {
-        message.success('Finder 搜索任务已启动');
-      }
+      message.success('Finder 搜索任务已启动');
       setTaskModalOpen(false);
       fetchFinderTasks(selectedStrategy.id);
       fetchCandidates();
@@ -498,88 +423,12 @@ const RawCandidates = () => {
     }
   };
 
-  const generateExpansionSubtask = async () => {
-    if (!latestTask?.id) return;
-    setTaskLoading(true);
-    try {
-      const res = await axios.post(`/api/finder-tasks/${latestTask.id}/subtasks/generate`, {
-        phase: 'expansion',
-        cycles: ['C7']
-      });
-      const count = res.data.data?.length || 0;
-      setFinderSubtasks(res.data.data || []);
-      message.success(count ? `已生成 ${count} 个 C7 线索扩展任务` : 'C7 仍在等待种子候选');
-      fetchFinderTasks(selectedStrategy?.id);
-    } catch (error) {
-      message.error(error.response?.data?.error || '生成 C7 线索扩展任务失败');
-    } finally {
-      setTaskLoading(false);
-    }
-  };
-
-  const openPrompt = async (subtask) => {
-    try {
-      const res = await axios.get(`/api/finder-subtasks/${subtask.id}/prompt`);
-      setPromptModal(res.data.data);
-    } catch (error) {
-      message.error(error.response?.data?.error || '获取 Prompt 失败');
-    }
-  };
-
-  const copyPrompt = async () => {
-    if (!promptModal?.agent_prompt) return;
-    try {
-      await navigator.clipboard.writeText(promptModal.agent_prompt);
-      message.success('Prompt 已复制');
-    } catch (error) {
-      message.error('复制失败，请手动选择文本复制');
-    }
-  };
-
   const updateTaskRoutesForTargets = (targets = []) => {
     taskForm.setFieldValue(
       'discovery_routes',
-      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : executionMode === 'subagent_hybrid' ? defaultSubagentRoutesForTargets(targets) : defaultRoutesForTargets(targets)
+      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : defaultRoutesForTargets(targets)
     );
     taskForm.setFieldValue('cycles', executionMode === 'video_evidence_finder' ? ['C2', 'C3', 'C6'] : recommendedCyclesForTargets(targets, taskForm.getFieldValue('search_intensity') || 'standard'));
-  };
-
-  const openImport = (subtask) => {
-    const isCycleSubtask = subtask.discovery_route === 'cycle_multi_route';
-    setImportModal(subtask);
-    setImportPayload(JSON.stringify({
-      finder_subtask_id: subtask.id,
-      strategy_id: subtask.strategy_id,
-      source_agent: isCycleSubtask ? `codex_subagent_${String(subtask.search_cycle || '').toLowerCase()}_cycle` : `codex_subagent_${subtask.discovery_route}`,
-      ...(isCycleSubtask ? { route_coverage: [] } : {}),
-      accepted_candidates: [],
-      rejected_candidates: []
-    }, null, 2));
-  };
-
-  const importSubtaskResult = async () => {
-    if (!importModal) return;
-    let payload;
-    try {
-      payload = JSON.parse(importPayload);
-    } catch (error) {
-      message.error('JSON 格式错误，请检查后再导入');
-      return;
-    }
-    setTaskLoading(true);
-    try {
-      await axios.post(`/api/finder-subtasks/${importModal.id}/import`, payload);
-      message.success('Subagent 结果已导入候选池');
-      setImportModal(null);
-      setImportPayload('');
-      fetchSubtasks(importModal.finder_task_id);
-      fetchFinderTasks(selectedStrategy?.id);
-      fetchCandidates();
-    } catch (error) {
-      message.error(error.response?.data?.error || '导入 Subagent 结果失败');
-    } finally {
-      setTaskLoading(false);
-    }
   };
 
   const openCreate = () => {
@@ -846,7 +695,6 @@ const RawCandidates = () => {
                 <Space wrap>
                   <Tag color="default">C7 线索扩展：等待种子候选</Tag>
                   <span style={{ color: '#666' }}>{expansionSummary.expansion_reason || 'waiting_for_seeds'}</span>
-                  <Button size="small" onClick={generateExpansionSubtask} loading={taskLoading}>生成 C7 线索扩展任务</Button>
                 </Space>
               ) : null}
               {safeParseJson(latestTask?.raw_request)?.execution_mode === 'video_evidence_finder' || videoEvidence.length ? (
@@ -857,7 +705,7 @@ const RawCandidates = () => {
                     <Tag color="green">Stage 3 Raw Candidates</Tag>
                     <Button size="small" onClick={() => fetchVideoEvidence(latestTask.id)} loading={videoEvidenceLoading}>Refresh Evidence</Button>
                     <Button size="small" type="primary" onClick={analyzeVideoEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.length}>Score Evidence</Button>
-                    <Button size="small" onClick={generateCandidatesFromEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.some((item) => item.recommendation === 'candidate_evidence')}>Generate Raw Candidates</Button>
+                    <Button size="small" onClick={generateCandidatesFromEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.some((item) => item.enter_raw_candidates === 'true' && item.recommended_status !== 'ignored')}>Generate Raw Candidates</Button>
                   </Space>
                   <Table
                     size="small"
@@ -871,70 +719,14 @@ const RawCandidates = () => {
                       { title: 'Author', dataIndex: 'author_name', key: 'author_name', width: 160 },
                       { title: 'Source Query', dataIndex: 'source_query', key: 'source_query', width: 180 },
                       { title: 'Signal', dataIndex: 'source_signal', key: 'source_signal', width: 120, render: (v) => <Tag color="cyan">{v}</Tag> },
-                      { title: 'Content', dataIndex: 'content_relevance_score', key: 'content_relevance_score', width: 90, render: (v) => v ?? '-' },
-                      { title: 'Creator', dataIndex: 'creator_fit_score', key: 'creator_fit_score', width: 90, render: (v) => v ?? '-' },
+                      { title: 'Priority', dataIndex: 'candidate_priority_score', key: 'candidate_priority_score', width: 90, render: (v) => v ?? '-' },
+                      { title: 'Best Signal', dataIndex: 'content_relevance_score', key: 'content_relevance_score', width: 100, render: (v) => v ?? '-' },
                       { title: 'Evidence', dataIndex: 'evidence_strength_score', key: 'evidence_strength_score', width: 90, render: (v) => v ?? '-' },
-                      { title: 'Potential', dataIndex: 'kol_candidate_potential_score', key: 'kol_candidate_potential_score', width: 100, render: (v) => v ?? '-' },
-                      { title: 'Result', dataIndex: 'recommendation', key: 'recommendation', width: 150, render: (v) => <Tag color={v === 'candidate_evidence' ? 'green' : v === 'reject' ? 'red' : 'default'}>{v || 'not scored'}</Tag> },
-                      { title: 'Risk', dataIndex: 'brand_safety_risk', key: 'brand_safety_risk', width: 100, render: (v) => <Tag color={v === 'high' ? 'red' : v === 'medium' ? 'orange' : 'green'}>{v || '-'}</Tag> }
+                      { title: 'Creator', dataIndex: 'creator_fit_score', key: 'creator_fit_score', width: 90, render: (v) => v ?? '-' },
+                      { title: 'Status', dataIndex: 'recommended_status', key: 'recommended_status', width: 140, render: (v) => <Tag color={v === 'new' ? 'green' : v === 'manual_review' ? 'orange' : v === 'risk_review' ? 'red' : 'default'}>{v || 'not scored'}</Tag> },
+                      { title: 'Risk', dataIndex: 'risk_level', key: 'risk_level', width: 100, render: (v) => <Tag color={v === 'high' ? 'red' : v === 'medium' ? 'orange' : 'green'}>{v || '-'}</Tag> }
                     ]}
                     scroll={{ x: 1500 }}
-                  />
-                </div>
-              ) : null}
-              {finderSubtasks.length ? (
-                <div style={{ marginTop: 8 }}>
-                  <Table
-                    size="small"
-                    rowKey="id"
-                    dataSource={finderSubtasks}
-                    pagination={false}
-                    columns={[
-                      { title: '搜索轮次', dataIndex: 'search_cycle', key: 'search_cycle', width: 90, render: (v) => <Tag color="blue">{v}</Tag> },
-                      { title: '任务', dataIndex: 'name', key: 'name', width: 220 },
-                      {
-                        title: '发现路径',
-                        key: 'route_plan',
-                        render: (_, subtask) => {
-                          const routes = routePlanRoutes(subtask);
-                          if (!routes.length) return <Tag>{subtask.discovery_route}</Tag>;
-                          return (
-                            <Space wrap size={[4, 4]}>
-                              {routes.slice(0, 6).map((item) => (
-                                <Tag key={`${subtask.id}-${item.route}`} color={item.skipped ? 'default' : item.required ? 'geekblue' : 'cyan'}>
-                                  {item.skipped ? '跳过 ' : item.required ? '必跑 ' : '可选 '}{item.route}
-                                </Tag>
-                              ))}
-                              {routes.length > 6 ? <Tag>+{routes.length - 6}</Tag> : null}
-                            </Space>
-                          );
-                        }
-                      },
-                      {
-                        title: '路径覆盖',
-                        key: 'coverage',
-                        width: 190,
-                        render: (_, subtask) => {
-                          const coverage = routeCoverageLabel(subtask);
-                          return <Tag color={coverage.color}>{coverage.text}</Tag>;
-                        }
-                      },
-                      { title: '目标平台', dataIndex: 'target_platform', key: 'target_platform', width: 130 },
-                      { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: (v) => <Tag color={v === 'completed' ? 'green' : v === 'failed' ? 'red' : v === 'running' ? 'blue' : 'default'}>{v}</Tag> },
-                      { title: '通过', dataIndex: 'accepted_count', key: 'accepted_count', width: 90, render: (v) => v || 0 },
-                      { title: '拒绝', dataIndex: 'rejected_count', key: 'rejected_count', width: 90, render: (v) => v || 0 },
-                      {
-                        title: '操作',
-                        key: 'actions',
-                        width: 180,
-                        render: (_, subtask) => (
-                          <Space>
-                            <Button size="small" onClick={() => openPrompt(subtask)}>Prompt</Button>
-                            <Button size="small" type="primary" onClick={() => openImport(subtask)}>导入</Button>
-                          </Space>
-                        )
-                      }
-                    ]}
                   />
                 </div>
               ) : null}
@@ -1030,7 +822,7 @@ const RawCandidates = () => {
         </Form>
       </Modal>
 
-      <Modal title="创建寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText={executionMode === 'subagent_hybrid' ? '生成搜索轮次子任务' : '启动搜索'} width={760}>
+      <Modal title="创建寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText="启动搜索" width={760}>
         <Form form={taskForm} layout="vertical">
           <Form.Item label="策略">
             <Input value={selectedStrategy?.name || ''} disabled />
@@ -1038,15 +830,9 @@ const RawCandidates = () => {
           <Form.Item label="执行模式" name="execution_mode" rules={[{ required: true, message: '请选择执行模式' }]}>
             <Select options={[
               { value: 'video_evidence_finder', label: 'Video Evidence Finder' },
-              { value: 'system_provider', label: 'System Provider' },
-              { value: 'subagent_hybrid', label: 'Subagent Hybrid' }
+              { value: 'system_provider', label: 'System Provider' }
             ]} />
           </Form.Item>
-          {executionMode === 'subagent_hybrid' ? (
-            <div style={{ marginBottom: 16, color: '#666' }}>
-              将按搜索强度生成 Subagent Hybrid 子任务，预计 {selectedTaskCycles.length || 0} 个。支持并行的外部 agent 可同时跑这些 cycle；不支持并行时会更慢。
-            </div>
-          ) : null}
           <Form.Item label="搜索强度" name="search_intensity" rules={[{ required: true, message: '请选择搜索强度' }]}>
             <Select options={searchIntensityOptions} />
           </Form.Item>
@@ -1075,41 +861,6 @@ const RawCandidates = () => {
             <Switch />
           </Form.Item>
         </Form>
-      </Modal>
-
-      <Modal title="Subagent Prompt" open={Boolean(promptModal)} onCancel={() => setPromptModal(null)} footer={[
-        <Button key="copy" type="primary" onClick={copyPrompt}>复制 Prompt</Button>,
-        <Button key="close" onClick={() => setPromptModal(null)}>关闭</Button>
-      ]} width={900}>
-        {promptModal ? (
-          <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
-            {['required_routes', 'optional_routes', 'skipped_routes'].map((key) => {
-              const plan = subtaskSummary(promptModal).route_plan || {};
-              const routes = plan[key] || [];
-              if (!routes.length) return null;
-              const title = key === 'required_routes' ? '必跑' : key === 'optional_routes' ? '可选' : '跳过';
-              const color = key === 'required_routes' ? 'geekblue' : key === 'optional_routes' ? 'cyan' : 'default';
-              return (
-                <div key={key}>
-                  <strong>{title}: </strong>
-                  <Space wrap size={[4, 4]}>
-                    {routes.map((route) => (
-                      <Tag key={`${key}-${route.route}`} color={color}>{route.route}</Tag>
-                    ))}
-                  </Space>
-                </div>
-              );
-            })}
-          </Space>
-        ) : null}
-        <TextArea value={promptModal?.agent_prompt || ''} rows={22} readOnly />
-      </Modal>
-
-      <Modal title="导入 Subagent 结果" open={Boolean(importModal)} onCancel={() => setImportModal(null)} onOk={importSubtaskResult} confirmLoading={taskLoading} width={900}>
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <span style={{ color: '#666' }}>粘贴 subagent 返回的 JSON。导入后会写入候选池，仍需人工通过。</span>
-          <TextArea value={importPayload} onChange={(e) => setImportPayload(e.target.value)} rows={20} />
-        </Space>
       </Modal>
 
       <Modal title="候选详情" open={Boolean(detail)} onCancel={() => setDetail(null)} footer={null} width={760}>

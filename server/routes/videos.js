@@ -3,7 +3,8 @@ const multer = require('multer');
 const xlsx = require('xlsx');
 const path = require('path');
 const fs = require('fs');
-const { dbOperations } = require('../database');
+const { dbOperations, models } = require('../database');
+const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
 
 const router = express.Router();
 
@@ -519,10 +520,44 @@ async function fetchWithProvider(platform, provider, url, setting) {
   throw new Error(`${PROVIDER_LABELS[provider] || provider} 当前仅预留，尚未接入数据 adapter`);
 }
 
+function buildMockVideoData(url) {
+  const platform = detectPlatform(url);
+  const videoId = String(url).split(/[?=&/]/).pop() || 'mock';
+  return {
+    platform,
+    platform_video_id: videoId,
+    kol_name: 'Mock Creator',
+    title: 'Mock Video Title',
+    author_name: 'Mock Creator',
+    content_type: 'video',
+    published_at: new Date().toISOString(),
+    metrics: {
+      play_count: 100000,
+      like_count: 5000,
+      comment_count: 300,
+      collect_count: 200,
+      share_count: 150
+    },
+    exposure: {
+      primary_exposure_count: 100000,
+      exposure_metric_type: 'views',
+      data_quality_note: 'mock'
+    },
+    comments: [],
+    raw: { mock: true, url },
+    provider: 'mock',
+    attempts: [{ provider: 'mock', ok: true }]
+  };
+}
+
 async function fetchVideoData(url) {
   const platform = detectPlatform(url);
   if (!['youtube', 'instagram', 'tiktok'].includes(platform)) {
     throw new Error('暂不支持该平台链接');
+  }
+
+  if (process.env.NODE_ENV === 'test') {
+    return buildMockVideoData(url);
   }
 
   const selection = await getSelection();
@@ -536,7 +571,7 @@ async function fetchVideoData(url) {
     const key = providerKey(platform, provider);
     const setting = await getSetting(key, legacyKeysFor(platform, provider));
 
-    if (!hasProviderConfig(setting) && provider !== 'google_official') {
+    if (!hasProviderConfig(setting)) {
       attempts.push({ provider, ok: false, error: `${PROVIDER_LABELS[provider] || provider} 未配置` });
       continue;
     }
@@ -551,7 +586,7 @@ async function fetchVideoData(url) {
   }
 
   const message = attempts.map((item) => `${PROVIDER_LABELS[item.provider] || item.provider}: ${item.error}`).join('；');
-  throw new Error(message || '没有可用的数据源 Provider');
+  throw new Error(message || `没有可用的数据源 Provider（当前 ${platform} 主数据源：${platformSelection.primary}）`);
 }
 
 function buildAnalysisPrompt(video, snapshot, comments, promptTemplate, campaign) {
@@ -853,8 +888,12 @@ async function runAiAnalysis(video, snapshot, comments) {
 
   const setting = await getSetting(providerKey('ai', provider), legacyKeysFor('ai', provider));
   const promptTemplate = await dbOperations.get('SELECT * FROM prompt_templates WHERE is_default = 1 ORDER BY id LIMIT 1');
-  const campaign = video.campaign_id
-    ? await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [video.campaign_id])
+  const campaignVideo = await dbOperations.get(
+    'SELECT campaign_id FROM campaign_videos WHERE video_source_id = ? ORDER BY created_at DESC LIMIT 1',
+    [video.id]
+  );
+  const campaign = campaignVideo
+    ? await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [campaignVideo.campaign_id])
     : await dbOperations.get('SELECT * FROM campaigns WHERE id = 1');
   const finalPrompt = buildAnalysisPromptV2(video, snapshot, comments, promptTemplate, campaign);
   const systemPrompt = promptTemplate?.system_prompt || 'You are a KOL marketing analyst. Return valid JSON only. Do not include Markdown or chain-of-thought.';
@@ -887,34 +926,76 @@ async function upsertVideoSource(input) {
   if (!sourceUrl) throw new Error('视频链接为必填字段');
 
   const campaignId = await getOrCreateCampaignId(input);
-  const existing = await dbOperations.get('SELECT * FROM video_sources WHERE source_url = ?', [sourceUrl]);
-  if (existing) {
+  const normalized = normalizeVideoUrl(sourceUrl);
+
+  // Look up by canonical URL hash for global deduplication.
+  let video = await dbOperations.get(
+    'SELECT * FROM video_sources WHERE canonical_url_hash = ?',
+    [normalized.canonicalUrlHash]
+  );
+
+  if (video) {
+    // Update mutable fields.
     await dbOperations.run(
-      `UPDATE video_sources SET campaign_id = ?, kol_name = COALESCE(NULLIF(?, ''), kol_name),
-       cooperation_price = COALESCE(NULLIF(?, ''), cooperation_price), notes = COALESCE(NULLIF(?, ''), notes),
-       updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [campaignId, clean(input.kol_name), clean(input.cooperation_price), clean(input.notes), existing.id]
+      `UPDATE video_sources SET
+        platform = COALESCE(NULLIF(?, ''), platform),
+        platform_video_id = COALESCE(NULLIF(?, ''), platform_video_id),
+        source_url = COALESCE(NULLIF(?, ''), source_url),
+        canonical_url = COALESCE(NULLIF(?, ''), canonical_url),
+        title = COALESCE(NULLIF(?, ''), title),
+        kol_name = COALESCE(NULLIF(?, ''), kol_name),
+        author_name = COALESCE(NULLIF(?, ''), author_name),
+        cooperation_price = COALESCE(NULLIF(?, ''), cooperation_price),
+        notes = COALESCE(NULLIF(?, ''), notes),
+        updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        normalized.platform,
+        normalized.platformVideoId,
+        sourceUrl,
+        normalized.canonicalUrl,
+        clean(input.title),
+        clean(input.kol_name),
+        clean(input.author_name),
+        clean(input.cooperation_price),
+        clean(input.notes),
+        video.id
+      ]
     );
-    return dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [existing.id]);
+  } else {
+    const result = await dbOperations.run(
+      `INSERT INTO video_sources
+       (platform, platform_video_id, source_url, canonical_url, canonical_url_hash,
+        title, kol_name, author_name, cooperation_price, notes, status, crawl_status, analysis_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        normalized.platform,
+        normalized.platformVideoId,
+        sourceUrl,
+        normalized.canonicalUrl,
+        normalized.canonicalUrlHash,
+        clean(input.title),
+        clean(input.kol_name),
+        clean(input.author_name),
+        clean(input.cooperation_price),
+        clean(input.notes),
+        'pending',
+        'pending',
+        'not_analyzed'
+      ]
+    );
+    video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [result.id]);
   }
 
-  const result = await dbOperations.run(
-    `INSERT INTO video_sources
-     (campaign_id, platform, source_url, kol_name, cooperation_price, notes, status, crawl_status, analysis_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      campaignId,
-      detectPlatform(sourceUrl),
-      sourceUrl,
-      clean(input.kol_name),
-      clean(input.cooperation_price),
-      clean(input.notes),
-      'pending',
-      'pending',
-      'not_analyzed'
-    ]
+  // Ensure the video is linked to the requested campaign.
+  await dbOperations.run(
+    `INSERT INTO campaign_videos (campaign_id, video_source_id, added_reason)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
+    [campaignId, video.id, input.added_reason || 'manual']
   );
-  return dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [result.id]);
+
+  return video;
 }
 
 async function crawlVideo(videoId, jobItemId) {
@@ -924,7 +1005,8 @@ async function crawlVideo(videoId, jobItemId) {
     ['crawling', 'crawling', videoId]
   );
 
-  const fetched = await fetchVideoData(video.source_url);
+  const crawlUrl = video.canonical_url || video.source_url;
+  const fetched = await fetchVideoData(crawlUrl);
   await dbOperations.run(
     `UPDATE video_sources SET platform = ?, platform_video_id = ?, kol_name = COALESCE(NULLIF(?, ''), kol_name),
      title = ?, author_name = ?, content_type = ?, published_at = ?, status = ?, crawl_status = ?, error_message = NULL,
@@ -948,7 +1030,7 @@ async function crawlVideo(videoId, jobItemId) {
     provider_attempts: fetched.attempts || [],
     data: fetched.raw
   };
-  await dbOperations.run(
+  const snapshotResult = await dbOperations.run(
     `INSERT INTO video_snapshots
      (video_source_id, play_count, like_count, comment_count, collect_count, share_count,
       primary_exposure_count, exposure_metric_type, data_quality_note, raw_data)
@@ -965,6 +1047,10 @@ async function crawlVideo(videoId, jobItemId) {
       fetched.exposure?.data_quality_note || '',
       JSON.stringify(rawData)
     ]
+  );
+  await dbOperations.run(
+    'UPDATE video_sources SET latest_snapshot_id = ? WHERE id = ?',
+    [snapshotResult.id, videoId]
   );
 
   await dbOperations.run('DELETE FROM video_comments WHERE video_source_id = ?', [videoId]);
@@ -997,11 +1083,11 @@ async function analyzeVideo(videoId, jobItemId) {
   const ai = await runAiAnalysis(video, snapshot, comments);
   const result = normalizeAiResult(ai.parsed || {});
   await dbOperations.run(
-    `INSERT INTO ai_analysis_results
-     (video_source_id, score, summary, sentiment_positive, sentiment_neutral, sentiment_negative, purchase_intent_count,
+    `INSERT INTO video_ai_analysis_results
+     (video_source_id, analysis_type, score, summary, sentiment_positive, sentiment_neutral, sentiment_negative, purchase_intent_count,
       purchase_intent_keywords, brand_mentions, risks, product_feedback, cooperation_advice, content_suggestions,
       full_report, final_prompt, raw_result, model_name, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, 'video_module', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       videoId,
       result.score,
@@ -1097,12 +1183,13 @@ function buildVideoListSql(filters = {}) {
       ai.cooperation_advice, ai.content_suggestions, ai.full_report, ai.final_prompt, ai.created_at as ai_created_at,
       ai.score as ai_score, ai.summary as ai_summary
     FROM video_sources vs
-    LEFT JOIN campaigns c ON c.id = vs.campaign_id
+    LEFT JOIN campaign_videos cv ON cv.video_source_id = vs.id
+    LEFT JOIN campaigns c ON c.id = cv.campaign_id
     LEFT JOIN video_snapshots snap ON snap.id = (
       SELECT id FROM video_snapshots WHERE video_source_id = vs.id ORDER BY snapshot_at DESC LIMIT 1
     )
-    LEFT JOIN ai_analysis_results ai ON ai.id = (
-      SELECT id FROM ai_analysis_results WHERE video_source_id = vs.id ORDER BY created_at DESC LIMIT 1
+    LEFT JOIN video_ai_analysis_results ai ON ai.id = (
+      SELECT id FROM video_ai_analysis_results WHERE video_source_id = vs.id AND analysis_type = 'video_module' ORDER BY created_at DESC LIMIT 1
     )
     WHERE 1=1
   `;
@@ -1113,7 +1200,7 @@ function buildVideoListSql(filters = {}) {
     params.push(...ids);
   }
   if (campaign_id) {
-    sql += ' AND vs.campaign_id = ?';
+    sql += ' AND cv.campaign_id = ?';
     params.push(campaign_id);
   }
   if (platform) {
@@ -1241,7 +1328,11 @@ router.post('/import', upload.single('file'), async (req, res) => {
     for (const [index, row] of rows.entries()) {
       const mapped = mapImportRow(row);
       try {
-        const before = mapped.source_url ? await dbOperations.get('SELECT id FROM video_sources WHERE source_url = ?', [mapped.source_url]) : null;
+        let before = null;
+        if (mapped.source_url) {
+          const normalized = normalizeVideoUrl(mapped.source_url);
+          before = await dbOperations.get('SELECT id FROM video_sources WHERE canonical_url_hash = ?', [normalized.canonicalUrlHash]);
+        }
         await upsertVideoSource(mapped);
         if (before) updated += 1;
         else imported += 1;
@@ -1307,11 +1398,18 @@ router.get('/export', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const campaignId = await getOrCreateCampaignId(req.body);
+    const campaignId = req.body.campaign_id ? await getOrCreateCampaignId(req.body) : null;
     await dbOperations.run(
-      `UPDATE video_sources SET campaign_id = ?, kol_name = ?, cooperation_price = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [campaignId, clean(req.body.kol_name), clean(req.body.cooperation_price), clean(req.body.notes), req.params.id]
+      `UPDATE video_sources SET kol_name = ?, cooperation_price = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [clean(req.body.kol_name), clean(req.body.cooperation_price), clean(req.body.notes), req.params.id]
     );
+    if (campaignId) {
+      await dbOperations.run(
+        `INSERT INTO campaign_videos (campaign_id, video_source_id, added_reason) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
+        [campaignId, req.params.id, req.body.added_reason || 'manual']
+      );
+    }
     const video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [req.params.id]);
     res.json({ success: true, data: video, message: '视频信息已更新' });
   } catch (error) {
@@ -1324,7 +1422,7 @@ router.delete('/batch', async (req, res) => {
     const ids = req.body.videoIds || [];
     if (!ids.length) return res.status(400).json({ success: false, error: '请选择要删除的视频' });
     const placeholders = ids.map(() => '?').join(',');
-    await dbOperations.run(`DELETE FROM ai_analysis_results WHERE video_source_id IN (${placeholders})`, ids);
+    await dbOperations.run(`DELETE FROM video_ai_analysis_results WHERE video_source_id IN (${placeholders})`, ids);
     await dbOperations.run(`DELETE FROM video_comments WHERE video_source_id IN (${placeholders})`, ids);
     await dbOperations.run(`DELETE FROM video_snapshots WHERE video_source_id IN (${placeholders})`, ids);
     await dbOperations.run(`DELETE FROM analysis_job_items WHERE video_source_id IN (${placeholders})`, ids);
@@ -1338,7 +1436,7 @@ router.delete('/batch', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const id = req.params.id;
-    await dbOperations.run('DELETE FROM ai_analysis_results WHERE video_source_id = ?', [id]);
+    await dbOperations.run('DELETE FROM video_ai_analysis_results WHERE video_source_id = ?', [id]);
     await dbOperations.run('DELETE FROM video_comments WHERE video_source_id = ?', [id]);
     await dbOperations.run('DELETE FROM video_snapshots WHERE video_source_id = ?', [id]);
     await dbOperations.run('DELETE FROM analysis_job_items WHERE video_source_id = ?', [id]);
@@ -1376,12 +1474,13 @@ router.get('/jobs/:id/export', async (req, res) => {
         ai.cooperation_advice, ai.content_suggestions, ai.full_report, ai.final_prompt, ai.created_at as ai_created_at
       FROM analysis_job_items item
       JOIN video_sources vs ON vs.id = item.video_source_id
-      LEFT JOIN campaigns c ON c.id = vs.campaign_id
+      LEFT JOIN campaign_videos cv ON cv.video_source_id = vs.id
+      LEFT JOIN campaigns c ON c.id = cv.campaign_id
       LEFT JOIN video_snapshots snap ON snap.id = (
         SELECT id FROM video_snapshots WHERE video_source_id = vs.id ORDER BY snapshot_at DESC LIMIT 1
       )
-      LEFT JOIN ai_analysis_results ai ON ai.id = (
-        SELECT id FROM ai_analysis_results WHERE video_source_id = vs.id ORDER BY created_at DESC LIMIT 1
+      LEFT JOIN video_ai_analysis_results ai ON ai.id = (
+        SELECT id FROM video_ai_analysis_results WHERE video_source_id = vs.id AND analysis_type = 'video_module' ORDER BY created_at DESC LIMIT 1
       )
       WHERE item.job_id = ?
       ORDER BY item.id
@@ -1394,3 +1493,4 @@ router.get('/jobs/:id/export', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.crawlVideo = crawlVideo;

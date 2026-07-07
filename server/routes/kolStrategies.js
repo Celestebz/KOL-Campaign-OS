@@ -42,7 +42,7 @@ const DEFAULT_SCORING_WEIGHTS = {
   commercial_collaboration_fit: 10,
   conversion_potential: 15,
   risk_deduction_max: 10,
-  approval_threshold: 75,
+  approval_threshold: 55,
   hero_threshold: 85,
   mid_tier_threshold: 75,
   micro_threshold: 65

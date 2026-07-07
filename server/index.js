@@ -50,7 +50,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/campaigns', campaignRoutes);
-app.use('/api/raw-candidates', rawCandidateRoutes);
+app.use('/api/raw-candidates', rawCandidateRoutes.router);
 app.use('/api/campaign-kols', campaignKolRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/kol-strategies', kolStrategyRoutes);

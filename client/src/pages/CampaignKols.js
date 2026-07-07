@@ -71,15 +71,32 @@ const CampaignKols = () => {
 
   const openEdit = (record) => {
     setEditing(record);
-    form.setFieldsValue(record);
+    const values = { ...record };
+    if (values.evidence_summary && typeof values.evidence_summary === 'object') {
+      values.evidence_summary = JSON.stringify(values.evidence_summary, null, 2);
+    }
+    if (values.project_override && typeof values.project_override === 'object') {
+      values.project_override = JSON.stringify(values.project_override, null, 2);
+    }
+    form.setFieldsValue(values);
   };
 
   const saveEdit = async () => {
     const values = await form.validateFields();
-    await axios.put(`/api/campaign-kols/${editing.id}`, values);
+    await axios.patch(`/api/campaign-kols/${editing.id}`, values);
     message.success('项目 KOL 已更新');
     setEditing(null);
     fetchRows();
+  };
+
+  const syncFromMaster = async (record) => {
+    try {
+      await axios.post(`/api/campaign-kols/${record.id}/sync-from-master`);
+      message.success('已从 KOL Master 同步');
+      fetchRows();
+    } catch (error) {
+      message.error(error.response?.data?.error || '同步失败');
+    }
   };
 
   const deleteOne = async (id) => {
@@ -141,33 +158,32 @@ const CampaignKols = () => {
     { title: 'TikTok', key: 'tiktok', width: 130, render: (_, r) => platformLink(r.tiktok_url || r.tiktok_url_snapshot, r.tiktok_followers || r.tiktok_followers_snapshot) },
     { title: 'Email', dataIndex: 'email_snapshot', key: 'email_snapshot', width: 200, render: (v, r) => v || r.email || '-' },
     { title: '国家地区', dataIndex: 'country_region_snapshot', key: 'country_region_snapshot', width: 120, render: (v, r) => v || r.country_region || '-' },
-    { title: '项目报价', dataIndex: 'quoted_price', key: 'quoted_price', width: 110, render: (v) => v || '-' },
-    { title: 'RMB', dataIndex: 'price_rmb', key: 'price_rmb', width: 100, render: (v) => v || '-' },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusOptions.find((item) => item.value === v)?.label || v || '-'}</Tag> },
+    { title: '平台账号', key: 'platform_account', width: 150, render: (_, r) => (
+      r.platform_account_url
+        ? <Space direction="vertical" size={0}>
+            <a href={r.platform_account_url} target="_blank" rel="noreferrer">{r.platform_account_platform || '主页'}</a>
+            {r.platform_account_followers ? <span style={{ color: '#666' }}>{r.platform_account_followers}</span> : null}
+          </Space>
+        : '-'
+    )},
+    { title: '项目报价', dataIndex: 'quoted_fee', key: 'quoted_fee', width: 110, render: (v, r) => v || r.quoted_price || '-' },
+    { title: 'RMB', dataIndex: 'final_fee', key: 'final_fee', width: 100, render: (v, r) => v || r.price_rmb || '-' },
+    { title: '状态', dataIndex: 'project_status', key: 'project_status', width: 110, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusOptions.find((item) => item.value === v)?.label || v || '-'}</Tag> },
     { title: '跟进人', dataIndex: 'owner', key: 'owner', width: 100, render: (v) => v || '-' },
-    {
-      title: '发布链接',
-      key: 'video_links',
-      width: 150,
-      render: (_, r) => (
-        <Space direction="vertical" size={0}>
-          {r.youtube_video_link ? <a href={r.youtube_video_link} target="_blank" rel="noreferrer">YouTube</a> : null}
-          {r.instagram_video_link ? <a href={r.instagram_video_link} target="_blank" rel="noreferrer">Instagram</a> : null}
-          {r.tiktok_video_link ? <a href={r.tiktok_video_link} target="_blank" rel="noreferrer">TikTok</a> : null}
-          {!r.youtube_video_link && !r.instagram_video_link && !r.tiktok_video_link ? '-' : null}
-        </Space>
-      )
-    },
+    { title: '最佳证据', key: 'best_evidence', width: 150, render: (_, r) => (
+      r.best_evidence_url ? <a href={r.best_evidence_url} target="_blank" rel="noreferrer">查看</a> : '-'
+    )},
     { title: '同步', dataIndex: 'sync_status', key: 'sync_status', width: 120, render: (v) => <Tag>{v || 'sync_pending'}</Tag> },
-    { title: '备注', dataIndex: 'notes', key: 'notes', width: 220, ellipsis: true, render: (v) => v || '-' },
+    { title: '项目备注', dataIndex: 'project_notes', key: 'project_notes', width: 220, ellipsis: true, render: (v, r) => v || r.notes || '-' },
     {
       title: '操作',
       key: 'actions',
-      width: 150,
+      width: 200,
       fixed: 'right',
       render: (_, record) => (
         <Space>
           <Button type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+          <Button type="link" icon={<SyncOutlined />} onClick={() => syncFromMaster(record)}>同步Master</Button>
           <Popconfirm title="确定从项目中删除这个 KOL？" onConfirm={() => deleteOne(record.id)}>
             <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
@@ -216,35 +232,32 @@ const CampaignKols = () => {
       <Modal title="编辑项目 KOL" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>
         <Form form={form} layout="vertical">
           <Space align="start" style={{ width: '100%' }}>
-            <Form.Item label="项目报价" name="quoted_price">
+            <Form.Item label="项目报价" name="quoted_fee">
               <Input style={{ width: 170 }} />
             </Form.Item>
-            <Form.Item label="汇率" name="exchange_rate">
-              <Input style={{ width: 120 }} />
+            <Form.Item label="最终费用" name="final_fee">
+              <Input style={{ width: 170 }} />
             </Form.Item>
-            <Form.Item label="价格 RMB" name="price_rmb">
-              <Input style={{ width: 150 }} />
+            <Form.Item label="币种" name="currency">
+              <Input style={{ width: 120 }} />
             </Form.Item>
           </Space>
           <Space align="start" style={{ width: '100%' }}>
-            <Form.Item label="状态" name="status">
+            <Form.Item label="状态" name="project_status">
               <Select options={statusOptions} style={{ width: 170 }} />
             </Form.Item>
             <Form.Item label="跟进人" name="owner">
               <Input style={{ width: 170 }} />
             </Form.Item>
           </Space>
-          <Form.Item label="YouTube 视频链接" name="youtube_video_link">
+          <Form.Item label="最佳证据链接" name="best_evidence_url">
             <Input />
           </Form.Item>
-          <Form.Item label="Instagram 视频链接" name="instagram_video_link">
-            <Input />
+          <Form.Item label="证据摘要" name="evidence_summary">
+            <TextArea rows={3} />
           </Form.Item>
-          <Form.Item label="TikTok 视频链接" name="tiktok_video_link">
-            <Input />
-          </Form.Item>
-          <Form.Item label="备注" name="notes">
-            <TextArea rows={4} />
+          <Form.Item label="项目备注" name="project_notes">
+            <TextArea rows={3} />
           </Form.Item>
         </Form>
       </Modal>

@@ -347,4 +347,89 @@ router.post('/', async (req, res) => {
   }
 });
 
+router.get('/health/config', async (req, res) => {
+  try {
+    const selectionRow = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ?', [SYSTEM_SELECTION_KEY]);
+    const selection = parseJson(selectionRow?.extra_config, DEFAULT_SELECTION);
+
+    const aiActive = selection.aiModels?.active || DEFAULT_SELECTION.aiModels.active;
+    const aiRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey('ai', aiActive)]);
+
+    const platforms = {};
+    for (const [platform, providers] of Object.entries(PLATFORM_PROVIDERS)) {
+      const platformConfig = selection.platforms?.[platform] || DEFAULT_SELECTION.platforms[platform];
+      const primary = platformConfig?.primary || DEFAULT_SELECTION.platforms[platform].primary;
+      const primaryRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey(platform, primary)]);
+      const fallbackStatus = [];
+      for (const fb of (platformConfig?.fallbacks || [])) {
+        const fbRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey(platform, fb)]);
+        fallbackStatus.push({ provider: fb, configured: isConfigured(fbRow) });
+      }
+      const missing = [];
+      if (!isConfigured(primaryRow)) {
+        missing.push(`${primary} provider config (api_key/base_url)`);
+      }
+      platforms[platform] = {
+        primary,
+        configured: isConfigured(primaryRow),
+        fallbacks: fallbackStatus,
+        missing
+      };
+    }
+
+    const agentActive = selection.agents?.active || DEFAULT_SELECTION.agents.active;
+    const agentRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey('agent', agentActive)]);
+
+    const externalAgentRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [EXTERNAL_AGENT_PROVIDER_KEY]);
+    const externalAgentExtra = parseJson(externalAgentRow?.extra_config, {});
+
+    const feishuRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [FEISHU_PROVIDER_KEY]);
+    const feishuExtra = parseJson(feishuRow?.extra_config, {});
+
+    const checks = {
+      database: { ok: true },
+      ai: {
+        active: aiActive,
+        configured: isConfigured(aiRow),
+        required_fields: ['api_key', 'base_url', 'model'],
+        missing: []
+      },
+      platforms,
+      agent: {
+        active: agentActive,
+        configured: isConfigured(agentRow)
+      },
+      external_agent: {
+        enabled: Boolean(externalAgentExtra.enabled),
+        token_configured: Boolean(externalAgentRow?.api_key || externalAgentExtra.token),
+        missing: []
+      },
+      feishu: {
+        configured: Boolean(feishuExtra.app_token && feishuRow?.api_key)
+      }
+    };
+
+    if (!checks.ai.configured) {
+      if (!aiRow?.api_key) checks.ai.missing.push('api_key');
+      if (!aiRow?.base_url) checks.ai.missing.push('base_url');
+      if (!aiRow?.model) checks.ai.missing.push('model');
+    }
+
+    if (checks.external_agent.enabled && !checks.external_agent.token_configured) {
+      checks.external_agent.missing.push('token');
+    }
+
+    const allOk = checks.ai.configured && Object.values(platforms).every((p) => p.configured) && checks.external_agent.token_configured;
+    checks.summary = {
+      total_platforms: Object.keys(platforms).length,
+      configured_platforms: Object.values(platforms).filter((p) => p.configured).length,
+      primary_providers: Object.fromEntries(Object.entries(platforms).map(([k, v]) => [k, v.primary]))
+    };
+
+    res.json({ success: true, data: { ready: allOk, checks } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;

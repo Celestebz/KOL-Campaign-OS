@@ -84,6 +84,8 @@ function validateSources(manifest) {
 
 function defaultTarget() {
   const candidates = [
+    path.join(os.homedir(), '.config', 'agents', 'skills'),
+    path.join(os.homedir(), '.claude', 'skills'),
     path.join(os.homedir(), '.codex', 'skills'),
     path.join(os.homedir(), '.agents', 'skills'),
     path.join(repoRoot, '.agents', 'skills')

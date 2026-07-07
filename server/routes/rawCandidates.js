@@ -146,81 +146,180 @@ async function updateCustomerMissingFields(customer, candidate) {
   return dbOperations.get('SELECT * FROM customers WHERE id = ?', [customer.id]);
 }
 
-async function upsertCampaignKol(campaignId, customer, candidate, overrides = {}) {
+const { computeUrlHash } = require('../utils/videoUrlNormalizer');
+
+async function findOrCreatePlatformAccount(customer, candidate) {
+  const platform = clean(candidate.platform || candidate.target_platform);
+  const profileUrl = clean(candidate.profile_url);
+  if (!platform || !profileUrl) return null;
+
+  const profileUrlHash = computeUrlHash(profileUrl);
   const existing = await dbOperations.get(
-    'SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?',
-    [campaignId, customer.id]
+    'SELECT * FROM kol_platform_accounts WHERE customer_id = ? AND platform = ? AND profile_url_hash = ? LIMIT 1',
+    [customer.id, platform, profileUrlHash]
   );
+  if (existing) return existing;
+
+  const result = await dbOperations.run(
+    `INSERT INTO kol_platform_accounts
+     (customer_id, platform, username, profile_url, profile_url_hash, followers_text, raw_data)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      customer.id,
+      platform,
+      clean(candidate.kol_name),
+      profileUrl,
+      profileUrlHash,
+      clean(candidate.followers),
+      JSON.stringify({ source: 'raw_candidate', candidate_id: candidate.id })
+    ]
+  );
+  return dbOperations.get('SELECT * FROM kol_platform_accounts WHERE id = ?', [result.id]);
+}
+
+function buildMasterSnapshot(customer, platformAccount, candidate) {
+  const snapshot = {
+    customer_id: customer.id,
+    name: customer.name,
+    contact_name: customer.contact_name,
+    email: customer.email,
+    phone: customer.phone,
+    country_region: customer.country_region,
+    platform: platformAccount?.platform || candidate.platform || candidate.target_platform,
+    profile_url: platformAccount?.profile_url || candidate.profile_url,
+    followers: platformAccount?.followers_text || candidate.followers,
+    avg_views: candidate.avg_views,
+    youtube_url: customer.youtube_url,
+    instagram_url: customer.instagram_url,
+    tiktok_url: customer.tiktok_url
+  };
+  return JSON.stringify(snapshot);
+}
+
+function buildEvidenceSummary(candidate) {
+  return JSON.stringify({
+    video_url: candidate.video_url,
+    video_title: candidate.video_title,
+    evidence_url: candidate.evidence_url,
+    evidence_title: candidate.evidence_title,
+    ai_score: candidate.ai_score,
+    ai_match_reason: candidate.ai_match_reason,
+    matched_keywords: candidate.matched_keywords,
+    scoring_breakdown: candidate.scoring_breakdown
+  });
+}
+
+async function upsertCampaignKol(campaignId, customer, platformAccount, candidate, strategy, finderTask, overrides = {}) {
+  const platformAccountId = platformAccount?.id || null;
+  const targetPlatform = clean(candidate.platform || candidate.target_platform);
+
+  const existing = platformAccountId
+    ? await dbOperations.get('SELECT * FROM campaign_kols WHERE campaign_id = ? AND platform_account_id = ?', [campaignId, platformAccountId])
+    : await dbOperations.get('SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?', [campaignId, customer.id]);
+
+  const masterSnapshot = buildMasterSnapshot(customer, platformAccount, candidate);
+  const evidenceSummary = buildEvidenceSummary(candidate);
 
   const snapshot = {
     raw_candidate_id: candidate.id,
+    strategy_id: strategy?.id || candidate.strategy_id || null,
+    finder_task_id: finderTask?.id || candidate.finder_task_id || null,
+    customer_id: customer.id,
+    platform_account_id: platformAccountId,
+    target_platform: targetPlatform,
+    source: 'raw_candidate',
+    project_status: 'candidate',
+    priority_level: candidate.ai_score >= 80 ? 'high' : 'normal',
+    candidate_priority_score: normalizeNumber(candidate.ai_score),
+    best_evidence_url: clean(candidate.video_url || candidate.evidence_url),
+    evidence_summary: evidenceSummary,
+    master_snapshot: masterSnapshot,
+    contact_email_override: clean(candidate.email),
+    contact_name_override: clean(candidate.contact_name),
+    project_notes: clean(candidate.ai_match_reason),
+    sync_status: 'sync_pending',
+    // Compatibility fields
     kol_name_snapshot: customer.name || candidate.kol_name || '',
     contact_name_snapshot: customer.contact_name || candidate.contact_name || '',
-    youtube_url_snapshot: customer.youtube_url || '',
-    youtube_followers_snapshot: customer.youtube_followers || '',
-    instagram_url_snapshot: customer.instagram_url || '',
-    instagram_followers_snapshot: customer.instagram_followers || '',
-    tiktok_url_snapshot: customer.tiktok_url || '',
-    tiktok_followers_snapshot: customer.tiktok_followers || '',
     email_snapshot: customer.email || candidate.email || '',
     country_region_snapshot: customer.country_region || candidate.country_region || '',
+    youtube_url_snapshot: customer.youtube_url || '',
+    instagram_url_snapshot: customer.instagram_url || '',
+    tiktok_url_snapshot: customer.tiktok_url || '',
+    youtube_followers_snapshot: customer.youtube_followers || '',
+    instagram_followers_snapshot: customer.instagram_followers || '',
+    tiktok_followers_snapshot: customer.tiktok_followers || '',
     quoted_price: overrides.quoted_price || customer.video_price || '',
     exchange_rate: overrides.exchange_rate || customer.exchange_rate || '',
     price_rmb: overrides.price_rmb || customer.price_rmb || '',
-    status: overrides.status || 'candidate',
-    owner: overrides.owner || '',
-    youtube_video_link: candidate.platform === 'youtube' ? clean(candidate.video_url) : '',
-    instagram_video_link: candidate.platform === 'instagram' ? clean(candidate.video_url) : '',
-    tiktok_video_link: candidate.platform === 'tiktok' ? clean(candidate.video_url) : '',
-    notes: overrides.notes || candidate.ai_match_reason || '',
-    sync_status: 'sync_pending'
+    status: 'candidate',
+    notes: clean(candidate.ai_match_reason)
   };
 
   if (existing) {
     await dbOperations.run(
       `UPDATE campaign_kols SET
        raw_candidate_id = COALESCE(raw_candidate_id, ?),
+       strategy_id = COALESCE(strategy_id, ?),
+       finder_task_id = COALESCE(finder_task_id, ?),
+       customer_id = ?,
+       platform_account_id = COALESCE(platform_account_id, ?),
+       target_platform = COALESCE(NULLIF(target_platform, ''), ?),
+       candidate_priority_score = COALESCE(candidate_priority_score, ?),
+       best_evidence_url = COALESCE(NULLIF(best_evidence_url, ''), ?),
+       evidence_summary = COALESCE(NULLIF(evidence_summary, ''), ?),
+       master_snapshot = COALESCE(NULLIF(master_snapshot, ''), ?),
+       contact_email_override = COALESCE(NULLIF(contact_email_override, ''), ?),
+       contact_name_override = COALESCE(NULLIF(contact_name_override, ''), ?),
+       project_notes = COALESCE(NULLIF(project_notes, ''), ?),
        kol_name_snapshot = COALESCE(NULLIF(kol_name_snapshot, ''), ?),
        contact_name_snapshot = COALESCE(NULLIF(contact_name_snapshot, ''), ?),
-       youtube_url_snapshot = COALESCE(NULLIF(youtube_url_snapshot, ''), ?),
-       youtube_followers_snapshot = COALESCE(NULLIF(youtube_followers_snapshot, ''), ?),
-       instagram_url_snapshot = COALESCE(NULLIF(instagram_url_snapshot, ''), ?),
-       instagram_followers_snapshot = COALESCE(NULLIF(instagram_followers_snapshot, ''), ?),
-       tiktok_url_snapshot = COALESCE(NULLIF(tiktok_url_snapshot, ''), ?),
-       tiktok_followers_snapshot = COALESCE(NULLIF(tiktok_followers_snapshot, ''), ?),
        email_snapshot = COALESCE(NULLIF(email_snapshot, ''), ?),
        country_region_snapshot = COALESCE(NULLIF(country_region_snapshot, ''), ?),
-       notes = COALESCE(NULLIF(notes, ''), ?),
+       youtube_url_snapshot = COALESCE(NULLIF(youtube_url_snapshot, ''), ?),
+       instagram_url_snapshot = COALESCE(NULLIF(instagram_url_snapshot, ''), ?),
+       tiktok_url_snapshot = COALESCE(NULLIF(tiktok_url_snapshot, ''), ?),
+       youtube_followers_snapshot = COALESCE(NULLIF(youtube_followers_snapshot, ''), ?),
+       instagram_followers_snapshot = COALESCE(NULLIF(instagram_followers_snapshot, ''), ?),
+       tiktok_followers_snapshot = COALESCE(NULLIF(tiktok_followers_snapshot, ''), ?),
        sync_status = CASE WHEN feishu_record_id IS NULL OR feishu_record_id = '' THEN 'sync_pending' ELSE sync_status END,
        updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
         snapshot.raw_candidate_id,
+        snapshot.strategy_id,
+        snapshot.finder_task_id,
+        snapshot.customer_id,
+        snapshot.platform_account_id,
+        snapshot.target_platform,
+        snapshot.candidate_priority_score,
+        snapshot.best_evidence_url,
+        snapshot.evidence_summary,
+        snapshot.master_snapshot,
+        snapshot.contact_email_override,
+        snapshot.contact_name_override,
+        snapshot.project_notes,
         snapshot.kol_name_snapshot,
         snapshot.contact_name_snapshot,
-        snapshot.youtube_url_snapshot,
-        snapshot.youtube_followers_snapshot,
-        snapshot.instagram_url_snapshot,
-        snapshot.instagram_followers_snapshot,
-        snapshot.tiktok_url_snapshot,
-        snapshot.tiktok_followers_snapshot,
         snapshot.email_snapshot,
         snapshot.country_region_snapshot,
-        snapshot.notes,
+        snapshot.youtube_url_snapshot,
+        snapshot.instagram_url_snapshot,
+        snapshot.tiktok_url_snapshot,
+        snapshot.youtube_followers_snapshot,
+        snapshot.instagram_followers_snapshot,
+        snapshot.tiktok_followers_snapshot,
         existing.id
       ]
     );
     return dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [existing.id]);
   }
 
-  const fields = [
-    'campaign_id', 'customer_id', ...Object.keys(snapshot)
-  ];
-  const values = [campaignId, customer.id, ...Object.values(snapshot)];
+  const fields = Object.keys(snapshot);
   const placeholders = fields.map(() => '?').join(', ');
   const result = await dbOperations.run(
-    `INSERT INTO campaign_kols (${fields.join(', ')}) VALUES (${placeholders})`,
-    values
+    `INSERT INTO campaign_kols (campaign_id, ${fields.join(', ')}) VALUES (?, ${placeholders})`,
+    [campaignId, ...Object.values(snapshot)]
   );
   return dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [result.id]);
 }
@@ -230,13 +329,17 @@ async function approveCandidate(id, body = {}) {
   if (!candidate) throw new Error('Raw candidate not found');
   if (candidate.status === 'ignored') throw new Error('Ignored candidate cannot be approved');
   const strategy = await getReadyStrategy(body.strategy_id || candidate.strategy_id);
+  const finderTask = candidate.finder_task_id
+    ? await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [candidate.finder_task_id])
+    : null;
 
   const campaignId = Number(body.campaign_id || candidate.campaign_id || strategy.campaign_id || 1);
   const existing = await findExistingCustomer(candidate);
   const customer = existing
     ? await updateCustomerMissingFields(existing, candidate)
     : await createCustomerFromCandidate(candidate);
-  const campaignKol = await upsertCampaignKol(campaignId, customer, candidate, body);
+  const platformAccount = await findOrCreatePlatformAccount(customer, candidate);
+  const campaignKol = await upsertCampaignKol(campaignId, customer, platformAccount, candidate, strategy, finderTask, body);
 
   await dbOperations.run(
     `UPDATE raw_candidates SET status = ?, campaign_id = ?, strategy_id = ?, approved_customer_id = ?,
@@ -244,7 +347,7 @@ async function approveCandidate(id, body = {}) {
     [existing ? 'duplicate' : 'approved', campaignId, strategy.id, customer.id, campaignKol.id, id]
   );
 
-  return { customer, campaignKol, candidateStatus: existing ? 'duplicate' : 'approved' };
+  return { customer, platformAccount, campaignKol, candidateStatus: existing ? 'duplicate' : 'approved' };
 }
 
 router.get('/', async (req, res) => {
@@ -517,4 +620,4 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = { router, approveCandidate };
