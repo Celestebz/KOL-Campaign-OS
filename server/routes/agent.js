@@ -545,8 +545,7 @@ router.post('/raw-candidates/import', requireAgentToken, async (req, res) => {
         JSON.stringify({ source_agent: source, finder_run: body.finder_run || {}, discovery_routes: body.discovery_routes || body.discoveryRoutes || [], count: all.length }),
         clean(body.finder_run?.notes || body.notes || 'Imported from external agent API'),
         source,
-        // DEBUG: log the datetime format
-        (() => { const dt = nowMysqlDatetime(); console.log('DEBUG started_at:', dt); return dt; })(),
+        nowMysqlDatetime(),
         nowMysqlDatetime()
       ]
     );

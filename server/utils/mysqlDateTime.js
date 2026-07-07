@@ -13,8 +13,7 @@ function toMysqlDatetime(value) {
 }
 
 function nowMysqlDatetime() {
-  // DEBUG: force correct format
-  return '2026-07-07 00:00:00';
+  return new Date().toISOString().slice(0, 19).replace('T', ' ');
 }
 
 module.exports = { toMysqlDatetime, nowMysqlDatetime };
