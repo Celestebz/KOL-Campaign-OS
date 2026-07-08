@@ -73,6 +73,12 @@ const statusText = (status, type) => {
   return map[status] || status || '-';
 };
 
+const sceneColor = (scene) => {
+  if (scene === 'finder_evidence') return 'purple';
+  if (scene === 'collaboration_review') return 'green';
+  return 'default';
+};
+
 const VideoAnalysis = () => {
   const [videos, setVideos] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -316,8 +322,9 @@ const VideoAnalysis = () => {
       ellipsis: true,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
-          <span>{record.ai_score !== null && record.ai_score !== undefined ? `评分 ${record.ai_score}` : '-'}</span>
-          <span style={{ color: '#667085' }}>{record.ai_summary || '-'}</span>
+          <Tag color={sceneColor(record.ai_scene)}>{record.ai_scene_label || '未分析'}</Tag>
+          <span>{record.ai_score !== null && record.ai_score !== undefined ? `评分 ${record.ai_score}` : '未分析'}</span>
+          <span style={{ color: '#667085' }}>{record.ai_summary || '未分析'}</span>
         </Space>
       )
     },
@@ -480,6 +487,7 @@ const VideoAnalysis = () => {
             <div><strong>数据完整性：</strong>{detailVideo.data_quality_note || '-'}</div>
             <div><strong>合作价格：</strong>{detailVideo.cooperation_price || '-'}</div>
             <div><strong>备注：</strong>{detailVideo.notes || '-'}</div>
+            <div><strong>分析场景：</strong>{detailVideo.ai_scene_label || '未分析'}</div>
             <div><strong>错误：</strong>{detailVideo.error_message || '-'}</div>
             <div><strong>AI 摘要：</strong>{detailVideo.ai_summary || '-'}</div>
           </Space>

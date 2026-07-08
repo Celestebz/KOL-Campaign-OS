@@ -81,7 +81,9 @@ const sortCycles = (cycles = []) => [...cycles].sort((a, b) => (
 ));
 
 const statusOptions = [
-  { value: 'new', label: '待审核' },
+  { value: 'pending', label: '待审核' },
+  { value: 'manual_review', label: '人工审核' },
+  { value: 'new', label: '待审核（旧）' },
   { value: 'approved', label: '已通过' },
   { value: 'duplicate', label: '重复' },
   { value: 'risk_review', label: '历史风险' },
@@ -90,6 +92,8 @@ const statusOptions = [
 ];
 
 const statusColor = {
+  pending: 'blue',
+  manual_review: 'orange',
   new: 'blue',
   approved: 'green',
   duplicate: 'purple',
@@ -111,6 +115,23 @@ const cooperationRiskLabel = (value) => (
   cooperationRiskOptions.find((item) => item.value === value)?.label || value || '-'
 );
 
+const statusLabel = (value) => (
+  statusOptions.find((item) => item.value === value)?.label || value || 'new'
+);
+
+const evidenceStatusLabel = (value) => ({
+  new: '推荐入池',
+  manual_review: '待人工审核',
+  risk_review: '风险复核',
+  ignored: '已忽略'
+}[value] || '未评分');
+
+const riskLevelLabel = (value) => ({
+  high: '高',
+  medium: '中',
+  low: '低'
+}[value] || '-');
+
 const safeParseJson = (value) => {
   if (!value) return null;
   if (typeof value === 'object') return value;
@@ -120,6 +141,8 @@ const safeParseJson = (value) => {
     return null;
   }
 };
+
+const asArray = (value) => (Array.isArray(value) ? value : []);
 
 const normalizeHandle = (value) => String(value || '').trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
 
@@ -177,6 +200,38 @@ const getTargetProfileUrl = (record = {}) => {
   return findPlatformUrl(raw, platform);
 };
 
+const normalizeUrlForCompare = (value) => String(value || '').trim().replace(/\/$/, '');
+
+const renderClue = (record = {}) => {
+  const clues = [];
+  if (record.video_url) {
+    clues.push({
+      url: record.video_url,
+      title: record.video_title || record.evidence_title || '代表视频'
+    });
+  }
+
+  if (
+    record.evidence_url &&
+    normalizeUrlForCompare(record.evidence_url) !== normalizeUrlForCompare(record.video_url)
+  ) {
+    clues.push({
+      url: record.evidence_url,
+      title: record.evidence_title || record.evidence_type || '证据'
+    });
+  }
+
+  if (!clues.length) return '-';
+
+  return (
+    <Space direction="vertical" size={2}>
+      {clues.map((item, index) => (
+        <a key={`${item.url}-${index}`} href={item.url} target="_blank" rel="noreferrer">{item.title}</a>
+      ))}
+    </Space>
+  );
+};
+
 const RawCandidates = () => {
   const [candidates, setCandidates] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -185,7 +240,7 @@ const RawCandidates = () => {
   const [loading, setLoading] = useState(false);
   const [taskLoading, setTaskLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
-  const [filters, setFilters] = useState({ status: 'new' });
+  const [filters, setFilters] = useState({ status: 'pending' });
   const [modalOpen, setModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [videoEvidence, setVideoEvidence] = useState([]);
@@ -215,6 +270,11 @@ const RawCandidates = () => {
     strategies.find((item) => item.id === filters.strategy_id)
   ), [strategies, filters.strategy_id]);
 
+  const displayedFinderTask = useMemo(() => {
+    const candidateTaskIds = new Set(candidates.map((item) => item.finder_task_id).filter(Boolean));
+    return finderTasks.find((task) => candidateTaskIds.has(task.id)) || finderTasks[0];
+  }, [candidates, finderTasks]);
+
   useEffect(() => {
     fetchCampaigns();
     fetchStrategies();
@@ -241,13 +301,13 @@ const RawCandidates = () => {
   }, [finderTasks, filters.strategy_id]);
 
   useEffect(() => {
-    if (!finderTasks[0]?.id) {
+    if (!displayedFinderTask?.id) {
       setVideoEvidence([]);
       return;
     }
-    fetchVideoEvidence(finderTasks[0].id);
+    fetchVideoEvidence(displayedFinderTask.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finderTasks[0]?.id]);
+  }, [displayedFinderTask?.id]);
 
   useEffect(() => {
     if (!taskModalOpen) return;
@@ -299,7 +359,11 @@ const RawCandidates = () => {
 
   const fetchFinderTasks = async (strategyId = filters.strategy_id) => {
     try {
-      const params = strategyId ? { strategy_id: strategyId } : {};
+      const params = strategyId
+        ? { strategy_id: strategyId }
+        : filters.campaign_id
+          ? { campaign_id: filters.campaign_id }
+          : {};
       const res = await axios.get('/api/finder-tasks', { params });
       setFinderTasks(res.data.data || []);
     } catch (error) {
@@ -469,12 +533,17 @@ const RawCandidates = () => {
       message.warning('请先选择一个已发布策略');
       return;
     }
-    await axios.post(`/api/raw-candidates/${record.id}/approve`, {
-      strategy_id: strategyId,
-      campaign_id: record.campaign_id || selectedStrategy?.campaign_id || filters.campaign_id || 1
-    });
-    message.success('已加入 KOL 管理和当前项目子表');
-    fetchCandidates();
+    try {
+      await axios.post(`/api/raw-candidates/${record.id}/approve`, {
+        strategy_id: strategyId,
+        campaign_id: record.campaign_id || selectedStrategy?.campaign_id || filters.campaign_id || 1
+      });
+      message.success('已加入 KOL 管理和当前项目子表');
+      fetchCandidates();
+    } catch (error) {
+      message.error(error.response?.data?.error || '通过候选失败');
+      fetchCandidates();
+    }
   };
 
   const batchApprove = async () => {
@@ -547,7 +616,6 @@ const RawCandidates = () => {
             </Space>
           ) : null}
           {r.status === 'ignored' && (r.rejection_scope || 'project') === 'project' ? <Tag>本项目已忽略</Tag> : null}
-          <span style={{ color: '#666' }}>{r.ai_match_reason || r.matched_keywords || '-'}</span>
         </Space>
       )
     },
@@ -564,7 +632,7 @@ const RawCandidates = () => {
       )
     },
     { title: '搜索轮次', dataIndex: 'search_cycle', key: 'search_cycle', width: 110, render: (v) => v || '-' },
-    { title: 'KOL画像', dataIndex: 'matched_persona', key: 'matched_persona', width: 150, render: (v) => v || '-' },
+    { title: 'KOL画像', dataIndex: 'matched_persona', key: 'matched_persona', width: 150, render: (v) => v || '未生成' },
     { title: '发现路径', dataIndex: 'discovery_route', key: 'discovery_route', width: 170, render: (v) => v ? <Tag color="blue">{v}</Tag> : '-' },
     { title: '来源平台', dataIndex: 'source_platform', key: 'source_platform', width: 140, render: (v) => v || '-' },
     { title: '目标平台', dataIndex: 'target_platform', key: 'target_platform', width: 140, render: (v, r) => v || r.platform || '-' },
@@ -580,18 +648,7 @@ const RawCandidates = () => {
         </Space>
       )
     },
-    {
-      title: '代表视频',
-      key: 'video',
-      width: 170,
-      render: (_, r) => r.video_url ? <a href={r.video_url} target="_blank" rel="noreferrer">{r.video_title || '代表视频'}</a> : '-'
-    },
-    {
-      title: '证据',
-      key: 'evidence',
-      width: 170,
-      render: (_, r) => r.evidence_url ? <a href={r.evidence_url} target="_blank" rel="noreferrer">{r.evidence_title || r.evidence_type || '证据'}</a> : '-'
-    },
+    { title: '线索', key: 'clue', width: 260, render: (_, r) => renderClue(r) },
     { title: '粉丝', dataIndex: 'followers', key: 'followers', width: 100, render: (v) => v || '-' },
     { title: '均播', dataIndex: 'avg_views', key: 'avg_views', width: 100, render: (v) => v || '-' },
     { title: '国家地区', dataIndex: 'country_region', key: 'country_region', width: 120, render: (v) => v || '-' },
@@ -610,7 +667,7 @@ const RawCandidates = () => {
             : '-'
       )
     },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 120, render: (v) => <Tag color={statusColor[v] || 'default'}>{v || 'new'}</Tag> },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 120, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusLabel(v)}</Tag> },
     {
       title: '操作',
       key: 'actions',
@@ -640,8 +697,8 @@ const RawCandidates = () => {
     value: cycle.cycle
   }));
 
-  const latestTask = finderTasks[0];
-  const expansionSummary = (latestTask?.raw_response_summary || []).find((item) => item.expansion_cycle === 'C7' && item.expansion_status === 'deferred');
+  const latestTask = displayedFinderTask;
+  const expansionSummary = asArray(latestTask?.raw_response_summary).find((item) => item.expansion_cycle === 'C7' && item.expansion_status === 'deferred');
   const taskPercent = latestTask?.total_cycles
     ? Math.round(((latestTask.completed_cycles || 0) / latestTask.total_cycles) * 100)
     : 0;
@@ -700,12 +757,12 @@ const RawCandidates = () => {
               {safeParseJson(latestTask?.raw_request)?.execution_mode === 'video_evidence_finder' || videoEvidence.length ? (
                 <div style={{ marginTop: 8 }}>
                   <Space wrap style={{ marginBottom: 8 }}>
-                    <Tag color="blue">Stage 1 Video Evidence: {videoEvidence.length}</Tag>
-                    <Tag color="purple">Stage 2 Scored: {videoEvidence.filter((item) => item.finder_analysis_status === 'success').length}</Tag>
-                    <Tag color="green">Stage 3 Raw Candidates</Tag>
-                    <Button size="small" onClick={() => fetchVideoEvidence(latestTask.id)} loading={videoEvidenceLoading}>Refresh Evidence</Button>
-                    <Button size="small" type="primary" onClick={analyzeVideoEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.length}>Score Evidence</Button>
-                    <Button size="small" onClick={generateCandidatesFromEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.some((item) => item.enter_raw_candidates === 'true' && item.recommended_status !== 'ignored')}>Generate Raw Candidates</Button>
+                    <Tag color="blue">阶段1 视频证据：{videoEvidence.length}</Tag>
+                    <Tag color="purple">阶段2 已评分：{videoEvidence.filter((item) => item.finder_analysis_status === 'success').length}</Tag>
+                    <Tag color="green">阶段3 候选 KOL</Tag>
+                    <Button size="small" onClick={() => fetchVideoEvidence(latestTask.id)} loading={videoEvidenceLoading}>刷新证据</Button>
+                    <Button size="small" type="primary" onClick={analyzeVideoEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.length}>证据评分</Button>
+                    <Button size="small" onClick={generateCandidatesFromEvidence} loading={videoEvidenceLoading} disabled={!videoEvidence.some((item) => item.enter_raw_candidates === 'true' && item.recommended_status !== 'ignored')}>生成候选 KOL</Button>
                   </Space>
                   <Table
                     size="small"
@@ -714,17 +771,17 @@ const RawCandidates = () => {
                     loading={videoEvidenceLoading}
                     pagination={{ pageSize: 5 }}
                     columns={[
-                      { title: 'Platform', dataIndex: 'target_platform', key: 'target_platform', width: 100, render: (v) => <Tag>{v}</Tag> },
-                      { title: 'Video', dataIndex: 'title', key: 'title', width: 260, render: (v, record) => <a href={record.video_url} target="_blank" rel="noreferrer">{v || record.video_url}</a> },
-                      { title: 'Author', dataIndex: 'author_name', key: 'author_name', width: 160 },
-                      { title: 'Source Query', dataIndex: 'source_query', key: 'source_query', width: 180 },
-                      { title: 'Signal', dataIndex: 'source_signal', key: 'source_signal', width: 120, render: (v) => <Tag color="cyan">{v}</Tag> },
-                      { title: 'Priority', dataIndex: 'candidate_priority_score', key: 'candidate_priority_score', width: 90, render: (v) => v ?? '-' },
-                      { title: 'Best Signal', dataIndex: 'content_relevance_score', key: 'content_relevance_score', width: 100, render: (v) => v ?? '-' },
-                      { title: 'Evidence', dataIndex: 'evidence_strength_score', key: 'evidence_strength_score', width: 90, render: (v) => v ?? '-' },
-                      { title: 'Creator', dataIndex: 'creator_fit_score', key: 'creator_fit_score', width: 90, render: (v) => v ?? '-' },
-                      { title: 'Status', dataIndex: 'recommended_status', key: 'recommended_status', width: 140, render: (v) => <Tag color={v === 'new' ? 'green' : v === 'manual_review' ? 'orange' : v === 'risk_review' ? 'red' : 'default'}>{v || 'not scored'}</Tag> },
-                      { title: 'Risk', dataIndex: 'risk_level', key: 'risk_level', width: 100, render: (v) => <Tag color={v === 'high' ? 'red' : v === 'medium' ? 'orange' : 'green'}>{v || '-'}</Tag> }
+                      { title: '平台', dataIndex: 'target_platform', key: 'target_platform', width: 100, render: (v) => <Tag>{v}</Tag> },
+                      { title: '视频', dataIndex: 'title', key: 'title', width: 260, render: (v, record) => <a href={record.video_url} target="_blank" rel="noreferrer">{v || record.video_url}</a> },
+                      { title: '作者', dataIndex: 'author_name', key: 'author_name', width: 160 },
+                      { title: '搜索词', dataIndex: 'source_query', key: 'source_query', width: 180 },
+                      { title: '信号', dataIndex: 'source_signal', key: 'source_signal', width: 120, render: (v) => <Tag color="cyan">{v}</Tag> },
+                      { title: '优先级', dataIndex: 'candidate_priority_score', key: 'candidate_priority_score', width: 90, render: (v) => v ?? '-' },
+                      { title: '最高信号', dataIndex: 'content_relevance_score', key: 'content_relevance_score', width: 100, render: (v) => v ?? '-' },
+                      { title: '证据强度', dataIndex: 'evidence_strength_score', key: 'evidence_strength_score', width: 90, render: (v) => v ?? '-' },
+                      { title: '创作者匹配', dataIndex: 'creator_fit_score', key: 'creator_fit_score', width: 100, render: (v) => v ?? '-' },
+                      { title: '推荐状态', dataIndex: 'recommended_status', key: 'recommended_status', width: 140, render: (v) => <Tag color={v === 'new' ? 'green' : v === 'manual_review' ? 'orange' : v === 'risk_review' ? 'red' : 'default'}>{evidenceStatusLabel(v)}</Tag> },
+                      { title: '风险', dataIndex: 'risk_level', key: 'risk_level', width: 100, render: (v) => <Tag color={v === 'high' ? 'red' : v === 'medium' ? 'orange' : 'green'}>{riskLevelLabel(v)}</Tag> }
                     ]}
                     scroll={{ x: 1500 }}
                   />
@@ -829,7 +886,7 @@ const RawCandidates = () => {
           </Form.Item>
           <Form.Item label="执行模式" name="execution_mode" rules={[{ required: true, message: '请选择执行模式' }]}>
             <Select options={[
-              { value: 'video_evidence_finder', label: 'Video Evidence Finder' },
+              { value: 'video_evidence_finder', label: '视频证据寻找' },
               { value: 'system_provider', label: 'System Provider' }
             ]} />
           </Form.Item>
@@ -870,7 +927,7 @@ const RawCandidates = () => {
             <div><strong>项目：</strong>{detail.campaign_name || '-'}</div>
             <div><strong>策略：</strong>{detail.strategy_name || '未绑定策略'}</div>
             <div><strong>搜索轮次：</strong>{detail.search_cycle || '-'}</div>
-            <div><strong>匹配 KOL画像：</strong>{detail.matched_persona || '-'}</div>
+            <div><strong>匹配 KOL画像：</strong>{detail.matched_persona || '未生成'}</div>
             <div><strong>平台：</strong>{detail.platform || '-'}</div>
             <div><strong>来源视频：</strong>{detail.video_url ? <a href={detail.video_url} target="_blank" rel="noreferrer">{detail.video_title || detail.video_url}</a> : '-'}</div>
             <div><strong>来源：</strong>{detail.source || '-'}</div>

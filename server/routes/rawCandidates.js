@@ -389,8 +389,13 @@ router.get('/', async (req, res) => {
       params.push(platform);
     }
     if (status) {
-      sql += ' AND rc.status = ?';
-      params.push(status);
+      if (status === 'pending') {
+        sql += ' AND rc.status IN (?, ?)';
+        params.push('new', 'manual_review');
+      } else {
+        sql += ' AND rc.status = ?';
+        params.push(status);
+      }
     }
     if (min_score) {
       sql += ' AND COALESCE(rc.ai_score, 0) >= ?';

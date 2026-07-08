@@ -1,6 +1,6 @@
 ---
 name: kol-campaign-os-agent
-description: One-skill external agent for KOL Campaign OS. Use when Kimi Code, WorkBuddy, Trae, Antigravity, Codex, or another agent needs to create or improve a Strategy, publish it when requested, then run the new Video Evidence Finder workflow.
+description: One-skill external agent for KOL Campaign OS. Use when Kimi Code, WorkBuddy, Trae, Antigravity, Codex, or another agent needs to create or improve a Strategy, publish it when requested, then run the new Video Evidence Finder workflow. Requires explicit user confirmation of product/project/campaign, target platform, and strategy before Finder can run.
 ---
 
 # KOL Campaign OS External Agent
@@ -19,6 +19,29 @@ Campaign/product brief
 ```
 
 Do not use the old Cycle x Route / Subagent Hybrid / direct Raw Candidate import workflow unless the user explicitly asks for legacy behavior.
+
+## Mandatory Context Gate
+
+Before running Finder APIs, confirm the user's exact business context for this run.
+
+If the user has not explicitly provided or confirmed the target product/project/campaign, target platform, and strategy, stop and ask. Do not infer them from recent UI state, previous conversations, local database records, latest Finder tasks, existing candidates, or default rows.
+
+Required confirmation:
+
+- product/project/campaign to search for
+- target platform: `youtube`, `instagram`, or `tiktok`
+- strategy to use, or explicit permission to create/complete one first
+
+Hard stops:
+
+- Do not default to the most recent `campaign`, `strategy`, `finder_task`, or candidate pool record.
+- Do not treat `Default Campaign` as valid unless the user explicitly confirms `Default Campaign` by name for this run.
+- Do not treat an empty strategy, blank strategy name, blank product/category/market fields, or placeholder strategy as valid.
+- Do not continue an existing Finder task unless the user identifies it, or confirms the exact campaign/product + platform + strategy after you show the candidate task.
+- If multiple possible campaigns, strategies, or tasks exist, list the relevant options briefly and ask the user to choose.
+- If the user says only "找KOL", "帮我找 KOL", "use Finder", or similar without product/project/strategy, ask for the missing context before any create/import/analyze/generate API call.
+
+Only after this gate is satisfied may the agent run pre-flight checks, create/use Finder tasks, import evidence, analyze evidence, or generate Raw Candidates.
 
 ## Finder Default
 
@@ -197,8 +220,8 @@ If no ready Strategy exists:
 If a ready Strategy exists:
 
 1. Read the Agent Brief.
-2. Confirm current target platform if it was not explicitly selected in the current request or UI payload.
-3. Continue existing `video_evidence_finder` task if one exists.
+2. Confirm the campaign/product, target platform, and strategy with the user if they were not explicitly selected in the current request.
+3. Continue an existing `video_evidence_finder` task only after the user confirms it belongs to the intended campaign/product, target platform, and strategy.
 4. Otherwise create a new `video_evidence_finder` task.
 5. Search and import target-platform video evidence.
 
@@ -235,7 +258,7 @@ Use defaults when not specified:
 - `base_url`: `http://localhost:5001`
 - Database: MySQL through app APIs only
 
-Collect or infer:
+Collect from the user or confirmed campaign/strategy data:
 
 - product / brand / campaign
 - target market and language

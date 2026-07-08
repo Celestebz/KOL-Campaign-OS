@@ -84,7 +84,7 @@ const LEGAL_SOURCE_TARGETS = {
   tiktok_search: ['tiktok']
 };
 const ROUTE_SOURCE_TARGETS = {
-  youtube_native_search: [{ searchSource: 'youtube_search', targetPlatform: 'youtube', sourcePlatform: 'youtube' }],
+  youtube_native_search: [{ searchSource: 'auto', targetPlatform: 'youtube', sourcePlatform: 'youtube' }],
   google_web_to_youtube: [{ searchSource: 'google_web', targetPlatform: 'youtube', sourcePlatform: 'google_web' }],
   youtube_to_instagram: [{ searchSource: 'maton_agent', targetPlatform: 'instagram', sourcePlatform: 'youtube' }],
   google_web_to_instagram: [{ searchSource: 'google_web', targetPlatform: 'instagram', sourcePlatform: 'google_web' }],
@@ -859,13 +859,18 @@ function discoveryRoutesForCycle(cycle, strategy, requestedRoutes = [], requeste
   return [...new Set((requestedRoutes.length ? requestedRoutes : cycleRoutes.length ? cycleRoutes : defaultDiscoveryRoutesForTargets(targets)).filter((route) => DISCOVERY_ROUTES.includes(route)))];
 }
 
-function sourceTargetPairs(cycle, strategy, requestedSources = [], requestedTargets = [], requestedRoutes = []) {
+async function sourceTargetPairs(cycle, strategy, requestedSources = [], requestedTargets = [], requestedRoutes = []) {
   const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
   const routes = discoveryRoutesForCycle(cycle, strategy, requestedRoutes, targets);
   const pairs = [];
   for (const route of routes) {
     for (const mapped of ROUTE_SOURCE_TARGETS[route] || []) {
-      if (targets.includes(mapped.targetPlatform)) pairs.push({ ...mapped, discoveryRoute: route });
+      if (targets.includes(mapped.targetPlatform)) {
+        const searchSource = mapped.searchSource === 'auto'
+          ? await preferredSearchSourceForTargetPlatform(mapped.targetPlatform)
+          : mapped.searchSource;
+        pairs.push({ ...mapped, searchSource, discoveryRoute: route });
+      }
     }
   }
   if (pairs.length) return pairs;
@@ -1639,6 +1644,57 @@ function normalizeCandidate(input, request, provider) {
   };
 }
 
+function firstNonEmpty(...values) {
+  return values.map(clean).find(Boolean) || '';
+}
+
+function primaryPersonaFromStrategy(strategy = {}) {
+  const persona = strategy.persona_config || {};
+  return firstNonEmpty(
+    persona.primary_persona,
+    persona.primaryPersona,
+    Array.isArray(persona.secondary_personas) ? persona.secondary_personas[0] : '',
+    Array.isArray(persona.personas) ? persona.personas[0] : ''
+  );
+}
+
+function inferPersonaFromEvidence(row = {}, strategy = {}) {
+  const configured = primaryPersonaFromStrategy(strategy);
+  if (configured) return configured;
+
+  const text = [
+    row.source_signal,
+    row.source_query,
+    row.title,
+    row.video_title,
+    row.summary,
+    row.decision_reason,
+    row.content_relevance_score,
+    row.evidence_strength_score
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+
+  const scores = {
+    competitor: Number(row.competitor_fit) || 0,
+    category: Number(row.category_fit) || 0,
+    useCase: Number(row.use_case_fit) || 0,
+    feature: Number(row.feature_fit) || 0,
+    community: Number(row.community_fit) || 0
+  };
+  const strongest = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+  if (strongest?.[1] >= MIN_RELEVANT_SIGNAL_SCORE) {
+    if (strongest[0] === 'competitor') return '竞品评测型 KOL';
+    if (strongest[0] === 'category' || strongest[0] === 'feature') return '品类评测型 KOL';
+    if (strongest[0] === 'useCase') return '场景体验型 KOL';
+    if (strongest[0] === 'community') return '垂直社群型 KOL';
+  }
+
+  if (text.includes('competitor')) return '竞品评测型 KOL';
+  if (text.includes('review') || text.includes('category') || text.includes('backpack') || text.includes('carrier')) return '品类评测型 KOL';
+  if (text.includes('use_case') || text.includes('travel') || text.includes('outdoor')) return '场景体验型 KOL';
+  if (text.includes('community') || text.includes('cat')) return '垂直社群型 KOL';
+  return '待确认画像';
+}
+
 function profileKey(candidate) {
   if (candidate.profile_url) return `profile:${candidate.profile_url.toLowerCase().replace(/\/$/, '')}`;
   if (candidate.email) return `email:${candidate.email.toLowerCase()}`;
@@ -1724,6 +1780,7 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
        error_message = COALESCE(NULLIF(error_message, ''), ?),
        ai_score = COALESCE(ai_score, ?),
        ai_match_reason = COALESCE(NULLIF(ai_match_reason, ''), ?),
+       matched_persona = COALESCE(NULLIF(matched_persona, ''), ?),
        raw_data = ?,
        updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
@@ -1755,6 +1812,7 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
         candidate.error_message,
         candidate.ai_score,
         candidate.ai_match_reason,
+        candidate.matched_persona,
         rawData,
         existing.id
       ]
@@ -2199,7 +2257,7 @@ async function processTask(taskId, options = {}) {
       cancelledTasks.delete(taskId);
       return;
     }
-    const pairs = sourceTargetPairs(cycle, strategy, options.searchSources || [], options.targetPlatforms || [], options.discoveryRoutes || []);
+    const pairs = await sourceTargetPairs(cycle, strategy, options.searchSources || [], options.targetPlatforms || [], options.discoveryRoutes || []);
     await updateTask(taskId, { current_cycle: cycle.cycle });
 
     for (const pair of pairs) {
@@ -2255,7 +2313,7 @@ async function processTask(taskId, options = {}) {
 
 router.get('/', async (req, res) => {
   try {
-    const { strategy_id, status } = req.query;
+    const { campaign_id, strategy_id, status } = req.query;
     let sql = `
       SELECT ft.*, ks.name as strategy_name, c.name as campaign_name
       FROM finder_tasks ft
@@ -2264,6 +2322,10 @@ router.get('/', async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
+    if (campaign_id) {
+      sql += ' AND ft.campaign_id = ?';
+      params.push(campaign_id);
+    }
     if (strategy_id) {
       sql += ' AND ft.strategy_id = ?';
       params.push(strategy_id);
@@ -2340,6 +2402,7 @@ router.get('/:id/video-evidence', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
+    const strategy = await getReadyStrategy(task.strategy_id);
     const rows = await dbOperations.query(`
       SELECT fve.*, vs.source_url as video_url, vs.title, vs.author_name, vs.kol_name, vs.author_profile_url,
         vs.crawl_status, vs.analysis_status as video_analysis_status,
@@ -2348,6 +2411,11 @@ router.get('/:id/video-evidence', async (req, res) => {
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.content_relevance_score')) as content_relevance_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.creator_fit_score')) as creator_fit_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.evidence_strength_score')) as evidence_strength_score,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.competitor_fit')) as competitor_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.category_fit')) as category_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.use_case_fit')) as use_case_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.feature_fit')) as feature_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.community_fit')) as community_fit,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.brand_safety_risk')) as brand_safety_risk,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.kol_candidate_potential_score')) as kol_candidate_potential_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.recommendation')) as recommendation,
@@ -2469,11 +2537,17 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
+    const strategy = await getReadyStrategy(task.strategy_id);
     const rows = await dbOperations.query(`
       SELECT fve.*, vai.id as analysis_id,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.content_relevance_score')) as content_relevance_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.creator_fit_score')) as creator_fit_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.evidence_strength_score')) as evidence_strength_score,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.competitor_fit')) as competitor_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.category_fit')) as category_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.use_case_fit')) as use_case_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.feature_fit')) as feature_fit,
+        JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.signal_scores.community_fit')) as community_fit,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.brand_safety_risk')) as brand_safety_risk,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.kol_candidate_potential_score')) as kol_candidate_potential_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.recommendation')) as recommendation,
@@ -2527,6 +2601,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
       const best = sorted[0];
       const averageScore = Math.round(sorted.reduce((sum, item) => sum + Number(item.candidate_priority_score || 0), 0) / sorted.length);
       const recommendedStatus = clean(best.recommended_status) || 'manual_review';
+      const matchedPersona = inferPersonaFromEvidence(best, strategy);
       const candidate = {
         platform: best.target_platform,
         target_platform: best.target_platform,
@@ -2551,7 +2626,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
         rejection_category: '',
         rejection_reason: '',
         matched_keywords: [...new Set(sorted.map((item) => clean(item.source_query)).filter(Boolean))].join(', '),
-        matched_persona: '',
+        matched_persona: matchedPersona,
         ai_score: clampScore(best.candidate_priority_score),
         ai_match_reason: clean(best.decision_reason || best.summary) || `硬条件通过，最高信号 ${best.content_relevance_score || 0} 分，风险等级 ${best.risk_level || best.brand_safety_risk || 'low'}，建议人工审核。`,
         scoring_breakdown: {

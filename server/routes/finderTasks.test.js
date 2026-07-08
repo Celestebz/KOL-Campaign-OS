@@ -383,6 +383,83 @@ test('finder evidence analysis writes to video_ai_analysis_results', async () =>
   const rawCandidates = await models.RawCandidate.findAll();
   assert.equal(rawCandidates.length, 1);
   assert.equal(rawCandidates[0].status, 'new');
+  assert.equal(rawCandidates[0].matched_persona, '品类评测型 KOL');
+});
+
+test('generate candidates from evidence fills persona from strategy config', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+
+  await models.KolStrategy.update(
+    { persona_config: JSON.stringify({ primary_persona: '猫咪出行装备评测型 KOL' }) },
+    { where: { id: strategy.id } }
+  );
+
+  const createRes = await request
+    .post('/api/finder-tasks')
+    .send({
+      strategy_id: strategy.id,
+      name: 'Persona Test Task',
+      platform: 'youtube',
+      execution_mode: 'system_provider'
+    });
+  const taskId = createRes.body.data.id;
+
+  const importRes = await request
+    .post(`/api/finder-tasks/${taskId}/video-evidence/import`)
+    .send({
+      evidence: [{
+        video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        title: 'Cat Backpack Review',
+        author_name: 'Persona Creator',
+        evidence_reason: 'persona test',
+        source_signal: 'category_fit'
+      }]
+    });
+
+  const evidenceId = importRes.body.data.results[0].data.id;
+  const videoSourceId = importRes.body.data.results[0].data.video_source_id;
+
+  await models.VideoAiAnalysisResult.create({
+    video_source_id: videoSourceId,
+    analysis_type: 'finder_evidence',
+    analysis_scope_id: evidenceId,
+    status: 'success',
+    model_name: 'test-model',
+    score: 72,
+    summary: 'Strong category fit',
+    extra_data: JSON.stringify({
+      signal_scores: {
+        competitor_fit: 0,
+        category_fit: 72,
+        use_case_fit: 35,
+        feature_fit: 20,
+        community_fit: 10
+      },
+      evidence_strength_score: 72,
+      risk: { risk_level: 'low' },
+      candidate_decision: {
+        enter_raw_candidates: true,
+        candidate_priority_score: 72,
+        priority_level: 'normal',
+        recommended_status: 'manual_review',
+        reason: '该创作者符合品类评测型画像，建议进入候选池。'
+      }
+    })
+  });
+
+  const genRes = await request
+    .post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`)
+    .send({});
+
+  assert.equal(genRes.status, 200);
+  assert.equal(genRes.body.data.inserted_count, 1);
+
+  const rawCandidate = await models.RawCandidate.findOne();
+  assert.equal(rawCandidate.matched_persona, '猫咪出行装备评测型 KOL');
 });
 
 test('YouTube video evidence end-to-end: import -> analyze -> generate candidates', async () => {

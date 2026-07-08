@@ -1,6 +1,6 @@
 ---
 name: kol-finder
-description: Run KOL Campaign OS Finder with the new Target Platform First + Video Evidence First workflow. Use when Kimi Code, Codex, WorkBuddy, or another agent must find KOL profile links by first importing target-platform video evidence.
+description: Run KOL Campaign OS Finder with the new Target Platform First + Video Evidence First workflow. Use when Kimi Code, Codex, WorkBuddy, or another agent must find KOL profile links by first importing target-platform video evidence. Requires explicit user confirmation of product/project/strategy before any Finder task is created, reused, or continued.
 ---
 
 # KOL Finder External Agent
@@ -8,6 +8,29 @@ description: Run KOL Campaign OS Finder with the new Target Platform First + Vid
 ## Core Rule
 
 Use **Video Evidence Finder v1** only.
+
+## Mandatory User Confirmation Gate
+
+Before reading, creating, reusing, or continuing any Finder task, confirm the business context with the user.
+
+If the user has not explicitly provided or confirmed the target product/project/campaign and strategy for this run, stop and ask. Do not infer these values from local database contents, recent records, existing candidates, previous Finder tasks, default rows, or project names seen in the UI.
+
+Required confirmation:
+
+- target product/project/campaign
+- target platform: `youtube`, `instagram`, or `tiktok`
+- strategy to use, or explicit permission to create/complete a strategy first
+
+Hard stops:
+
+- Do not default to the most recent `campaign`, `strategy`, `finder_task`, or candidate pool record.
+- Do not use `Default Campaign` as a valid campaign unless the user explicitly confirms it by name for this run.
+- Do not use an empty strategy, blank strategy name, blank product/category/market fields, or generic placeholder strategy as valid strategy context.
+- Do not continue an existing Finder task unless the user explicitly identifies that task, or confirms the exact campaign/product + platform + strategy after you show the candidate task.
+- If multiple possible campaigns, strategies, or Finder tasks exist, list the relevant options briefly and ask the user to choose.
+- If the user says only "找KOL", "run Finder", "use existing Finder", or similar without product/project/strategy, ask for the missing context before making API calls that create, import, analyze, or generate candidates.
+
+Only after this gate is satisfied may the agent run pre-flight checks, create/use Finder tasks, import evidence, analyze evidence, or generate Raw Candidates.
 
 The final business goal is to find KOL profile links, but Finder must first collect video evidence:
 
@@ -104,7 +127,9 @@ If AI or the target platform data source is not configured, stop and ask the use
 
 ## Create Or Use Finder Task
 
-If a Video Evidence Finder task already exists, continue using it unless the user explicitly asks to create a new task.
+If a Video Evidence Finder task already exists for the explicitly confirmed campaign/product, target platform, and strategy, continue using it unless the user explicitly asks to create a new task.
+
+Never continue a task merely because it is the newest task or the only task returned by the database.
 
 Create task:
 

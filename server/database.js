@@ -121,6 +121,28 @@ async function seedDefaults() {
   }
 }
 
+async function backfillRawCandidatePersonas() {
+  await dbOperations.run(
+    `UPDATE raw_candidates rc
+     LEFT JOIN kol_strategies ks ON ks.id = rc.strategy_id
+     SET rc.matched_persona = CASE
+       WHEN JSON_VALID(ks.persona_config)
+         AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(ks.persona_config, '$.primary_persona')), '') != ''
+         THEN JSON_UNQUOTE(JSON_EXTRACT(ks.persona_config, '$.primary_persona'))
+       WHEN LOWER(CONCAT_WS(' ', rc.source_query, rc.matched_keywords, rc.ai_match_reason)) LIKE '%competitor%'
+         THEN '竞品评测型 KOL'
+       WHEN LOWER(CONCAT_WS(' ', rc.source_query, rc.matched_keywords, rc.ai_match_reason)) REGEXP 'review|category|backpack|carrier'
+         THEN '品类评测型 KOL'
+       WHEN LOWER(CONCAT_WS(' ', rc.source_query, rc.matched_keywords, rc.ai_match_reason)) REGEXP 'travel|outdoor|use_case'
+         THEN '场景体验型 KOL'
+       WHEN LOWER(CONCAT_WS(' ', rc.source_query, rc.matched_keywords, rc.ai_match_reason)) LIKE '%cat%'
+         THEN '垂直社群型 KOL'
+       ELSE '待确认画像'
+     END
+     WHERE rc.matched_persona IS NULL OR rc.matched_persona = ''`
+  );
+}
+
 async function initDatabase() {
   await sequelize.authenticate();
   console.log('MySQL connection established via Sequelize.');
@@ -159,6 +181,34 @@ async function initDatabase() {
   await addColumnIfMissing('customers', 'cooperation_risk_reason', 'LONGTEXT');
   await addColumnIfMissing('customers', 'cooperation_status_updated_at', 'DATETIME');
   await addColumnIfMissing('customers', 'cooperation_status_source_raw_candidate_id', 'INT');
+
+  await addColumnIfMissing('campaign_kols', 'strategy_id', 'INT');
+  await addColumnIfMissing('campaign_kols', 'finder_task_id', 'INT');
+  await addColumnIfMissing('campaign_kols', 'platform_account_id', 'INT');
+  await addColumnIfMissing('campaign_kols', 'target_platform', 'VARCHAR(100)');
+  await addColumnIfMissing('campaign_kols', 'source', 'VARCHAR(255)');
+  await addColumnIfMissing('campaign_kols', 'project_status', "VARCHAR(50) DEFAULT 'candidate'");
+  await addColumnIfMissing('campaign_kols', 'priority_level', "VARCHAR(50) DEFAULT 'normal'");
+  await addColumnIfMissing('campaign_kols', 'candidate_priority_score', 'INT');
+  await addColumnIfMissing('campaign_kols', 'quoted_fee', 'VARCHAR(255)');
+  await addColumnIfMissing('campaign_kols', 'final_fee', 'VARCHAR(255)');
+  await addColumnIfMissing('campaign_kols', 'currency', 'VARCHAR(50)');
+  await addColumnIfMissing('campaign_kols', 'deliverables', 'LONGTEXT');
+  await addColumnIfMissing('campaign_kols', 'contact_email_override', 'VARCHAR(255)');
+  await addColumnIfMissing('campaign_kols', 'contact_name_override', 'VARCHAR(255)');
+  await addColumnIfMissing('campaign_kols', 'outreach_status', 'VARCHAR(50)');
+  await addColumnIfMissing('campaign_kols', 'negotiation_status', 'VARCHAR(50)');
+  await addColumnIfMissing('campaign_kols', 'contract_status', 'VARCHAR(50)');
+  await addColumnIfMissing('campaign_kols', 'payment_status', 'VARCHAR(50)');
+  await addColumnIfMissing('campaign_kols', 'content_status', 'VARCHAR(50)');
+  await addColumnIfMissing('campaign_kols', 'project_notes', 'LONGTEXT');
+  await addColumnIfMissing('campaign_kols', 'internal_notes', 'LONGTEXT');
+  await addColumnIfMissing('campaign_kols', 'best_evidence_video_id', 'INT');
+  await addColumnIfMissing('campaign_kols', 'best_evidence_url', 'VARCHAR(1024)');
+  await addColumnIfMissing('campaign_kols', 'evidence_summary', 'LONGTEXT');
+  await addColumnIfMissing('campaign_kols', 'master_snapshot', 'LONGTEXT');
+  await addColumnIfMissing('campaign_kols', 'project_override', 'LONGTEXT');
+  await backfillRawCandidatePersonas();
 
   console.log('Database initialized.');
 }

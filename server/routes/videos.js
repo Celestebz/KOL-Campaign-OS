@@ -1087,7 +1087,7 @@ async function analyzeVideo(videoId, jobItemId) {
      (video_source_id, analysis_type, score, summary, sentiment_positive, sentiment_neutral, sentiment_negative, purchase_intent_count,
       purchase_intent_keywords, brand_mentions, risks, product_feedback, cooperation_advice, content_suggestions,
       full_report, final_prompt, raw_result, model_name, status)
-     VALUES (?, 'video_module', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, 'collaboration_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       videoId,
       result.score,
@@ -1178,18 +1178,39 @@ function buildVideoListSql(filters = {}) {
     SELECT vs.*, c.name as campaign_name, c.product as campaign_product,
       snap.play_count, snap.like_count, snap.comment_count, snap.collect_count, snap.share_count,
       snap.primary_exposure_count, snap.exposure_metric_type, snap.data_quality_note, snap.snapshot_at,
-      ai.score, ai.summary, ai.sentiment_positive, ai.sentiment_neutral, ai.sentiment_negative,
-      ai.purchase_intent_count, ai.purchase_intent_keywords, ai.brand_mentions, ai.risks, ai.product_feedback,
-      ai.cooperation_advice, ai.content_suggestions, ai.full_report, ai.final_prompt, ai.created_at as ai_created_at,
-      ai.score as ai_score, ai.summary as ai_summary
+      COALESCE(ai_review.score, ai_finder.score) as score,
+      COALESCE(ai_review.summary, ai_finder.summary) as summary,
+      ai_review.sentiment_positive, ai_review.sentiment_neutral, ai_review.sentiment_negative,
+      ai_review.purchase_intent_count, ai_review.purchase_intent_keywords, ai_review.brand_mentions, ai_review.risks, ai_review.product_feedback,
+      ai_review.cooperation_advice, ai_review.content_suggestions, ai_review.full_report, ai_review.final_prompt, ai_review.created_at as ai_created_at,
+      COALESCE(ai_review.score, ai_finder.score) as ai_score,
+      COALESCE(ai_review.summary, ai_finder.summary) as ai_summary,
+      CASE
+        WHEN ai_review.id IS NOT NULL THEN 'collaboration_review'
+        WHEN ai_finder.id IS NOT NULL THEN 'finder_evidence'
+        ELSE NULL
+      END as ai_scene,
+      CASE
+        WHEN ai_review.id IS NOT NULL THEN '合作复盘'
+        WHEN ai_finder.id IS NOT NULL THEN '前期发现'
+        ELSE '未分析'
+      END as ai_scene_label,
+      ai_finder.created_at as finder_ai_created_at
     FROM video_sources vs
     LEFT JOIN campaign_videos cv ON cv.video_source_id = vs.id
     LEFT JOIN campaigns c ON c.id = cv.campaign_id
     LEFT JOIN video_snapshots snap ON snap.id = (
       SELECT id FROM video_snapshots WHERE video_source_id = vs.id ORDER BY snapshot_at DESC LIMIT 1
     )
-    LEFT JOIN video_ai_analysis_results ai ON ai.id = (
-      SELECT id FROM video_ai_analysis_results WHERE video_source_id = vs.id AND analysis_type = 'video_module' ORDER BY created_at DESC LIMIT 1
+    LEFT JOIN video_ai_analysis_results ai_review ON ai_review.id = (
+      SELECT id FROM video_ai_analysis_results
+      WHERE video_source_id = vs.id AND analysis_type IN ('collaboration_review', 'video_module')
+      ORDER BY FIELD(analysis_type, 'collaboration_review', 'video_module'), created_at DESC LIMIT 1
+    )
+    LEFT JOIN video_ai_analysis_results ai_finder ON ai_finder.id = (
+      SELECT id FROM video_ai_analysis_results
+      WHERE video_source_id = vs.id AND analysis_type = 'finder_evidence'
+      ORDER BY created_at DESC LIMIT 1
     )
     WHERE 1=1
   `;
@@ -1480,7 +1501,9 @@ router.get('/jobs/:id/export', async (req, res) => {
         SELECT id FROM video_snapshots WHERE video_source_id = vs.id ORDER BY snapshot_at DESC LIMIT 1
       )
       LEFT JOIN video_ai_analysis_results ai ON ai.id = (
-        SELECT id FROM video_ai_analysis_results WHERE video_source_id = vs.id AND analysis_type = 'video_module' ORDER BY created_at DESC LIMIT 1
+        SELECT id FROM video_ai_analysis_results
+        WHERE video_source_id = vs.id AND analysis_type IN ('collaboration_review', 'video_module')
+        ORDER BY FIELD(analysis_type, 'collaboration_review', 'video_module'), created_at DESC LIMIT 1
       )
       WHERE item.job_id = ?
       ORDER BY item.id

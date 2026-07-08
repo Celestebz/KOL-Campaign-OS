@@ -10,6 +10,22 @@ const statusColor = (status) => {
   return 'blue';
 };
 
+const statusText = (status) => ({
+  success: '成功',
+  failed: '失败',
+  analysis_failed: '分析失败',
+  crawled: '已抓取',
+  pending: '待处理',
+  analyzing: '分析中',
+  not_analyzed: '未分析'
+}[status] || status || '待处理');
+
+const sceneColor = (scene) => {
+  if (scene === 'finder_evidence') return 'purple';
+  if (scene === 'collaboration_review') return 'green';
+  return 'default';
+};
+
 const Records = () => {
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -47,9 +63,9 @@ const Records = () => {
           <Tag color={statusColor(status)}>
             {failed ? (
               <span style={{ cursor: 'pointer' }} onClick={() => setFailModal({ open: true, reason: record.error_message || '未知错误' })}>
-                {status} <ExclamationCircleOutlined />
+        {statusText(status)} <ExclamationCircleOutlined />
               </span>
-            ) : (status || 'pending')}
+            ) : statusText(status)}
           </Tag>
         );
       }
@@ -57,8 +73,15 @@ const Records = () => {
     { title: '播放数', dataIndex: 'play_count', key: 'play_count', width: 100, render: (v) => v ?? '-' },
     { title: '点赞数', dataIndex: 'like_count', key: 'like_count', width: 100, render: (v) => v ?? '-' },
     { title: '评论数', dataIndex: 'comment_count', key: 'comment_count', width: 100, render: (v) => v ?? '-' },
-    { title: 'AI 评分', dataIndex: 'ai_score', key: 'ai_score', width: 100, render: (v) => v ?? '-' },
-    { title: 'AI 摘要', dataIndex: 'ai_summary', key: 'ai_summary', ellipsis: true, render: (v) => v || '-' },
+    {
+      title: '分析场景',
+      dataIndex: 'ai_scene_label',
+      key: 'ai_scene_label',
+      width: 120,
+      render: (v, record) => <Tag color={sceneColor(record.ai_scene)}>{v || '未分析'}</Tag>
+    },
+    { title: 'AI 评分', dataIndex: 'ai_score', key: 'ai_score', width: 100, render: (v) => v ?? '未分析' },
+    { title: 'AI 摘要', dataIndex: 'ai_summary', key: 'ai_summary', ellipsis: true, render: (v) => v || '未分析' },
     { title: '最近抓取', dataIndex: 'last_crawled_at', key: 'last_crawled_at', width: 180, render: (v) => v ? new Date(v).toLocaleString() : '-' }
   ];
 
