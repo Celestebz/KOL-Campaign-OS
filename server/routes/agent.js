@@ -6,7 +6,7 @@ const router = express.Router();
 
 const AGENT_API_PROVIDER_KEY = 'agent.external_api';
 const ALLOWED_STATUSES = new Set(['new', 'ignored', 'duplicate', 'risk_review', 'error']);
-const CYCLE_ORDER = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
+
 
 const DISCOVERY_ROUTE_OPTIONS = {
   youtube: [
@@ -53,13 +53,14 @@ function parseList(value) {
   return clean(value).split(/[,，;\n]/).map(clean).filter(Boolean);
 }
 
-function normalizeSearchStrategy(cycles) {
-  const list = Array.isArray(cycles) ? cycles : [];
-  return [...list].sort((a, b) => {
-    const ai = CYCLE_ORDER.indexOf(clean(a?.cycle).toUpperCase());
-    const bi = CYCLE_ORDER.indexOf(clean(b?.cycle).toUpperCase());
-    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-  });
+function rejectLegacyCycleFields(body = {}) {
+  const legacy = ['search_strategy', 'cycles', 'search_cycles', 'search_intensity']
+    .filter((key) => Object.prototype.hasOwnProperty.call(body, key));
+  if (legacy.length) {
+    const error = new Error(`Legacy Cycle fields are no longer supported: ${legacy.join(', ')}`);
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 function recommendedDiscoveryRoutes(strategy) {
@@ -110,7 +111,6 @@ function normalizeStrategy(row) {
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
-    search_strategy: normalizeSearchStrategy(parseJson(row.search_strategy, [])),
     scoring_weights: parseJson(row.scoring_weights, {}),
     finder_handoff: parseJson(row.finder_handoff, {}),
     source_material_meta: parseJson(row.source_material_meta, {})
@@ -505,13 +505,14 @@ router.get('/brief/:strategyId', requireAgentToken, async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    res.status(error.statusCode || 400).json({ success: false, error: error.message });
   }
 });
 
 router.post('/raw-candidates/import', requireAgentToken, async (req, res) => {
   try {
     const body = req.body || {};
+    rejectLegacyCycleFields(body);
     const strategy = await getReadyStrategy(body.strategy_id);
     const source = clean(body.source_agent || body.agent || 'external_agent');
     const accepted = Array.isArray(body.accepted_candidates) ? body.accepted_candidates : [];
