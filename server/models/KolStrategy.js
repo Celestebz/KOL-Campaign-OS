@@ -14,7 +14,6 @@ module.exports = (sequelize, DataTypes) => {
     status: { type: DataTypes.STRING(50), defaultValue: 'draft' },
     product_context: DataTypes.TEXT,
     persona_config: DataTypes.TEXT,
-    search_strategy: DataTypes.TEXT,
     scoring_weights: DataTypes.TEXT,
     finder_handoff: DataTypes.TEXT,
     source_material_summary: DataTypes.TEXT,

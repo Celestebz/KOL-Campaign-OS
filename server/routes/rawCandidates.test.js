@@ -45,9 +45,9 @@ async function setupCampaignAndStrategy() {
     ['Approve Test Campaign', 'TestBrand', 'TestProduct']
   );
   const strategy = await dbOperations.run(
-    `INSERT INTO kol_strategies (campaign_id, name, status, campaign_goal, product_context, persona_config, search_strategy, scoring_weights, finder_handoff)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [campaign.id, 'Approve Test Strategy', 'ready', 'goal', 'context', '{}', '{}', '{}', '{}']
+    `INSERT INTO kol_strategies (campaign_id, name, status, campaign_goal, product_context, persona_config, scoring_weights, finder_handoff)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [campaign.id, 'Approve Test Strategy', 'ready', 'goal', 'context', '{}', '{}', '{}']
   );
   return { campaignId: campaign.id, strategyId: strategy.id };
 }

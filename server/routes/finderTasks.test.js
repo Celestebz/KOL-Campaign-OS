@@ -10,9 +10,11 @@ process.env.DB_NAME = process.env.DB_NAME_TEST || 'kol_campaign_os_test';
 
 const http = require('http');
 const express = require('express');
-const { initDatabase, sequelize, models, dbOperations } = require('../database');
+const { initDatabase, sequelize, models, dbOperations, Sequelize } = require('../database');
 const finderTaskRoutes = require('./finderTasks');
 const finderSubtaskRoutes = require('./finderSubtasks');
+const baselineMigration = require('../migrations/20260707000001-create-v2-core-tables');
+const replaceCyclesMigration = require('../migrations/20260709000001-replace-cycles-with-evidence-signals');
 
 async function buildApp() {
   const app = express();
@@ -70,6 +72,82 @@ async function seedBaseData() {
   });
   return { campaign, strategy };
 }
+
+const MIGRATION_BUSINESS_TABLES = [
+  'analysis_job_items', 'analysis_jobs', 'campaign_kols', 'campaign_videos',
+  'raw_candidates', 'finder_video_evidence', 'video_ai_analysis_results',
+  'video_comments', 'video_snapshots', 'video_sources', 'finder_tasks',
+  'kol_platform_accounts', 'customers', 'kol_strategies', 'campaigns'
+];
+
+test('migration replaces cycles with evidence signals and clears business tables', async () => {
+  await resetTestDatabase();
+
+  // Run baseline migration to create V2 schema and seed configuration defaults.
+  await baselineMigration.up(sequelize.getQueryInterface(), Sequelize);
+
+  // Seed configuration rows that must survive the destructive migration.
+  await models.ApiSetting.create({ provider: 'test-provider', api_key: 'test-key' });
+
+  // Seed business rows that must be cleared.
+  const campaign = await models.Campaign.create({ name: 'Migration Test Campaign', brand: 'Test', product: 'Test' });
+  const strategy = await models.KolStrategy.create({
+    campaign_id: campaign.id,
+    name: 'Migration Test Strategy',
+    brand: 'Test',
+    product: 'Test',
+    primary_platform: 'youtube',
+    status: 'ready'
+  });
+  await models.FinderTask.create({
+    campaign_id: campaign.id,
+    strategy_id: strategy.id,
+    name: 'Migration Test Task',
+    platform: 'youtube',
+    status: 'draft'
+  });
+
+  // Run the destructive replacement migration.
+  await replaceCyclesMigration.up(sequelize.getQueryInterface(), Sequelize);
+
+  // Configuration tables must retain rows.
+  assert.ok((await models.CustomerGroup.count()) > 0, 'customer_groups should retain rows');
+  assert.ok((await models.PromptTemplate.count()) > 0, 'prompt_templates should retain rows');
+  assert.ok((await models.ApiSetting.count()) > 0, 'api_settings should retain rows');
+
+  // Business tables must be empty.
+  for (const table of MIGRATION_BUSINESS_TABLES) {
+    const [{ count }] = await sequelize.query(
+      `SELECT COUNT(*) AS count FROM \`${table}\``,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+    assert.equal(Number(count), 0, `${table} should be empty after migration`);
+  }
+
+  // Legacy cycle columns must be removed.
+  const legacyColumns = [
+    { table: 'kol_strategies', column: 'search_strategy' },
+    { table: 'finder_tasks', column: 'search_cycles' },
+    { table: 'finder_tasks', column: 'current_cycle' },
+    { table: 'finder_tasks', column: 'total_cycles' },
+    { table: 'finder_tasks', column: 'completed_cycles' },
+    { table: 'raw_candidates', column: 'search_cycle' }
+  ];
+  for (const { table, column } of legacyColumns) {
+    const rows = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      { replacements: [table, column], type: sequelize.QueryTypes.SELECT }
+    );
+    assert.equal(rows.length, 0, `${table}.${column} should be removed`);
+  }
+
+  // New evidence_signals column must exist on video_ai_analysis_results.
+  const evidenceRows = await sequelize.query(
+    `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'video_ai_analysis_results' AND COLUMN_NAME = 'evidence_signals'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  assert.equal(evidenceRows.length, 1, 'video_ai_analysis_results.evidence_signals should exist');
+});
 
 async function startMockAiServer() {
   return new Promise((resolve) => {

@@ -20,6 +20,7 @@ module.exports = (sequelize, DataTypes) => {
     final_prompt: DataTypes.TEXT,
     raw_result: DataTypes.TEXT,
     extra_data: DataTypes.TEXT,
+    evidence_signals: DataTypes.TEXT('long'),
     model_name: DataTypes.STRING(255),
     status: { type: DataTypes.STRING(50), defaultValue: 'success' },
     error_message: DataTypes.TEXT

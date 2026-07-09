@@ -1824,9 +1824,9 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
      (finder_task_id, campaign_id, strategy_id, platform, kol_name, profile_url, video_url, video_title,
       followers, avg_views, email, country_region, matched_keywords, ai_score, ai_match_reason,
       status, source, discovery_route, source_platform, target_platform, source_agent,
-      raw_data, error_message, search_cycle, matched_persona, scoring_breakdown,
+      raw_data, error_message, matched_persona, scoring_breakdown,
       evidence_url, evidence_title, evidence_type, source_query, rejection_scope, rejection_category, rejection_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       task.id,
       task.campaign_id,
@@ -1851,7 +1851,6 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
       candidate.source_agent || provider,
       rawData,
       candidate.error_message,
-      cycle.cycle,
       candidate.matched_persona,
       JSON.stringify(candidate.scoring_breakdown || {}),
       candidate.evidence_url,
@@ -2758,8 +2757,8 @@ router.post('/', async (req, res) => {
     };
     const result = await dbOperations.run(
       `INSERT INTO finder_tasks
-       (campaign_id, strategy_id, name, platform, keywords, status, search_sources, discovery_routes, target_platforms, search_cycles, total_cycles, raw_request, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (campaign_id, strategy_id, name, platform, keywords, status, search_sources, discovery_routes, target_platforms, raw_request, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         strategy.campaign_id,
         strategy.id,
@@ -2770,13 +2769,6 @@ router.post('/', async (req, res) => {
         JSON.stringify(searchSources.length ? searchSources : [...new Set(normalizedCycles.flatMap((cycle) => cycle.search_sources || []))]),
         JSON.stringify(executionMode === 'video_evidence_finder' ? ['target_platform_first'] : (discoveryRoutes.length ? discoveryRoutes : [...new Set(normalizedCycles.flatMap((cycle) => cycle.discovery_routes || []))])),
         JSON.stringify(targetPlatforms.length ? targetPlatforms : [...new Set(normalizedCycles.flatMap((cycle) => cycle.target_platforms || []))]),
-        JSON.stringify(fullStrategyCycles.map((cycle) => ({
-          ...cycle,
-          discovery_routes: discoveryRoutes.length ? discoveryRoutes : discoveryRoutesForCycle(cycle, strategy, [], targetPlatforms),
-          search_sources: searchSources.length ? searchSources : searchSourcesForCycle(cycle),
-          target_platforms: targetPlatforms.length ? targetPlatforms : targetPlatformsForCycle(cycle, strategy)
-        }))),
-        normalizedCycles.length,
         JSON.stringify(rawRequest),
         body.notes || ''
       ]
