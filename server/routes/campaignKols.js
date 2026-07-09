@@ -1,5 +1,6 @@
 const express = require('express');
 const { dbOperations } = require('../database');
+const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
 
 const router = express.Router();
 
@@ -22,6 +23,7 @@ const EDITABLE_FIELDS = [
   'quoted_fee',
   'final_fee',
   'currency',
+  'cooperation_type',
   'deliverables',
   'outreach_status',
   'negotiation_status',
@@ -57,6 +59,7 @@ router.get('/', async (req, res) => {
     const { campaign_id, status, sync_status, search } = req.query;
     let sql = `
       SELECT ck.*, c.name as campaign_name, c.brand, c.product,
+        (SELECT COUNT(*) FROM campaign_videos cv WHERE cv.campaign_kol_id = ck.id) published_video_count,
         k.name as kol_name, k.contact_name, k.email, k.phone, k.country_region,
         k.cooperation_status as global_cooperation_status,
         k.cooperation_risk_category as global_cooperation_risk_category,
@@ -106,6 +109,72 @@ router.get('/', async (req, res) => {
     })) });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/:id/published-videos', async (req, res) => {
+  try {
+    const rows = await dbOperations.query(
+      `SELECT vs.id, vs.platform, vs.source_url, vs.canonical_url, vs.crawl_status
+       FROM campaign_videos cv JOIN video_sources vs ON vs.id = cv.video_source_id
+       WHERE cv.campaign_kol_id = ? ORDER BY cv.created_at, cv.id`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put('/:id/published-videos', async (req, res) => {
+  try {
+    const campaignKol = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [req.params.id]);
+    if (!campaignKol) return res.status(404).json({ success: false, error: 'KOL 合作记录不存在' });
+    const rawUrls = Array.isArray(req.body.urls) ? req.body.urls : String(req.body.urls || '').split(/\r?\n/);
+    const normalized = Array.from(new Map(rawUrls.filter(Boolean).map((url) => {
+      const item = normalizeVideoUrl(String(url).trim());
+      return [item.canonicalUrlHash, { ...item, sourceUrl: String(url).trim() }];
+    })).values());
+    const videoIds = [];
+    for (const item of normalized) {
+      let video = await dbOperations.get('SELECT * FROM video_sources WHERE canonical_url_hash = ?', [item.canonicalUrlHash]);
+      if (!video) {
+        const inserted = await dbOperations.run(
+          `INSERT INTO video_sources
+           (platform, platform_video_id, source_url, canonical_url, canonical_url_hash,
+            kol_name, status, crawl_status, analysis_status)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', 'pending', 'not_analyzed')`,
+          [item.platform, item.platformVideoId, item.sourceUrl, item.canonicalUrl, item.canonicalUrlHash, campaignKol.kol_name_snapshot || '']
+        );
+        video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [inserted.id]);
+      }
+      videoIds.push(video.id);
+      await dbOperations.run(
+        `INSERT INTO campaign_videos (campaign_id, video_source_id, campaign_kol_id, added_reason)
+         VALUES (?, ?, ?, 'kol_published')
+         ON DUPLICATE KEY UPDATE campaign_kol_id = VALUES(campaign_kol_id), updated_at = CURRENT_TIMESTAMP`,
+        [campaignKol.campaign_id, video.id, campaignKol.id]
+      );
+    }
+    if (videoIds.length) {
+      const placeholders = videoIds.map(() => '?').join(',');
+      await dbOperations.run(
+        `DELETE FROM campaign_videos
+         WHERE campaign_kol_id = ? AND video_source_id NOT IN (${placeholders})`,
+        [campaignKol.id, ...videoIds]
+      );
+    } else {
+      await dbOperations.run('DELETE FROM campaign_videos WHERE campaign_kol_id = ?', [campaignKol.id]);
+    }
+    const rows = await dbOperations.query(
+      `SELECT vs.id, vs.platform, vs.source_url, vs.canonical_url, vs.crawl_status
+       FROM campaign_videos cv JOIN video_sources vs ON vs.id = cv.video_source_id
+       WHERE cv.campaign_kol_id = ? ORDER BY cv.created_at, cv.id`,
+      [campaignKol.id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
   }
 });
 

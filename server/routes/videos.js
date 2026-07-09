@@ -1176,6 +1176,9 @@ function buildVideoListSql(filters = {}) {
   const { campaign_id, platform, crawl_status, analysis_status, search, ids } = filters;
   let sql = `
     SELECT vs.*, c.name as campaign_name, c.product as campaign_product,
+      ck.id as campaign_kol_id, ck.final_fee as collaboration_fee, ck.currency as collaboration_currency,
+      ck.cooperation_type, ck.owner as collaboration_owner, ck.project_notes as collaboration_notes,
+      COALESCE(k.name, vs.kol_name, vs.author_name) as linked_kol_name,
       snap.play_count, snap.like_count, snap.comment_count, snap.collect_count, snap.share_count,
       snap.primary_exposure_count, snap.exposure_metric_type, snap.data_quality_note, snap.snapshot_at,
       COALESCE(ai_review.score, ai_finder.score) as score,
@@ -1199,6 +1202,8 @@ function buildVideoListSql(filters = {}) {
     FROM video_sources vs
     LEFT JOIN campaign_videos cv ON cv.video_source_id = vs.id
     LEFT JOIN campaigns c ON c.id = cv.campaign_id
+    LEFT JOIN campaign_kols ck ON ck.id = cv.campaign_kol_id
+    LEFT JOIN customers k ON k.id = ck.customer_id
     LEFT JOIN video_snapshots snap ON snap.id = (
       SELECT id FROM video_snapshots WHERE video_source_id = vs.id ORDER BY snapshot_at DESC LIMIT 1
     )

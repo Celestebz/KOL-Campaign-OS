@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button, Card, Form, Input, message, Modal, Popconfirm, Select, Space, Table, Tag } from 'antd';
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Space, Spin, Table, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -27,6 +27,40 @@ const statusColor = {
   not_fit: 'red'
 };
 
+const currencyOptions = [
+  { value: 'GBP', label: 'GBP（£ 英镑）' },
+  { value: 'USD', label: 'USD（$ 美元）' },
+  { value: 'EUR', label: 'EUR（€ 欧元）' },
+  { value: 'CNY', label: 'CNY（¥ 人民币）' }
+];
+
+const cooperationTypeOptions = [
+  { value: 'paid_product', label: '付费＋产品' },
+  { value: 'product_exchange', label: '产品置换' },
+  { value: 'other', label: '其他' }
+];
+
+const cooperationTypeLabel = (value) => (
+  cooperationTypeOptions.find((item) => item.value === value)?.label || '付费＋产品'
+);
+
+const normalizeCurrency = (value) => ({
+  英镑: 'GBP', '£': 'GBP',
+  美元: 'USD', '$': 'USD',
+  欧元: 'EUR', '€': 'EUR',
+  人民币: 'CNY', '¥': 'CNY', RMB: 'CNY'
+}[value] || value || undefined);
+
+const formatFee = (value, currency) => {
+  if (value === undefined || value === null || value === '') return '-';
+  const number = Number(value);
+  const code = normalizeCurrency(currency);
+  if (!Number.isFinite(number) || !currencyOptions.some((item) => item.value === code)) {
+    return `${value}${code ? ` ${code}` : ''}`;
+  }
+  return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: code }).format(number);
+};
+
 const CampaignKols = () => {
   const [rows, setRows] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -35,7 +69,14 @@ const CampaignKols = () => {
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [filters, setFilters] = useState({});
   const [editing, setEditing] = useState(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailRow, setDetailRow] = useState(null);
+  const [masterDetail, setMasterDetail] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
   const [form] = Form.useForm();
+  const cooperationType = Form.useWatch('cooperation_type', form);
 
   const campaignOptions = useMemo(() => campaigns.map((item) => ({
     value: item.id,
@@ -44,7 +85,6 @@ const CampaignKols = () => {
 
   useEffect(() => {
     fetchCampaigns();
-    fetchRows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -69,34 +109,66 @@ const CampaignKols = () => {
     setFilters((prev) => ({ ...prev, [key]: value || undefined }));
   };
 
-  const openEdit = (record) => {
+  const openEdit = async (record) => {
     setEditing(record);
     const values = { ...record };
-    if (values.evidence_summary && typeof values.evidence_summary === 'object') {
-      values.evidence_summary = JSON.stringify(values.evidence_summary, null, 2);
-    }
+    values.currency = normalizeCurrency(values.currency);
     if (values.project_override && typeof values.project_override === 'object') {
       values.project_override = JSON.stringify(values.project_override, null, 2);
+    }
+    try {
+      const response = await axios.get(`/api/campaign-kols/${record.id}/published-videos`);
+      values.published_video_urls = (response.data.data || [])
+        .map((video) => video.canonical_url || video.source_url)
+        .join('\n');
+    } catch (error) {
+      values.published_video_urls = '';
+      message.error('获取合作发布视频失败');
     }
     form.setFieldsValue(values);
   };
 
+  useEffect(() => {
+    fetchRows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.campaign_id, filters.status, filters.sync_status]);
+
+  const openDetail = async (record) => {
+    setDetailOpen(true);
+    setDetailRow(record);
+    setMasterDetail(null);
+    setHistory([]);
+    setDetailError('');
+    setDetailLoading(true);
+    try {
+      const [master, projectHistory] = await Promise.all([
+        axios.get(`/api/customers/${record.customer_id}`),
+        axios.get(`/api/customers/${record.customer_id}/project-history`)
+      ]);
+      setMasterDetail(master.data.data);
+      setHistory(projectHistory.data.data || []);
+    } catch (error) {
+      setDetailError('KOL 详情加载失败，请稍后重试');
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
   const saveEdit = async () => {
     const values = await form.validateFields();
+    const publishedVideoUrls = values.published_video_urls || '';
+    delete values.published_video_urls;
+    if (values.cooperation_type === 'product_exchange') {
+      values.final_fee = 0;
+      values.currency = null;
+    }
     await axios.patch(`/api/campaign-kols/${editing.id}`, values);
+    await axios.put(`/api/campaign-kols/${editing.id}/published-videos`, {
+      urls: publishedVideoUrls.split(/\r?\n/).map((url) => url.trim()).filter(Boolean)
+    });
     message.success('项目 KOL 已更新');
     setEditing(null);
     fetchRows();
-  };
-
-  const syncFromMaster = async (record) => {
-    try {
-      await axios.post(`/api/campaign-kols/${record.id}/sync-from-master`);
-      message.success('已从 KOL Master 同步');
-      fetchRows();
-    } catch (error) {
-      message.error(error.response?.data?.error || '同步失败');
-    }
   };
 
   const deleteOne = async (id) => {
@@ -132,9 +204,9 @@ const CampaignKols = () => {
   const platformLink = (url, followers) => {
     if (!url && !followers) return '-';
     return (
-      <Space direction="vertical" size={0}>
-        {url ? <a href={url} target="_blank" rel="noreferrer">主页</a> : <span>-</span>}
-        {followers ? <span style={{ color: '#666' }}>{followers}</span> : null}
+      <Space direction="vertical" size={2} align="start" style={{ width: '100%' }}>
+        {url ? <a style={{ display: 'block' }} href={url} target="_blank" rel="noreferrer">主页</a> : <span>-</span>}
+        {followers ? <span style={{ color: '#666', display: 'block', overflowWrap: 'anywhere' }}>{followers}</span> : null}
       </Space>
     );
   };
@@ -147,9 +219,15 @@ const CampaignKols = () => {
       width: 190,
       fixed: 'left',
       render: (_, r) => (
-        <Space direction="vertical" size={0}>
-          <strong>{r.kol_name || r.kol_name_snapshot}</strong>
-          <span style={{ color: '#666' }}>{r.contact_name || r.contact_name_snapshot || '-'}</span>
+        <Space direction="vertical" size={4} align="start" style={{ width: '100%', minWidth: 0 }}>
+          <Button
+            type="link"
+            style={{ padding: 0, height: 'auto', maxWidth: '100%', whiteSpace: 'normal', textAlign: 'left', overflowWrap: 'anywhere' }}
+            onClick={() => openDetail(r)}
+          >
+            <strong>{r.kol_name || r.kol_name_snapshot}</strong>
+          </Button>
+          <span style={{ color: '#666', maxWidth: '100%', overflowWrap: 'anywhere' }}>{r.contact_name || r.contact_name_snapshot || '-'}</span>
         </Space>
       )
     },
@@ -166,13 +244,11 @@ const CampaignKols = () => {
           </Space>
         : '-'
     )},
-    { title: '项目报价', dataIndex: 'quoted_fee', key: 'quoted_fee', width: 110, render: (v, r) => v || r.quoted_price || '-' },
-    { title: 'RMB', dataIndex: 'final_fee', key: 'final_fee', width: 100, render: (v, r) => v || r.price_rmb || '-' },
+    { title: '合作方式', dataIndex: 'cooperation_type', key: 'cooperation_type', width: 120, render: (v) => <Tag>{cooperationTypeLabel(v)}</Tag> },
+    { title: '合作费用', dataIndex: 'final_fee', key: 'final_fee', width: 130, render: (v, r) => r.cooperation_type === 'product_exchange' ? '现金 0' : formatFee(v || r.price_rmb, r.currency || (r.price_rmb ? 'CNY' : null)) },
     { title: '状态', dataIndex: 'project_status', key: 'project_status', width: 110, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusOptions.find((item) => item.value === v)?.label || v || '-'}</Tag> },
     { title: '跟进人', dataIndex: 'owner', key: 'owner', width: 100, render: (v) => v || '-' },
-    { title: '最佳证据', key: 'best_evidence', width: 150, render: (_, r) => (
-      r.best_evidence_url ? <a href={r.best_evidence_url} target="_blank" rel="noreferrer">查看</a> : '-'
-    )},
+    { title: '合作发布视频', dataIndex: 'published_video_count', key: 'published_video_count', width: 130, render: (v) => `${v || 0} 条` },
     { title: '同步', dataIndex: 'sync_status', key: 'sync_status', width: 120, render: (v) => <Tag>{v || 'sync_pending'}</Tag> },
     { title: '项目备注', dataIndex: 'project_notes', key: 'project_notes', width: 220, ellipsis: true, render: (v, r) => v || r.notes || '-' },
     {
@@ -181,9 +257,8 @@ const CampaignKols = () => {
       width: 200,
       fixed: 'right',
       render: (_, record) => (
-        <Space>
+        <Space direction="vertical" size={0} align="start">
           <Button type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
-          <Button type="link" icon={<SyncOutlined />} onClick={() => syncFromMaster(record)}>同步Master</Button>
           <Popconfirm title="确定从项目中删除这个 KOL？" onConfirm={() => deleteOne(record.id)}>
             <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
@@ -195,8 +270,8 @@ const CampaignKols = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">项目 KOL</h1>
-        <p className="page-subtitle">每个项目维护自己的 KOL 执行名单，报价、状态、备注和发布链接可单独编辑。</p>
+        <h1 className="page-title">KOL 合作</h1>
+        <p className="page-subtitle">按项目管理 KOL 的报价、跟进、交付与合作状态。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
@@ -225,21 +300,55 @@ const CampaignKols = () => {
           loading={loading}
           rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
           scroll={{ x: 2100 }}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 20, showSizeChanger: true }}
         />
       </Card>
 
-      <Modal title="编辑项目 KOL" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>
+      <Drawer title={detailRow ? `${detailRow.kol_name || detailRow.kol_name_snapshot} · 合作详情` : 'KOL 合作详情'}
+        width={760} open={detailOpen} onClose={() => setDetailOpen(false)}
+        extra={detailRow && <Button icon={<EditOutlined />} onClick={() => openEdit(detailRow)}>编辑当前项目</Button>}>
+        {detailLoading ? <Spin /> : detailError ? <Alert type="error" message={detailError} /> : detailRow && (
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Descriptions title="KOL 主档" bordered column={2} size="small">
+              <Descriptions.Item label="KOL">{masterDetail?.name || detailRow.kol_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="国家地区">{masterDetail?.country_region || detailRow.country_region || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Email">{masterDetail?.email || detailRow.email || '-'}</Descriptions.Item>
+              <Descriptions.Item label="电话">{masterDetail?.phone || detailRow.phone || '-'}</Descriptions.Item>
+              <Descriptions.Item label="默认报价">{masterDetail?.video_price || masterDetail?.price_rmb || '-'}</Descriptions.Item>
+              <Descriptions.Item label="合作风险">{masterDetail?.cooperation_risk_reason || '-'}</Descriptions.Item>
+            </Descriptions>
+            <Descriptions title="当前项目" bordered column={2} size="small">
+              <Descriptions.Item label="项目">{detailRow.campaign_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="状态">{detailRow.project_status || '-'}</Descriptions.Item>
+              <Descriptions.Item label="合作方式">{cooperationTypeLabel(detailRow.cooperation_type)}</Descriptions.Item>
+              <Descriptions.Item label="合作费用">{formatFee(detailRow.final_fee || detailRow.price_rmb, detailRow.currency || (detailRow.price_rmb ? 'CNY' : null))}</Descriptions.Item>
+              <Descriptions.Item label="跟进人">{detailRow.owner || '-'}</Descriptions.Item>
+              <Descriptions.Item label="项目备注">{detailRow.project_notes || detailRow.notes || '-'}</Descriptions.Item>
+            </Descriptions>
+            <div><h3>全部项目历史</h3>
+              {history.length ? <Table size="small" rowKey="id" pagination={false} dataSource={history}
+                columns={[
+                  { title: '项目', dataIndex: 'campaign_name' },
+                  { title: '状态', dataIndex: 'project_status' },
+                  { title: '合作费用', dataIndex: 'final_fee', render: (v, r) => formatFee(v, r.currency) },
+                  { title: '跟进人', dataIndex: 'owner' }
+                ]} /> : <Empty description="暂无其他项目记录" />}
+            </div>
+          </Space>
+        )}
+      </Drawer>
+
+      <Modal title="编辑 KOL 合作" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>
         <Form form={form} layout="vertical">
           <Space align="start" style={{ width: '100%' }}>
-            <Form.Item label="项目报价" name="quoted_fee">
-              <Input style={{ width: 170 }} />
+            <Form.Item label="合作方式" name="cooperation_type" initialValue="paid_product">
+              <Select options={cooperationTypeOptions} style={{ width: 190 }} />
             </Form.Item>
-            <Form.Item label="最终费用" name="final_fee">
-              <Input style={{ width: 170 }} />
+            <Form.Item label="合作费用" name="final_fee">
+              <InputNumber min={0} precision={2} disabled={cooperationType === 'product_exchange'} style={{ width: 200 }} placeholder="0.00" />
             </Form.Item>
             <Form.Item label="币种" name="currency">
-              <Input style={{ width: 120 }} />
+              <Select options={currencyOptions} disabled={cooperationType === 'product_exchange'} style={{ width: 190 }} placeholder="选择币种" />
             </Form.Item>
           </Space>
           <Space align="start" style={{ width: '100%' }}>
@@ -250,11 +359,8 @@ const CampaignKols = () => {
               <Input style={{ width: 170 }} />
             </Form.Item>
           </Space>
-          <Form.Item label="最佳证据链接" name="best_evidence_url">
-            <Input />
-          </Form.Item>
-          <Form.Item label="证据摘要" name="evidence_summary">
-            <TextArea rows={3} />
+          <Form.Item label="合作发布视频" name="published_video_urls" extra="每行一条链接；系统会自动识别平台并同步到视频数据，保存时不会自动抓取。">
+            <TextArea rows={5} placeholder={'https://www.youtube.com/watch?v=...\nhttps://www.instagram.com/reel/...'} />
           </Form.Item>
           <Form.Item label="项目备注" name="project_notes">
             <TextArea rows={3} />
