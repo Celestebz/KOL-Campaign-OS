@@ -65,10 +65,7 @@ async function seedBaseData() {
     brand: 'Test Brand',
     product: 'Test Product',
     primary_platform: 'youtube',
-    status: 'ready',
-    search_strategy: JSON.stringify([
-      { cycle: 'C2', name: 'Category Search', target_count: 10, keywords: 'test' }
-    ])
+    status: 'ready'
   });
   return { campaign, strategy };
 }
@@ -82,6 +79,14 @@ const MIGRATION_BUSINESS_TABLES = [
 
 test('migration replaces cycles with evidence signals and clears business tables', async () => {
   await resetTestDatabase();
+
+  // Simulate the migration history table that Umzug normally maintains.
+  await sequelize.getQueryInterface().createTable('sequelize_meta', {
+    name: { type: Sequelize.STRING, allowNull: false, primaryKey: true }
+  });
+  await sequelize.query(
+    `INSERT INTO sequelize_meta (name) VALUES ('20260707000001-create-v2-core-tables.js')`
+  );
 
   // Run baseline migration to create V2 schema and seed configuration defaults.
   await baselineMigration.up(sequelize.getQueryInterface(), Sequelize);
@@ -109,11 +114,20 @@ test('migration replaces cycles with evidence signals and clears business tables
 
   // Run the destructive replacement migration.
   await replaceCyclesMigration.up(sequelize.getQueryInterface(), Sequelize);
+  await sequelize.query(
+    `INSERT INTO sequelize_meta (name) VALUES ('20260709000001-replace-cycles-with-evidence-signals.js')`
+  );
 
   // Configuration tables must retain rows.
   assert.ok((await models.CustomerGroup.count()) > 0, 'customer_groups should retain rows');
   assert.ok((await models.PromptTemplate.count()) > 0, 'prompt_templates should retain rows');
   assert.ok((await models.ApiSetting.count()) > 0, 'api_settings should retain rows');
+
+  const [{ metaCount }] = await sequelize.query(
+    'SELECT COUNT(*) AS metaCount FROM sequelize_meta',
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  assert.ok(Number(metaCount) > 0, 'sequelize_meta should retain rows');
 
   // Business tables must be empty.
   for (const table of MIGRATION_BUSINESS_TABLES) {
@@ -123,6 +137,12 @@ test('migration replaces cycles with evidence signals and clears business tables
     );
     assert.equal(Number(count), 0, `${table} should be empty after migration`);
   }
+
+  // Auto-increment counters must be reset.
+  const postMigrationCampaign = await models.Campaign.create({
+    name: 'Post Migration Campaign', brand: 'Test', product: 'Test'
+  });
+  assert.equal(postMigrationCampaign.id, 1, 'auto-increment counter should be reset');
 
   // Legacy cycle columns must be removed.
   const legacyColumns = [
@@ -628,11 +648,11 @@ test('video_source reuse and snapshot TTL across campaigns', async () => {
   const campaign2 = await models.Campaign.create({ name: 'Campaign 2', brand: 'Brand', product: 'Product' });
   const strategy1 = await models.KolStrategy.create({
     campaign_id: campaign1.id, name: 'Strategy 1', brand: 'Brand', product: 'Product',
-    primary_platform: 'youtube', status: 'ready', search_strategy: JSON.stringify([{ cycle: 'C2', name: 'Category', target_count: 10 }])
+    primary_platform: 'youtube', status: 'ready'
   });
   const strategy2 = await models.KolStrategy.create({
     campaign_id: campaign2.id, name: 'Strategy 2', brand: 'Brand', product: 'Product',
-    primary_platform: 'youtube', status: 'ready', search_strategy: JSON.stringify([{ cycle: 'C2', name: 'Category', target_count: 10 }])
+    primary_platform: 'youtube', status: 'ready'
   });
 
   const taskRes1 = await request.post('/api/finder-tasks').send({
