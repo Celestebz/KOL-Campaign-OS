@@ -35,7 +35,7 @@ function App() {
     { key: '/strategy', icon: <ProfileOutlined />, label: 'KOL 策略' },
     { key: '/finder', icon: <SearchOutlined />, label: 'KOL 寻找' },
     { key: '/customers', icon: <UserOutlined />, label: 'KOL 管理' },
-    { key: '/campaign-kols', icon: <TeamOutlined />, label: '项目 KOL' },
+    { key: '/campaign-kols', icon: <TeamOutlined />, label: 'KOL 合作' },
     { key: '/send', icon: <PlayCircleOutlined />, label: '视频数据' },
     { key: '/records', icon: <BarChartOutlined />, label: '分析记录' },
     { key: '/templates', icon: <FileTextOutlined />, label: 'AI Prompt 模板' },

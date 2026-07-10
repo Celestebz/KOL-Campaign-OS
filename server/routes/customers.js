@@ -7,6 +7,77 @@ const { dbOperations } = require('../database');
 
 const router = express.Router();
 
+const LEGACY_PLATFORMS = [
+  ['youtube', 'youtube_url', 'youtube_followers'],
+  ['instagram', 'instagram_url', 'instagram_followers'],
+  ['tiktok', 'tiktok_url', 'tiktok_followers']
+];
+
+function mergePlatformAccounts(customer, accounts = []) {
+  const normalized = accounts.map((account) => ({
+    id: account.id,
+    platform: String(account.platform || '').toLowerCase(),
+    username: account.username || null,
+    profile_url: account.profile_url || null,
+    followers_text: account.followers_text || null,
+    followers_count: account.followers_count ?? null,
+    source: 'normalized'
+  }));
+  const present = new Set(normalized.map((account) => account.platform));
+  const fallback = LEGACY_PLATFORMS
+    .filter(([platform, urlField, followersField]) => (
+      !present.has(platform) && (customer[urlField] || customer[followersField])
+    ))
+    .map(([platform, urlField, followersField]) => ({
+      id: null,
+      platform,
+      username: null,
+      profile_url: customer[urlField] || null,
+      followers_text: customer[followersField] || null,
+      followers_count: null,
+      source: 'legacy'
+    }));
+  return [...normalized, ...fallback];
+}
+
+function toProjectHistory(row) {
+  return {
+    id: row.id,
+    campaign_id: row.campaign_id,
+    campaign_name: row.campaign_name,
+    project_status: row.project_status || row.status || null,
+    quoted_fee: row.quoted_fee || row.quoted_price || null,
+    final_fee: row.final_fee || row.price_rmb || null,
+    currency: row.currency || null,
+    owner: row.owner || null,
+    best_evidence_url: row.best_evidence_url || null,
+    youtube_video_link: row.youtube_video_link || null,
+    instagram_video_link: row.instagram_video_link || null,
+    tiktok_video_link: row.tiktok_video_link || null,
+    project_notes: row.project_notes || row.notes || null,
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null
+  };
+}
+
+async function attachPlatformAccounts(customers) {
+  if (!customers.length) return customers;
+  const placeholders = customers.map(() => '?').join(',');
+  const accounts = await dbOperations.query(
+    `SELECT id, customer_id, platform, username, profile_url, followers_text, followers_count
+     FROM kol_platform_accounts WHERE customer_id IN (${placeholders})
+     ORDER BY platform, id`,
+    customers.map((customer) => customer.id)
+  );
+  return customers.map((customer) => ({
+    ...customer,
+    platform_accounts: mergePlatformAccounts(
+      customer,
+      accounts.filter((account) => account.customer_id === customer.id)
+    )
+  }));
+}
+
 const TEMPLATE_HEADERS = [
   'KOL',
   '联系人',
@@ -285,9 +356,13 @@ function buildTemplateWorkbook() {
 
 router.get('/', async (req, res) => {
   try {
-    const { group_id, status, cooperation_status, search } = req.query;
+    const { group_id, status, cooperation_status, platform, country_region, search } = req.query;
     let sql = `
-      SELECT c.*, g.name as group_name
+      SELECT c.*, g.name as group_name,
+        (SELECT cp.name FROM campaign_kols ck JOIN campaigns cp ON cp.id = ck.campaign_id
+         WHERE ck.customer_id = c.id ORDER BY ck.updated_at DESC, ck.id DESC LIMIT 1) latest_project_name,
+        (SELECT ck.project_status FROM campaign_kols ck WHERE ck.customer_id = c.id
+         ORDER BY ck.updated_at DESC, ck.id DESC LIMIT 1) latest_project_status
       FROM customers c
       LEFT JOIN customer_groups g ON c.group_id = g.id
       WHERE 1=1
@@ -308,6 +383,24 @@ router.get('/', async (req, res) => {
       sql += ' AND c.cooperation_status = ?';
       params.push(cooperation_status);
     }
+    if (country_region) {
+      sql += ' AND c.country_region = ?';
+      params.push(country_region);
+    }
+    if (platform) {
+      const legacyColumn = ['youtube', 'instagram', 'tiktok'].includes(platform)
+        ? `${platform}_url`
+        : null;
+      sql += ` AND (EXISTS (
+        SELECT 1 FROM kol_platform_accounts kpa
+        WHERE kpa.customer_id = c.id AND LOWER(kpa.platform) = ?
+      )${legacyColumn ? ` OR (NOT EXISTS (
+        SELECT 1 FROM kol_platform_accounts kpa2
+        WHERE kpa2.customer_id = c.id AND LOWER(kpa2.platform) = ?
+      ) AND COALESCE(c.${legacyColumn}, '') <> '')` : ''})`;
+      params.push(platform);
+      if (legacyColumn) params.push(platform);
+    }
 
     if (search) {
       sql += ` AND (
@@ -320,7 +413,27 @@ router.get('/', async (req, res) => {
 
     sql += ' ORDER BY c.created_at DESC';
     const customers = await dbOperations.query(sql, params);
-    res.json({ success: true, data: customers });
+    res.json({ success: true, data: await attachPlatformAccounts(customers) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/filter-options', async (req, res) => {
+  try {
+    const countries = await dbOperations.query(
+      `SELECT DISTINCT country_region value FROM customers
+       WHERE COALESCE(country_region, '') <> '' ORDER BY country_region`
+    );
+    const normalized = await dbOperations.query(
+      `SELECT DISTINCT LOWER(platform) value FROM kol_platform_accounts
+       WHERE COALESCE(platform, '') <> '' ORDER BY value`
+    );
+    const platforms = Array.from(new Set([
+      ...normalized.map((row) => row.value),
+      'youtube', 'instagram', 'tiktok'
+    ])).sort();
+    res.json({ success: true, data: { countries: countries.map((row) => row.value), platforms } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -473,6 +586,25 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+router.get('/:id/project-history', async (req, res) => {
+  try {
+    if (!/^\d+$/.test(req.params.id)) {
+      return res.status(400).json({ success: false, error: '无效的 KOL ID' });
+    }
+    const customer = await dbOperations.get('SELECT id FROM customers WHERE id = ?', [req.params.id]);
+    if (!customer) return res.status(404).json({ success: false, error: 'KOL 不存在' });
+    const rows = await dbOperations.query(
+      `SELECT ck.*, c.name campaign_name FROM campaign_kols ck
+       JOIN campaigns c ON c.id = ck.campaign_id
+       WHERE ck.customer_id = ? ORDER BY ck.updated_at DESC, ck.id DESC`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: rows.map(toProjectHistory) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const customer = await dbOperations.get(
@@ -487,10 +619,13 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'KOL 不存在' });
     }
 
-    res.json({ success: true, data: customer });
+    const [data] = await attachPlatformAccounts([customer]);
+    res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 module.exports = router;
+module.exports.mergePlatformAccounts = mergePlatformAccounts;
+module.exports.toProjectHistory = toProjectHistory;

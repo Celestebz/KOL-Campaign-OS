@@ -3,6 +3,7 @@ module.exports = (sequelize, DataTypes) => {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     campaign_id: { type: DataTypes.INTEGER, allowNull: false },
     video_source_id: { type: DataTypes.INTEGER, allowNull: false },
+    campaign_kol_id: DataTypes.INTEGER,
     added_reason: { type: DataTypes.STRING(100), defaultValue: 'manual' },
     added_by_finder_task_id: DataTypes.INTEGER
   }, {
@@ -18,6 +19,7 @@ module.exports = (sequelize, DataTypes) => {
     CampaignVideo.belongsTo(models.Campaign, { foreignKey: 'campaign_id', onDelete: 'CASCADE' });
     CampaignVideo.belongsTo(models.VideoSource, { foreignKey: 'video_source_id', onDelete: 'CASCADE' });
     CampaignVideo.belongsTo(models.FinderTask, { foreignKey: 'added_by_finder_task_id', onDelete: 'SET NULL' });
+    CampaignVideo.belongsTo(models.CampaignKol, { foreignKey: 'campaign_kol_id', onDelete: 'SET NULL' });
   };
 
   return CampaignVideo;

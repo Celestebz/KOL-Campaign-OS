@@ -8,6 +8,7 @@ import {
   message,
   Modal,
   Popconfirm,
+  Progress,
   Row,
   Select,
   Space,
@@ -87,6 +88,7 @@ const VideoAnalysis = () => {
   const [loading, setLoading] = useState(false);
   const [crawlLoading, setCrawlLoading] = useState(false);
   const [analyzeLoading, setAnalyzeLoading] = useState(false);
+  const [activeJob, setActiveJob] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingVideo, setEditingVideo] = useState(null);
   const [detailVideo, setDetailVideo] = useState(null);
@@ -221,6 +223,20 @@ const VideoAnalysis = () => {
       try {
         const res = await axios.get(`/api/videos/jobs/${jobId}`);
         const job = res.data.data.job;
+        const items = res.data.data.items || [];
+        const success = items.filter((item) => item.status === 'success').length;
+        const failed = items.filter((item) => item.status === 'failed').length;
+        const processed = success + failed;
+        const total = Number(job?.total_count || items.length || 0);
+        setActiveJob({
+          id: jobId,
+          type,
+          status: job?.status,
+          total,
+          processed,
+          success,
+          failed
+        });
         if (['success', 'partial_failed', 'failed'].includes(job?.status)) {
           clearInterval(timer);
           setBatchLoading(type, false);
@@ -234,6 +250,7 @@ const VideoAnalysis = () => {
       } catch (error) {
         clearInterval(timer);
         setBatchLoading(type, false);
+        setActiveJob((current) => current ? { ...current, status: 'query_failed' } : null);
         message.error('查询任务状态失败');
       }
     }, 2000);
@@ -245,10 +262,20 @@ const VideoAnalysis = () => {
       const endpoint = type === 'crawl' ? '/api/videos/crawl' : '/api/videos/analyze';
       const res = await axios.post(endpoint, { videoIds: ids });
       const jobId = res.data.data.job_id;
+      setActiveJob({
+        id: jobId,
+        type,
+        status: 'pending',
+        total: Number(res.data.data.total || ids.length),
+        processed: 0,
+        success: 0,
+        failed: 0
+      });
       message.success(type === 'crawl' ? `已创建抓取任务 #${jobId}` : `已创建 AI 分析任务 #${jobId}`);
       pollJob(jobId, type);
     } catch (error) {
       setBatchLoading(type, false);
+      setActiveJob(null);
       message.error(error.response?.data?.error || '创建任务失败');
     }
   };
@@ -281,40 +308,39 @@ const VideoAnalysis = () => {
       width: 120,
       render: (value) => value ? <Tag color={value === 'youtube' ? 'green' : value === 'instagram' ? 'blue' : 'magenta'}>{value}</Tag> : '-'
     },
-    { title: '产品/活动', dataIndex: 'campaign_name', key: 'campaign_name', width: 160, render: (value) => value || '-' },
     {
       title: 'KOL / 视频',
       key: 'video',
-      ellipsis: true,
+      width: 420,
       render: (_, record) => (
-        <Space direction="vertical" size={0}>
-          <strong>{record.title || record.source_url}</strong>
-          <span style={{ color: '#667085' }}>{record.kol_name || record.author_name || '-'}</span>
+        <Space direction="vertical" size={2} align="start" style={{ minWidth: 0 }}>
+          <strong style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{record.title || '待抓取标题'}</strong>
+          <span style={{ color: '#344054' }}>{record.linked_kol_name || record.kol_name || record.author_name || '未填写 KOL'}</span>
+          <span style={{ color: '#667085' }}>{record.campaign_name || '未关联项目'}</span>
         </Space>
       )
     },
     {
-      title: '抓取状态',
-      dataIndex: 'crawl_status',
-      key: 'crawl_status',
-      width: 120,
-      render: (value) => <Tag color={statusColor(value, 'crawl')}>{statusText(value, 'crawl')}</Tag>
-    },
-    {
-      title: 'AI 状态',
-      dataIndex: 'analysis_status',
-      key: 'analysis_status',
-      width: 130,
-      render: (value) => <Tag color={statusColor(value, 'analysis')}>{statusText(value, 'analysis')}</Tag>
+      title: '状态',
+      key: 'status',
+      width: 150,
+      render: (_, record) => <Space direction="vertical" size={2}>
+        <Tag color={statusColor(record.crawl_status, 'crawl')}>{statusText(record.crawl_status, 'crawl')}</Tag>
+        <Tag color={statusColor(record.analysis_status, 'analysis')}>{statusText(record.analysis_status, 'analysis')}</Tag>
+      </Space>
     },
     { title: '最近抓取', dataIndex: 'last_crawled_at', key: 'last_crawled_at', width: 160, render: (value) => value ? new Date(value).toLocaleString() : '-' },
-    { title: '内容类型', dataIndex: 'content_type', key: 'content_type', width: 100, render: (value) => value || '-' },
-    { title: '主要曝光数', dataIndex: 'primary_exposure_count', key: 'primary_exposure_count', width: 120, render: (value) => value ?? '-' },
-    { title: '曝光口径', dataIndex: 'exposure_metric_type', key: 'exposure_metric_type', width: 180, ellipsis: true, render: (value) => value || '-' },
-    { title: '播放', dataIndex: 'play_count', key: 'play_count', width: 90, render: (value) => value ?? '-' },
-    { title: '点赞', dataIndex: 'like_count', key: 'like_count', width: 90, render: (value) => value ?? '-' },
-    { title: '评论', dataIndex: 'comment_count', key: 'comment_count', width: 90, render: (value) => value ?? '-' },
-    { title: '合作价格', dataIndex: 'cooperation_price', key: 'cooperation_price', width: 120, render: (value) => value || '-' },
+    {
+      title: '数据表现',
+      key: 'performance',
+      width: 180,
+      render: (_, record) => <Space direction="vertical" size={0}>
+        <span>曝光：{record.primary_exposure_count ?? '-'}</span>
+        <span>播放：{record.play_count ?? '-'}</span>
+        <span>点赞：{record.like_count ?? '-'}</span>
+        <span>评论：{record.comment_count ?? '-'}</span>
+      </Space>
+    },
     {
       title: 'AI 报告',
       key: 'ai',
@@ -378,6 +404,25 @@ const VideoAnalysis = () => {
         </Space>
       </Card>
 
+      {activeJob && (
+        <Card className="content-card" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <strong>
+              {activeJob.type === 'crawl' ? '批量抓取' : '批量分析'}任务 #{activeJob.id}
+              {['success', 'partial_failed', 'failed'].includes(activeJob.status) ? ' 已结束' : ' 处理中'}
+            </strong>
+            <Progress
+              percent={activeJob.total ? Math.round((activeJob.processed / activeJob.total) * 100) : 0}
+              status={activeJob.status === 'failed' || activeJob.status === 'query_failed' ? 'exception' : activeJob.status === 'success' ? 'success' : 'active'}
+            />
+            <span style={{ color: activeJob.failed ? '#cf1322' : '#039855', fontSize: 16 }}>
+              已处理 {activeJob.processed} / {activeJob.total}
+              （成功 {activeJob.success} / 失败 {activeJob.failed} / 总数 {activeJob.total}）
+            </span>
+          </Space>
+        </Card>
+      )}
+
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Row gutter={12}>
           <Col span={5}>
@@ -416,7 +461,7 @@ const VideoAnalysis = () => {
           loading={loading}
           rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
           scroll={{ x: 1600 }}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 10, showSizeChanger: true }}
         />
       </Card>
 
@@ -478,15 +523,17 @@ const VideoAnalysis = () => {
           <Space direction="vertical" style={{ width: '100%' }}>
             <div><strong>产品/活动：</strong>{detailVideo.campaign_name || '-'}</div>
             <div><strong>平台：</strong>{detailVideo.platform || '-'}</div>
-            <div><strong>KOL：</strong>{detailVideo.kol_name || detailVideo.author_name || '-'}</div>
+            <div><strong>KOL：</strong>{detailVideo.linked_kol_name || detailVideo.kol_name || detailVideo.author_name || '-'}</div>
             <div><strong>标题：</strong>{detailVideo.title || '-'}</div>
             <div><strong>链接：</strong><a href={detailVideo.source_url} target="_blank" rel="noreferrer">{detailVideo.source_url}</a></div>
             <div><strong>内容类型：</strong>{detailVideo.content_type || '-'}</div>
             <div><strong>主要曝光数：</strong>{detailVideo.primary_exposure_count ?? '-'}</div>
             <div><strong>曝光口径：</strong>{detailVideo.exposure_metric_type || '-'}</div>
             <div><strong>数据完整性：</strong>{detailVideo.data_quality_note || '-'}</div>
-            <div><strong>合作价格：</strong>{detailVideo.cooperation_price || '-'}</div>
-            <div><strong>备注：</strong>{detailVideo.notes || '-'}</div>
+            <div><strong>合作方式：</strong>{detailVideo.cooperation_type === 'product_exchange' ? '产品置换' : detailVideo.cooperation_type === 'paid_product' ? '付费＋产品' : detailVideo.cooperation_type === 'other' ? '其他' : '-'}</div>
+            <div><strong>合作费用：</strong>{detailVideo.cooperation_type === 'product_exchange' ? '现金 0' : detailVideo.collaboration_fee ? `${detailVideo.collaboration_fee} ${detailVideo.collaboration_currency || ''}` : detailVideo.cooperation_price || '-'}</div>
+            <div><strong>跟进人：</strong>{detailVideo.collaboration_owner || '-'}</div>
+            <div><strong>项目备注：</strong>{detailVideo.collaboration_notes || detailVideo.notes || '-'}</div>
             <div><strong>分析场景：</strong>{detailVideo.ai_scene_label || '未分析'}</div>
             <div><strong>错误：</strong>{detailVideo.error_message || '-'}</div>
             <div><strong>AI 摘要：</strong>{detailVideo.ai_summary || '-'}</div>

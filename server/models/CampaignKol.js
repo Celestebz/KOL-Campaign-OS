@@ -17,6 +17,7 @@ module.exports = (sequelize, DataTypes) => {
     quoted_fee: DataTypes.STRING(255),
     final_fee: DataTypes.STRING(255),
     currency: DataTypes.STRING(50),
+    cooperation_type: { type: DataTypes.STRING(50), defaultValue: 'paid_product' },
     deliverables: DataTypes.TEXT,
 
     contact_email_override: DataTypes.STRING(255),
