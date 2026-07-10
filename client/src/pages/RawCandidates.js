@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button, Card, Checkbox, Form, Input, InputNumber, message, Modal, Popconfirm, Progress, Select, Space, Switch, Table, Tag } from 'antd';
-import { CheckOutlined, DeleteOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
+import { Button, Card, Form, Input, InputNumber, message, Modal, Popconfirm, Progress, Select, Space, Table, Tag } from 'antd';
+import { CheckOutlined, DeleteOutlined, EyeOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import { buildFinderTaskRequest, evidenceSignalLabels, normalizeEvidenceSignals } from './finderTaskContract';
 
 const { TextArea } = Input;
 
@@ -10,75 +11,6 @@ const platformOptions = [
   { value: 'instagram', label: 'Instagram' },
   { value: 'tiktok', label: 'TikTok' }
 ];
-
-const searchSourceOptions = [
-  { value: 'maton_agent', label: 'Maton Agent' },
-  { value: 'google_web', label: 'Google Web' },
-  { value: 'youtube_search', label: 'YouTube Search' },
-  { value: 'instagram_search', label: 'Instagram Search' },
-  { value: 'tiktok_search', label: 'TikTok Search' }
-];
-
-const discoveryRouteOptions = [
-  { value: 'target_platform_first', label: 'Target Platform First' },
-  { value: 'youtube_native_search', label: 'YouTube Native Search' },
-  { value: 'google_web_to_youtube', label: 'Google/Web -> YouTube' },
-  { value: 'youtube_to_instagram', label: 'YouTube -> Instagram' },
-  { value: 'google_web_to_instagram', label: 'Google/Web -> Instagram' },
-  { value: 'reddit_to_instagram', label: 'Reddit -> Instagram' },
-  { value: 'seed_posts_to_profile', label: 'Seed Posts/Reels -> Profile' },
-  { value: 'instagram_native_small_batch', label: 'Instagram Native Small Batch (fallback)' },
-  { value: 'google_web_to_tiktok', label: 'Google/Web -> TikTok' },
-  { value: 'youtube_to_tiktok', label: 'YouTube -> TikTok' },
-  { value: 'instagram_to_tiktok', label: 'Instagram -> TikTok' },
-  { value: 'reddit_to_tiktok', label: 'Reddit -> TikTok' },
-  { value: 'tiktok_native_small_batch', label: 'TikTok Native Small Batch (fallback)' },
-  { value: 'spider_web_expansion', label: 'Spider-web Expansion' }
-];
-
-const defaultRoutesForTargets = (targets = []) => {
-  const routes = [];
-  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube', 'spider_web_expansion');
-  if (targets.includes('instagram')) routes.push('youtube_to_instagram', 'google_web_to_instagram', 'seed_posts_to_profile');
-  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'seed_posts_to_profile');
-  return [...new Set(routes.length ? routes : ['youtube_native_search'])];
-};
-
-const cycleOrder = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
-
-const searchIntensityOptions = [
-  { value: 'quick', label: '快速验证' },
-  { value: 'standard', label: '标准搜索（推荐）' },
-  { value: 'full', label: '全量搜索' }
-];
-
-const searchIntensityCycles = {
-  youtube: {
-    quick: ['C1', 'C2', 'C4'],
-    standard: ['C1', 'C2', 'C3', 'C4'],
-    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
-  },
-  instagram: {
-    quick: ['C2', 'C3', 'C5'],
-    standard: ['C1', 'C2', 'C3', 'C5'],
-    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
-  },
-  tiktok: {
-    quick: ['C2', 'C3', 'C5'],
-    standard: ['C2', 'C3', 'C5', 'C6'],
-    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
-  }
-};
-
-const recommendedCyclesForTargets = (targets = [], intensity = 'standard') => {
-  const normalizedTargets = [...new Set((targets.length ? targets : ['youtube']).filter((target) => searchIntensityCycles[target]))];
-  const ids = normalizedTargets.flatMap((target) => searchIntensityCycles[target]?.[intensity] || searchIntensityCycles[target]?.standard || []);
-  return cycleOrder.filter((cycle) => ids.includes(cycle) && cycle !== 'C7');
-};
-
-const sortCycles = (cycles = []) => [...cycles].sort((a, b) => (
-  cycleOrder.indexOf(a.cycle) - cycleOrder.indexOf(b.cycle)
-));
 
 const statusOptions = [
   { value: 'pending', label: '待审核' },
@@ -141,8 +73,6 @@ const safeParseJson = (value) => {
     return null;
   }
 };
-
-const asArray = (value) => (Array.isArray(value) ? value : []);
 
 const normalizeHandle = (value) => String(value || '').trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
 
@@ -241,19 +171,13 @@ const RawCandidates = () => {
   const [taskLoading, setTaskLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [filters, setFilters] = useState({ status: 'pending' });
-  const [modalOpen, setModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [videoEvidence, setVideoEvidence] = useState([]);
   const [videoEvidenceLoading, setVideoEvidenceLoading] = useState(false);
   const [detail, setDetail] = useState(null);
   const [globalRiskRecord, setGlobalRiskRecord] = useState(null);
-  const [form] = Form.useForm();
   const [riskForm] = Form.useForm();
   const [taskForm] = Form.useForm();
-  const executionMode = Form.useWatch('execution_mode', taskForm);
-  const searchIntensity = Form.useWatch('search_intensity', taskForm) || 'standard';
-  const selectedTargetPlatforms = Form.useWatch('target_platforms', taskForm) || [];
-  const recommendedTaskCycles = recommendedCyclesForTargets(selectedTargetPlatforms, searchIntensity);
 
   const campaignOptions = useMemo(() => campaigns.map((item) => ({
     value: item.id,
@@ -308,32 +232,6 @@ const RawCandidates = () => {
     fetchVideoEvidence(displayedFinderTask.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayedFinderTask?.id]);
-
-  useEffect(() => {
-    if (!taskModalOpen) return;
-    taskForm.setFieldValue('cycles', recommendedTaskCycles);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskModalOpen, searchIntensity, selectedTargetPlatforms.join(',')]);
-
-  useEffect(() => {
-    if (!taskModalOpen || !selectedTargetPlatforms.length) return;
-    taskForm.setFieldValue(
-      'discovery_routes',
-      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : defaultRoutesForTargets(selectedTargetPlatforms)
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskModalOpen, executionMode]);
-
-  useEffect(() => {
-    if (!taskModalOpen) return;
-    const targets = taskForm.getFieldValue('target_platforms') || [];
-    if (!targets.length) return;
-    taskForm.setFieldValue(
-      'discovery_routes',
-      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : defaultRoutesForTargets(targets)
-    );
-    if (executionMode === 'video_evidence_finder') taskForm.setFieldValue('cycles', ['C2', 'C3', 'C6']);
-  }, [executionMode, taskModalOpen, taskForm]);
 
   const fetchCampaigns = async () => {
     const res = await axios.get('/api/campaigns');
@@ -432,31 +330,11 @@ const RawCandidates = () => {
       message.warning('请先选择一个已发布策略');
       return;
     }
-    const strategyCycles = sortCycles(selectedStrategy.search_strategy || []);
-    const targetPlatforms = [
-      selectedStrategy.primary_platform,
-      ...(selectedStrategy.secondary_platforms || []),
-      ...(selectedStrategy.finder_handoff?.required_platforms || [])
-    ].filter(Boolean);
-    const searchSources = strategyCycles.flatMap((cycle) => (
-      Array.isArray(cycle.search_sources) ? cycle.search_sources : String(cycle.search_sources || '').split(/[,，;]/)
-    )).map((value) => String(value || '').trim()).filter(Boolean);
-    const discoveryRoutes = strategyCycles.flatMap((cycle) => (
-      Array.isArray(cycle.discovery_routes) ? cycle.discovery_routes : String(cycle.discovery_routes || '').split(/[,，;]/)
-    )).map((value) => String(value || '').trim()).filter(Boolean);
-    const uniqueTargetPlatforms = [...new Set(targetPlatforms.length ? targetPlatforms : ['youtube'])];
-    const searchIntensityValue = 'standard';
-    taskForm.setFieldsValue({
-      search_intensity: searchIntensityValue,
-      cycles: recommendedCyclesForTargets(uniqueTargetPlatforms, searchIntensityValue),
-      discovery_routes: [...new Set(discoveryRoutes.length ? discoveryRoutes : defaultRoutesForTargets(uniqueTargetPlatforms))],
-      search_sources: [...new Set(searchSources.length ? searchSources : ['maton_agent', 'google_web', 'youtube_search'])],
-      target_platforms: uniqueTargetPlatforms,
-      seed_urls: '',
-      execution_mode: 'video_evidence_finder',
-      limit_per_platform: 10,
-      allow_fallback: true
-    });
+    const targetPlatform = selectedStrategy.primary_platform
+      || selectedStrategy.finder_handoff?.required_platforms?.[0]
+      || selectedStrategy.secondary_platforms?.[0]
+      || 'youtube';
+    taskForm.setFieldsValue({ target_platform: targetPlatform, limit: 10 });
     setTaskModalOpen(true);
   };
 
@@ -468,15 +346,12 @@ const RawCandidates = () => {
     const values = await taskForm.validateFields();
     setTaskLoading(true);
     try {
-      const recommendedCycles = recommendedCyclesForTargets(values.target_platforms || [], values.search_intensity || 'standard');
-      const selectedCycles = [...(values.cycles || [])].sort().join(',');
-      const expectedCycles = [...recommendedCycles].sort().join(',');
-      await axios.post('/api/finder-tasks', {
-        strategy_id: selectedStrategy.id,
-        ...values,
-        cycles_source: selectedCycles === expectedCycles ? 'intensity' : 'manual'
-      });
-      message.success('Finder 搜索任务已启动');
+      await axios.post('/api/finder-tasks', buildFinderTaskRequest({
+        strategyId: selectedStrategy.id,
+        targetPlatform: values.target_platform,
+        limit: values.limit
+      }));
+      message.success('视频证据寻找任务已启动');
       setTaskModalOpen(false);
       fetchFinderTasks(selectedStrategy.id);
       fetchCandidates();
@@ -485,46 +360,6 @@ const RawCandidates = () => {
     } finally {
       setTaskLoading(false);
     }
-  };
-
-  const updateTaskRoutesForTargets = (targets = []) => {
-    taskForm.setFieldValue(
-      'discovery_routes',
-      executionMode === 'video_evidence_finder' ? ['target_platform_first'] : defaultRoutesForTargets(targets)
-    );
-    taskForm.setFieldValue('cycles', executionMode === 'video_evidence_finder' ? ['C2', 'C3', 'C6'] : recommendedCyclesForTargets(targets, taskForm.getFieldValue('search_intensity') || 'standard'));
-  };
-
-  const openCreate = () => {
-    if (!selectedStrategy) {
-      message.warning('请先选择一个已发布策略');
-      return;
-    }
-    form.resetFields();
-    form.setFieldsValue({
-      strategy_id: selectedStrategy.id,
-      campaign_id: selectedStrategy.campaign_id,
-      platform: selectedStrategy.primary_platform || 'youtube',
-      status: 'new',
-      source: 'manual'
-    });
-    setModalOpen(true);
-  };
-
-  const handleCreate = async () => {
-    if (!selectedStrategy) {
-      message.warning('请先选择一个已发布策略');
-      return;
-    }
-    const values = await form.validateFields();
-    await axios.post('/api/raw-candidates', {
-      ...values,
-      strategy_id: selectedStrategy.id,
-      campaign_id: selectedStrategy.campaign_id
-    });
-    message.success('候选已保存');
-    setModalOpen(false);
-    fetchCandidates();
   };
 
   const approveOne = async (record) => {
@@ -631,7 +466,6 @@ const RawCandidates = () => {
         </Space>
       )
     },
-    { title: '搜索轮次', dataIndex: 'search_cycle', key: 'search_cycle', width: 110, render: (v) => v || '-' },
     { title: 'KOL画像', dataIndex: 'matched_persona', key: 'matched_persona', width: 150, render: (v) => v || '未生成' },
     { title: '发现路径', dataIndex: 'discovery_route', key: 'discovery_route', width: 170, render: (v) => v ? <Tag color="blue">{v}</Tag> : '-' },
     { title: '来源平台', dataIndex: 'source_platform', key: 'source_platform', width: 140, render: (v) => v || '-' },
@@ -684,25 +518,11 @@ const RawCandidates = () => {
     }
   ];
 
-  const cycleOptions = sortCycles(selectedStrategy?.search_strategy?.length ? selectedStrategy.search_strategy : [
-    { cycle: 'C1', name: '竞品评测' },
-    { cycle: 'C2', name: '品类搜索' },
-    { cycle: 'C3', name: '使用场景搜索' },
-    { cycle: 'C4', name: '功能/技术搜索' },
-    { cycle: 'C5', name: '社区/受众搜索' },
-    { cycle: 'C6', name: '平台内搜索' },
-    { cycle: 'C7', name: '线索扩展' }
-  ]).map((cycle) => ({
-    label: `${cycle.cycle} ${cycle.name}`,
-    value: cycle.cycle
-  }));
-
   const latestTask = displayedFinderTask;
-  const expansionSummary = asArray(latestTask?.raw_response_summary).find((item) => item.expansion_cycle === 'C7' && item.expansion_status === 'deferred');
-  const taskPercent = latestTask?.total_cycles
-    ? Math.round(((latestTask.completed_cycles || 0) / latestTask.total_cycles) * 100)
-    : 0;
-
+  const analyzedEvidenceCount = videoEvidence.filter((item) => item.finder_analysis_status === 'success').length;
+  const taskPercent = videoEvidence.length
+    ? Math.round((analyzedEvidenceCount / videoEvidence.length) * 100)
+    : latestTask?.status === 'success' ? 100 : 0;
   return (
     <div>
       <div className="page-header">
@@ -720,7 +540,6 @@ const RawCandidates = () => {
           <Input.Search allowClear placeholder="搜索 KOL、链接、关键词、国家" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchCandidates} style={{ width: 300 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchCandidates}>刷新</Button>
           <Button type="primary" icon={<SearchOutlined />} disabled={!selectedStrategy} onClick={openTaskModal}>创建 Finder 任务</Button>
-          <Button type="primary" icon={<PlusOutlined />} disabled={!selectedStrategy} onClick={openCreate}>新增候选</Button>
         </Space>
       </Card>
 
@@ -736,26 +555,18 @@ const RawCandidates = () => {
             <>
               <Progress percent={taskPercent} size="small" />
               <span style={{ color: '#666' }}>
-                {latestTask.current_cycle ? `当前轮次：${latestTask.current_cycle}；` : ''}
                 {latestTask.error_message || latestTask.name}
               </span>
               {latestTask.provider_attempts?.length ? (
                 <Space wrap size={[4, 4]}>
                   {latestTask.provider_attempts.slice(0, 6).map((attempt, index) => (
-                    <Tag key={`${attempt.cycle}-${attempt.search_source}-${attempt.target_platform}-${index}`} color={attempt.ok ? 'green' : 'red'}>
-                      {attempt.cycle} / {attempt.search_source || attempt.provider} → {attempt.target_platform || attempt.platform}: {attempt.ok ? 'ok' : attempt.error}
+                    <Tag key={`${attempt.search_source || attempt.provider}-${attempt.target_platform || attempt.platform}-${index}`} color={attempt.ok ? 'green' : 'red'}>
+                      {attempt.search_source || attempt.provider} → {attempt.target_platform || attempt.platform}: {attempt.ok ? 'ok' : attempt.error}
                     </Tag>
                   ))}
                 </Space>
               ) : null}
-              {expansionSummary ? (
-                <Space wrap>
-                  <Tag color="default">C7 线索扩展：等待种子候选</Tag>
-                  <span style={{ color: '#666' }}>{expansionSummary.expansion_reason || 'waiting_for_seeds'}</span>
-                </Space>
-              ) : null}
-              {safeParseJson(latestTask?.raw_request)?.execution_mode === 'video_evidence_finder' || videoEvidence.length ? (
-                <div style={{ marginTop: 8 }}>
+              <div style={{ marginTop: 8 }}>
                   <Space wrap style={{ marginBottom: 8 }}>
                     <Tag color="blue">阶段1 视频证据：{videoEvidence.length}</Tag>
                     <Tag color="purple">阶段2 已评分：{videoEvidence.filter((item) => item.finder_analysis_status === 'success').length}</Tag>
@@ -774,9 +585,24 @@ const RawCandidates = () => {
                       { title: '平台', dataIndex: 'target_platform', key: 'target_platform', width: 100, render: (v) => <Tag>{v}</Tag> },
                       { title: '视频', dataIndex: 'title', key: 'title', width: 260, render: (v, record) => <a href={record.video_url} target="_blank" rel="noreferrer">{v || record.video_url}</a> },
                       { title: '作者', dataIndex: 'author_name', key: 'author_name', width: 160 },
-                      { title: '搜索词', dataIndex: 'source_query', key: 'source_query', width: 180 },
-                      { title: '信号', dataIndex: 'source_signal', key: 'source_signal', width: 120, render: (v) => <Tag color="cyan">{v}</Tag> },
-                      { title: '优先级', dataIndex: 'candidate_priority_score', key: 'candidate_priority_score', width: 90, render: (v) => v ?? '-' },
+                      { title: '搜索词', dataIndex: 'source_query', key: 'source_query', width: 180 },                      {
+                        title: '线索',
+                        dataIndex: 'evidence_signals',
+                        key: 'evidence_signals',
+                        width: 220,
+                        render: (value) => {
+                          const signals = normalizeEvidenceSignals(value);
+                          return signals.length ? (
+                            <Space wrap size={[4, 4]}>
+                              {signals.map((item) => (
+                                <Tag key={item.signal} color="cyan" title={item.reason}>
+                                  {evidenceSignalLabels[item.signal] || item.signal}
+                                </Tag>
+                              ))}
+                            </Space>
+                          ) : '-';
+                        }
+                      },                      { title: '优先级', dataIndex: 'candidate_priority_score', key: 'candidate_priority_score', width: 90, render: (v) => v ?? '-' },
                       { title: '最高信号', dataIndex: 'content_relevance_score', key: 'content_relevance_score', width: 100, render: (v) => v ?? '-' },
                       { title: '证据强度', dataIndex: 'evidence_strength_score', key: 'evidence_strength_score', width: 90, render: (v) => v ?? '-' },
                       { title: '创作者匹配', dataIndex: 'creator_fit_score', key: 'creator_fit_score', width: 100, render: (v) => v ?? '-' },
@@ -785,11 +611,10 @@ const RawCandidates = () => {
                     ]}
                     scroll={{ x: 1500 }}
                   />
-                </div>
-              ) : null}
+              </div>
             </>
           ) : (
-            <span style={{ color: '#666' }}>选择已发布策略后，可以按搜索强度创建 Finder 任务。C7 线索扩展会在有种子候选后再生成。</span>
+            <span style={{ color: '#666' }}>选择已发布策略后，选择一个目标平台即可开始寻找视频证据。</span>
           )}
         </Space>
       </Card>
@@ -817,106 +642,18 @@ const RawCandidates = () => {
         />
       </Card>
 
-      <Modal title="新增候选" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={handleCreate} width={820}>
-        <Form form={form} layout="vertical">
-          <Form.Item label="策略" name="strategy_id">
-            <Select disabled options={strategyOptions} />
-          </Form.Item>
-          <Form.Item label="KOL 名称" name="kol_name" rules={[{ required: true, message: '请输入 KOL 名称' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item label="项目/产品" name="campaign_id">
-            <Select disabled options={campaignOptions} />
-          </Form.Item>
-          <Form.Item label="平台" name="platform">
-            <Select options={platformOptions} />
-          </Form.Item>
-          <Form.Item label="主页链接" name="profile_url">
-            <Input />
-          </Form.Item>
-          <Form.Item label="来源视频链接（可选）" name="video_url">
-            <Input />
-          </Form.Item>
-          <Form.Item label="来源视频标题（可选）" name="video_title">
-            <Input />
-          </Form.Item>
-          <Space style={{ width: '100%' }} align="start">
-            <Form.Item label="联系人" name="contact_name">
-              <Input style={{ width: 180 }} />
-            </Form.Item>
-            <Form.Item label="Email" name="email">
-              <Input style={{ width: 220 }} />
-            </Form.Item>
-            <Form.Item label="国家地区" name="country_region">
-              <Input style={{ width: 160 }} />
-            </Form.Item>
-          </Space>
-          <Space style={{ width: '100%' }} align="start">
-            <Form.Item label="粉丝量" name="followers">
-              <Input style={{ width: 160 }} />
-            </Form.Item>
-            <Form.Item label="平均播放" name="avg_views">
-              <Input style={{ width: 160 }} />
-            </Form.Item>
-            <Form.Item label="AI评分" name="ai_score">
-              <InputNumber min={0} max={100} style={{ width: 120 }} />
-            </Form.Item>
-          </Space>
-          <Form.Item label="匹配关键词" name="matched_keywords">
-            <Input />
-          </Form.Item>
-          <Space style={{ width: '100%' }} align="start">
-            <Form.Item label="搜索轮次" name="search_cycle">
-              <Input placeholder="C1 / C2 / Competitor Reviews..." style={{ width: 220 }} />
-            </Form.Item>
-            <Form.Item label="匹配 KOL画像" name="matched_persona">
-              <Input placeholder="主画像 / 次画像..." style={{ width: 260 }} />
-            </Form.Item>
-          </Space>
-          <Form.Item label="AI匹配理由 / 备注" name="ai_match_reason">
-            <TextArea rows={4} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal title="创建寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText="启动搜索" width={760}>
+      <Modal title="创建视频证据寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText="开始找视频" width={520}>
         <Form form={taskForm} layout="vertical">
           <Form.Item label="策略">
             <Input value={selectedStrategy?.name || ''} disabled />
           </Form.Item>
-          <Form.Item label="执行模式" name="execution_mode" rules={[{ required: true, message: '请选择执行模式' }]}>
-            <Select options={[
-              { value: 'video_evidence_finder', label: '视频证据寻找' },
-              { value: 'system_provider', label: 'System Provider' }
-            ]} />
+          <Form.Item label="目标平台" name="target_platform" rules={[{ required: true, message: '请选择一个目标平台' }]}>
+            <Select options={platformOptions} />
           </Form.Item>
-          <Form.Item label="搜索强度" name="search_intensity" rules={[{ required: true, message: '请选择搜索强度' }]}>
-            <Select options={searchIntensityOptions} />
+          <Form.Item label="视频数量上限" name="limit" rules={[{ required: true, message: '请输入视频数量上限' }]}>
+            <InputNumber min={1} max={50} style={{ width: '100%' }} />
           </Form.Item>
-          <div style={{ marginBottom: 16, color: '#666' }}>
-            推荐轮次：{recommendedTaskCycles.length ? recommendedTaskCycles.join(' / ') : '请先选择目标平台'}。C7 线索扩展会在有种子候选后作为二阶段任务生成。
-          </div>
-          <Form.Item label="发现路径" name="discovery_routes" rules={[{ required: true, message: '请选择至少一个发现路径' }]}>
-            <Checkbox.Group options={discoveryRouteOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
-          </Form.Item>
-          <Form.Item label="种子链接" name="seed_urls" tooltip="粘贴 Instagram post、reel 或 profile 链接，每行一个。">
-            <TextArea rows={3} placeholder={"https://www.instagram.com/reel/...\nhttps://www.instagram.com/example/"} />
-          </Form.Item>
-          <Form.Item label="高级：手动搜索轮次" name="cycles" rules={[{ required: true, message: '请选择至少一个搜索轮次' }]} tooltip="默认按搜索强度推荐。手动选择会随任务一起提交；无种子时 C7 会延后。">
-            <Checkbox.Group options={cycleOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
-          </Form.Item>
-          <Form.Item label="高级搜索源" name="search_sources" tooltip="兼容旧版寻找执行器的高级设置。Instagram V2 默认不使用站内主页搜索。">
-            <Checkbox.Group options={searchSourceOptions} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 8 }} />
-          </Form.Item>
-          <Form.Item label="目标 KOL 平台" name="target_platforms" rules={[{ required: true, message: '请选择至少一个目标平台' }]}>
-            <Checkbox.Group options={platformOptions} onChange={updateTaskRoutesForTargets} />
-          </Form.Item>
-          <Form.Item label="每轮每平台上限" name="limit_per_platform" rules={[{ required: true, message: '请输入上限' }]}>
-            <InputNumber min={1} max={50} style={{ width: 180 }} />
-          </Form.Item>
-          <Form.Item label="主搜索源失败时尝试备用搜索源" name="allow_fallback" valuePropName="checked">
-            <Switch />
-          </Form.Item>
+          <span style={{ color: '#666' }}>系统会直接在目标平台寻找视频，再由 AI 判断每条视频命中的一个或多个线索。</span>
         </Form>
       </Modal>
 
@@ -926,7 +663,6 @@ const RawCandidates = () => {
             <div><strong>KOL：</strong>{detail.kol_name}</div>
             <div><strong>项目：</strong>{detail.campaign_name || '-'}</div>
             <div><strong>策略：</strong>{detail.strategy_name || '未绑定策略'}</div>
-            <div><strong>搜索轮次：</strong>{detail.search_cycle || '-'}</div>
             <div><strong>匹配 KOL画像：</strong>{detail.matched_persona || '未生成'}</div>
             <div><strong>平台：</strong>{detail.platform || '-'}</div>
             <div><strong>来源视频：</strong>{detail.video_url ? <a href={detail.video_url} target="_blank" rel="noreferrer">{detail.video_title || detail.video_url}</a> : '-'}</div>

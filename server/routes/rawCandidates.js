@@ -419,68 +419,11 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
-  try {
-    const data = req.body || {};
-    const kolName = clean(data.kol_name || data.name);
-    if (!kolName) return res.status(400).json({ success: false, error: 'KOL name is required' });
-    const strategy = await getReadyStrategy(data.strategy_id);
-
-    const fields = [
-        'finder_task_id', 'campaign_id', 'strategy_id', 'platform', 'kol_name', 'contact_name',
-      'profile_url', 'video_url', 'video_title', 'followers', 'avg_views',
-      'email', 'phone', 'country_region', 'matched_keywords', 'ai_score',
-      'ai_match_reason', 'status', 'source', 'raw_data', 'search_cycle',
-      'matched_persona', 'scoring_breakdown', 'discovery_route', 'source_platform',
-      'target_platform', 'source_agent', 'evidence_url', 'evidence_title',
-      'evidence_type', 'source_query', 'rejection_scope', 'rejection_category', 'rejection_reason'
-    ];
-    const values = [
-      data.finder_task_id || null,
-      data.campaign_id || strategy.campaign_id || 1,
-      strategy.id,
-      clean(data.platform),
-      kolName,
-      clean(data.contact_name),
-      clean(data.profile_url),
-      clean(data.video_url),
-      clean(data.video_title),
-      clean(data.followers),
-      clean(data.avg_views),
-      clean(data.email),
-      clean(data.phone),
-      clean(data.country_region),
-      clean(data.matched_keywords),
-      normalizeNumber(data.ai_score),
-      clean(data.ai_match_reason),
-      clean(data.status) || 'new',
-      clean(data.source) || 'manual',
-      JSON.stringify(data.raw_data || data),
-      clean(data.search_cycle),
-      clean(data.matched_persona),
-      typeof data.scoring_breakdown === 'string' ? data.scoring_breakdown : JSON.stringify(data.scoring_breakdown || {}),
-      clean(data.discovery_route),
-      clean(data.source_platform),
-      clean(data.target_platform || data.platform),
-      clean(data.source_agent || data.source),
-      clean(data.evidence_url),
-      clean(data.evidence_title),
-      clean(data.evidence_type),
-      clean(data.source_query),
-      clean(data.rejection_scope),
-      clean(data.rejection_category),
-      clean(data.rejection_reason)
-    ];
-    const placeholders = fields.map(() => '?').join(', ');
-    const result = await dbOperations.run(
-      `INSERT INTO raw_candidates (${fields.join(', ')}) VALUES (${placeholders})`,
-      values
-    );
-    const row = await dbOperations.get('SELECT * FROM raw_candidates WHERE id = ?', [result.id]);
-    res.json({ success: true, data: row, message: 'Raw candidate saved' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
+router.post('/', (req, res) => {
+  res.status(410).json({
+    success: false,
+    error: 'Direct Raw Candidate creation is retired. Generate candidates from analyzed video evidence.'
+  });
 });
 
 router.post('/batch-approve', async (req, res) => {

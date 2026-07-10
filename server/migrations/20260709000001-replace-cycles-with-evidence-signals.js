@@ -10,54 +10,40 @@ function assertDevelopment(operation) {
   }
 }
 
-const BUSINESS_TABLES = [
-  'analysis_job_items', 'analysis_jobs', 'campaign_kols', 'campaign_videos',
-  'raw_candidates', 'finder_video_evidence', 'video_ai_analysis_results',
-  'video_comments', 'video_snapshots', 'video_sources', 'finder_tasks',
-  'kol_platform_accounts', 'customers', 'kol_strategies', 'campaigns'
-];
+async function removeColumnIfPresent(queryInterface, table, column) {
+  const definition = await queryInterface.describeTable(table);
+  if (definition[column]) await queryInterface.removeColumn(table, column);
+}
 
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, Sequelize) {
     const { DataTypes } = Sequelize;
-    assertDevelopment('replace cycles with evidence signals in migration up');
+    assertDevelopment('replace legacy finder schema with evidence signals');
 
-    await queryInterface.sequelize.transaction(async (transaction) => {
-      try {
-        await queryInterface.sequelize.query('SET FOREIGN_KEY_CHECKS = 0', { transaction });
+    for (const [table, column] of [
+      ['kol_strategies', 'search_strategy'],
+      ['finder_tasks', 'target_platforms'],
+      ['finder_tasks', 'search_cycles'],
+      ['finder_tasks', 'current_cycle'],
+      ['finder_tasks', 'total_cycles'],
+      ['finder_tasks', 'completed_cycles'],
+      ['raw_candidates', 'search_cycle']
+    ]) {
+      await removeColumnIfPresent(queryInterface, table, column);
+    }
 
-        // Truncate all business tables in foreign-key-safe order (children before parents).
-        for (const table of BUSINESS_TABLES) {
-          await queryInterface.sequelize.query(`TRUNCATE TABLE \`${table}\``, { transaction });
-        }
-
-        // Drop legacy cycle columns.
-        await queryInterface.removeColumn('kol_strategies', 'search_strategy', { transaction });
-        await queryInterface.removeColumn('finder_tasks', 'search_cycles', { transaction });
-        await queryInterface.removeColumn('finder_tasks', 'current_cycle', { transaction });
-        await queryInterface.removeColumn('finder_tasks', 'total_cycles', { transaction });
-        await queryInterface.removeColumn('finder_tasks', 'completed_cycles', { transaction });
-        await queryInterface.removeColumn('raw_candidates', 'search_cycle', { transaction });
-
-        // Add new evidence_signals column for video evidence signal scoring.
-        await queryInterface.addColumn('video_ai_analysis_results', 'evidence_signals', {
-          type: DataTypes.TEXT('long'),
-          allowNull: true
-        }, { transaction });
-
-        // Reset auto-increment counters for cleared business tables.
-        for (const table of BUSINESS_TABLES) {
-          await queryInterface.sequelize.query(`ALTER TABLE \`${table}\` AUTO_INCREMENT = 1`, { transaction });
-        }
-      } finally {
-        await queryInterface.sequelize.query('SET FOREIGN_KEY_CHECKS = 1', { transaction });
-      }
-    });
+    const analysisDefinition = await queryInterface.describeTable('video_ai_analysis_results');
+    if (!analysisDefinition.evidence_signals) {
+      await queryInterface.addColumn('video_ai_analysis_results', 'evidence_signals', {
+        type: DataTypes.TEXT('long'),
+        allowNull: true
+      });
+    }
   },
 
-  async down(queryInterface) {
-    assertDevelopment('replace cycles with evidence signals in migration down');
+  async down() {
+    assertDevelopment('replace legacy finder schema with evidence signals in migration down');
     throw new Error('Down migration is not supported for this destructive schema replacement.');
   }
 };

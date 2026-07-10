@@ -1,56 +1,62 @@
 ---
 name: kol-strategy
-description: Generate a structured KOL campaign strategy before KOL Finder. Use when planning creator search for a product, campaign, brand, market, platform, or KOL persona; when creating AI strategy drafts in KOL Campaign OS; or before approving Finder raw candidates into the KOL library.
+description: Use when planning creator discovery for a product, campaign, brand, market, target platform, or KOL persona, or when KOL Campaign OS needs a structured strategy before Finder runs.
 ---
 
 # KOL Strategy
 
-## Role
+## Purpose
 
-Use this skill before KOL Finder. Convert a campaign brief into a structured strategy that can guide search, scoring, approval, and reporting.
-
-The required flow is:
+Convert a campaign brief into a structured strategy that guides target-platform video discovery, evidence interpretation, creator scoring, and human approval.
 
 ```text
-Campaign -> KOL Strategy -> KOL Finder -> Raw Candidates -> Approved KOL -> Campaign KOL
+Campaign -> KOL Strategy -> Video Evidence Finder -> Raw Candidates -> Human Approval
 ```
 
-Do not move to Finder until the product, target user, platform priority, KOL persona, search path, scoring logic, and Finder handoff are clear enough.
+Do not start Finder until the product, target user, target platform, KOL persona, evidence guidance, scoring logic, and Finder handoff are clear.
 
 ## Workflow
 
-1. Extract campaign facts from the user's brief or system data.
-2. Ask only for missing high-impact inputs: target market, main platform, campaign goal, product/category, price position, target buyer, competitors, budget or KOL tier constraints, and desired follower/view range.
-3. Generate five structured sections:
+1. Extract known campaign facts.
+2. Ask only for missing high-impact inputs: product, market/language, campaign goal, target platform, audience, competitors, creator tier, and follower/view constraints.
+3. Produce four sections:
    - Product Breakdown
    - KOL Persona
-   - Search Strategy
    - Scoring Weights
    - Finder Handoff
-4. Keep the strategy brand-agnostic and reusable across industries. Do not hard-code MOOER or any previous employer/product.
-5. Return structured output only when used by the Web app. For exact JSON keys and examples, read `references/strategy-output-schema.md`.
+4. For Web app generation, return valid JSON only using `references/strategy-output-schema.md`.
+
+## Evidence Guidance
+
+Define five semantic labels inside `finder_handoff.evidence_signals`:
+
+- `competitor`: the video reviews, compares, replaces, or discusses a competitor or alternative.
+- `category`: the video demonstrates credible history in the product category.
+- `use_case`: the video shows a target user problem, workflow, situation, or buying trigger.
+- `feature`: the video demonstrates a required function, technical proof point, or differentiating feature.
+- `community`: the video demonstrates access to a relevant audience, niche, profession, or interest community.
+
+These labels are independent. AI assigns zero or more evidence signals after a video is found, and one video may support multiple labels. They are not execution steps and do not determine how many searches run.
 
 ## Strategy Rules
 
-- Make the product breakdown useful for creator search, not generic marketing copy.
-- Describe who can credibly demonstrate, review, compare, or make content about the product.
-- Include exclusion personas to prevent irrelevant high-follower creators from entering the shortlist.
-- Build the 7 search cycles in this order: competitor reviews, category search, use-case search, feature search, community search, platform native search, spider-web expansion.
-- Keep scoring weights stable unless the campaign goal strongly suggests adjustment.
-- Treat risk as a deduction, not a positive score.
-- Finder handoff must be actionable: platforms, keywords, exclusion terms, minimum evidence, thresholds, and tier rules.
-- If the user has not provided creator size requirements, ask for desired KOL tier or follower/view range before finalizing the Strategy. If the user says "you decide", state the chosen tier rules explicitly in `finder_handoff`.
+- Make product facts useful for video discovery and evidence judgment, not generic marketing copy.
+- Describe creators who can credibly demonstrate, review, compare, teach, or use the product.
+- Include exclusion personas and exclusion keywords.
+- Provide discovery keywords broad enough to find relevant videos on the selected target platform.
+- Keep scoring weights stable unless the campaign goal clearly justifies adjustment.
+- Treat risk as a deduction, never a positive score.
+- Make Finder handoff actionable: recommended platforms, discovery keywords, evidence guidance, follower/view constraints, approval threshold, and tier rules.
+- If creator size is unspecified, ask for a tier or range. If the user says to decide, record the chosen constraints explicitly.
 
 ## Goal Bias
 
 - Awareness: favor reach, content clarity, audience scale, and platform fit.
-- Review: favor testing credibility, depth, comparison history, and proof quality.
+- Review: favor testing credibility, comparison history, and proof depth.
 - Affiliate / Conversion: favor buyer intent, trust, CTA behavior, and conversion potential.
-- UGC / Ads Asset: favor visual style, hook repeatability, licensing fit, and short-form quality.
+- UGC / Ads Asset: favor visual style, repeatable hooks, licensing fit, and short-form quality.
 - Expert Credibility: favor expertise, professional trust, proof depth, and low brand-safety risk.
 
 ## Output Contract
 
 When KOL Campaign OS asks for a strategy draft, return valid JSON only. Do not include Markdown, comments, or chain-of-thought.
-
-Read `references/strategy-output-schema.md` for the required schema.

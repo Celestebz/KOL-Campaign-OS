@@ -11,7 +11,6 @@ module.exports = (sequelize, DataTypes) => {
     notes: DataTypes.TEXT,
     search_sources: DataTypes.TEXT,
     discovery_routes: DataTypes.TEXT,
-    target_platforms: DataTypes.TEXT,
     success_count: { type: DataTypes.INTEGER, defaultValue: 0 },
     failed_count: { type: DataTypes.INTEGER, defaultValue: 0 },
     provider_attempts: DataTypes.TEXT,

@@ -70,14 +70,7 @@ async function seedBaseData() {
   return { campaign, strategy };
 }
 
-const MIGRATION_BUSINESS_TABLES = [
-  'analysis_job_items', 'analysis_jobs', 'campaign_kols', 'campaign_videos',
-  'raw_candidates', 'finder_video_evidence', 'video_ai_analysis_results',
-  'video_comments', 'video_snapshots', 'video_sources', 'finder_tasks',
-  'kol_platform_accounts', 'customers', 'kol_strategies', 'campaigns'
-];
-
-test('migration replaces cycles with evidence signals and clears business tables', async () => {
+test('migration replaces cycle schema without clearing business data', async () => {
   await resetTestDatabase();
 
   // Simulate the migration history table that Umzug normally maintains.
@@ -94,7 +87,7 @@ test('migration replaces cycles with evidence signals and clears business tables
   // Seed configuration rows that must survive the destructive migration.
   await models.ApiSetting.create({ provider: 'test-provider', api_key: 'test-key' });
 
-  // Seed business rows that must be cleared.
+  // Seed business rows that must survive until the final explicit reset.
   const campaign = await models.Campaign.create({ name: 'Migration Test Campaign', brand: 'Test', product: 'Test' });
   const strategy = await models.KolStrategy.create({
     campaign_id: campaign.id,
@@ -112,7 +105,7 @@ test('migration replaces cycles with evidence signals and clears business tables
     status: 'draft'
   });
 
-  // Run the destructive replacement migration.
+  // Run the schema replacement migration.
   await replaceCyclesMigration.up(sequelize.getQueryInterface(), Sequelize);
   await sequelize.query(
     `INSERT INTO sequelize_meta (name) VALUES ('20260709000001-replace-cycles-with-evidence-signals.js')`
@@ -129,25 +122,15 @@ test('migration replaces cycles with evidence signals and clears business tables
   );
   assert.ok(Number(metaCount) > 0, 'sequelize_meta should retain rows');
 
-  // Business tables must be empty.
-  for (const table of MIGRATION_BUSINESS_TABLES) {
-    const [{ count }] = await sequelize.query(
-      `SELECT COUNT(*) AS count FROM \`${table}\``,
-      { type: sequelize.QueryTypes.SELECT }
-    );
-    assert.equal(Number(count), 0, `${table} should be empty after migration`);
-  }
-
-  // Auto-increment counters must be reset.
-  const postMigrationCampaign = await models.Campaign.create({
-    name: 'Post Migration Campaign', brand: 'Test', product: 'Test'
-  });
-  assert.equal(postMigrationCampaign.id, 1, 'auto-increment counter should be reset');
+  assert.equal(await models.Campaign.count(), 2, 'campaigns must survive schema migration');
+  assert.equal(await models.KolStrategy.count(), 1, 'strategies must survive schema migration');
+  assert.equal(await models.FinderTask.count(), 1, 'finder tasks must survive schema migration');
 
   // Legacy cycle columns must be removed.
   const legacyColumns = [
     { table: 'kol_strategies', column: 'search_strategy' },
     { table: 'finder_tasks', column: 'search_cycles' },
+    { table: 'finder_tasks', column: 'target_platforms' },
     { table: 'finder_tasks', column: 'current_cycle' },
     { table: 'finder_tasks', column: 'total_cycles' },
     { table: 'finder_tasks', column: 'completed_cycles' },
@@ -193,6 +176,12 @@ async function startMockAiServer() {
               feature_fit: 60,
               community_fit: 70
             },
+            evidence_signals: [
+              { signal: 'competitor', reason: 'Compares a competing product' },
+              { signal: 'feature', reason: 'Demonstrates the required feature' },
+              { signal: 'feature', reason: 'Duplicate signal' },
+              { signal: 'native_platform', reason: 'Legacy signal' }
+            ],
             evidence_strength_score: 88,
             creator_profile_scores: {
               creator_tone_fit: 82,
@@ -259,6 +248,34 @@ test('finder subtasks routes return 410 Gone', async () => {
   assert.equal(res3.status, 410);
 });
 
+test('finder task accepts one target platform and rejects legacy execution fields', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+
+  const created = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    target_platform: 'youtube',
+    limit: 10
+  });
+  assert.equal(created.status, 200);
+  const rawRequest = safeParseJson(created.body.data.raw_request);
+  assert.equal(rawRequest.target_platform, 'youtube');
+  assert.equal(Object.prototype.hasOwnProperty.call(rawRequest, 'cycles'), false);
+
+  for (const legacyField of ['cycles', 'search_cycles', 'search_intensity', 'execution_mode', 'target_platforms']) {
+    const response = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'youtube',
+      [legacyField]: []
+    });
+    assert.equal(response.status, 400);
+    assert.match(response.body.error, /Legacy Finder fields are no longer supported/);
+  }
+});
+
 test('video evidence finder uses selected YouTube Maton Gateway provider', async () => {
   await resetTestDatabase();
   await initDatabase();
@@ -279,15 +296,14 @@ test('video evidence finder uses selected YouTube Maton Gateway provider', async
     .post('/api/finder-tasks')
     .send({
       strategy_id: strategy.id,
-      execution_mode: 'video_evidence_finder',
-      target_platforms: ['youtube'],
-      limit_per_platform: 5
+      target_platform: 'youtube',
+      limit: 5
     });
 
   assert.equal(res.status, 200);
   assert.equal(res.body.success, true);
   assert.deepEqual(JSON.parse(res.body.data.search_sources), ['maton_agent']);
-  assert.deepEqual(JSON.parse(res.body.data.raw_request).search_sources, ['maton_agent']);
+  assert.equal(JSON.parse(res.body.data.raw_request).target_platform, 'youtube');
 });
 
 test('finder task -> video evidence -> video_sources reuse', async () => {
@@ -302,9 +318,7 @@ test('finder task -> video evidence -> video_sources reuse', async () => {
     .post('/api/finder-tasks')
     .send({
       strategy_id: strategy.id,
-      name: 'Test Finder Task',
-      platform: 'youtube',
-      execution_mode: 'system_provider'
+      target_platform: 'youtube'
     });
   assert.equal(createRes.status, 200);
   assert.equal(createRes.body.success, true);
@@ -393,9 +407,7 @@ test('finder evidence analysis writes to video_ai_analysis_results', async () =>
     .post('/api/finder-tasks')
     .send({
       strategy_id: strategy.id,
-      name: 'Analysis Test Task',
-      platform: 'youtube',
-      execution_mode: 'system_provider'
+      target_platform: 'youtube'
     });
   const taskId = createRes.body.data.id;
 
@@ -500,9 +512,7 @@ test('generate candidates from evidence fills persona from strategy config', asy
     .post('/api/finder-tasks')
     .send({
       strategy_id: strategy.id,
-      name: 'Persona Test Task',
-      platform: 'youtube',
-      execution_mode: 'system_provider'
+      target_platform: 'youtube'
     });
   const taskId = createRes.body.data.id;
 
@@ -576,8 +586,7 @@ test('YouTube video evidence end-to-end: import -> analyze -> generate candidate
       .send({
         strategy_id: strategy.id,
         name: 'E2E Video Evidence Task',
-        platform: 'youtube',
-        execution_mode: 'system_provider'
+        target_platform: 'youtube'
       });
     assert.equal(createRes.status, 200);
     const taskId = createRes.body.data.id;
@@ -606,7 +615,7 @@ test('YouTube video evidence end-to-end: import -> analyze -> generate candidate
       .post(`/api/finder-tasks/${taskId}/evidence-analysis`)
       .send({});
     assert.equal(analyzeRes.status, 200);
-    assert.equal(analyzeRes.body.data.success_count, 1);
+    assert.equal(analyzeRes.body.data.success_count, 1, JSON.stringify(analyzeRes.body));
     assert.equal(analyzeRes.body.data.failed_count, 0);
 
     // Verify analysis result
@@ -620,7 +629,17 @@ test('YouTube video evidence end-to-end: import -> analyze -> generate candidate
     assert.equal(extra.candidate_decision.recommended_status, 'new');
     assert.equal(extra.candidate_decision.enter_raw_candidates, true);
     assert.equal(extra.hard_filter.passed, true);
+    assert.deepEqual(safeParseJson(analyses[0].evidence_signals), [
+      { signal: 'competitor', reason: 'Compares a competing product' },
+      { signal: 'feature', reason: 'Demonstrates the required feature' }
+    ]);
 
+    const evidenceListRes = await request.get(`/api/finder-tasks/${taskId}/video-evidence`);
+    assert.equal(evidenceListRes.status, 200);
+    assert.deepEqual(safeParseJson(evidenceListRes.body.data[0].evidence_signals), [
+      { signal: 'competitor', reason: 'Compares a competing product' },
+      { signal: 'feature', reason: 'Demonstrates the required feature' }
+    ]);
     // Generate raw candidates from scored evidence
     const genRes = await request
       .post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`)
@@ -656,10 +675,10 @@ test('video_source reuse and snapshot TTL across campaigns', async () => {
   });
 
   const taskRes1 = await request.post('/api/finder-tasks').send({
-    strategy_id: strategy1.id, name: 'Task 1', platform: 'youtube', execution_mode: 'system_provider'
+    strategy_id: strategy1.id, target_platform: 'youtube'
   });
   const taskRes2 = await request.post('/api/finder-tasks').send({
-    strategy_id: strategy2.id, name: 'Task 2', platform: 'youtube', execution_mode: 'system_provider'
+    strategy_id: strategy2.id, target_platform: 'youtube'
   });
 
   const videoUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';

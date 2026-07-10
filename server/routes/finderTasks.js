@@ -5,37 +5,8 @@ const router = express.Router();
 
 const SYSTEM_SELECTION_KEY = 'system.provider_selection';
 
-const DEFAULT_SEARCH_CYCLES = [
-  { cycle: 'C1', name: 'Competitor Reviews', priority: 1, keywords: '', search_sources: ['maton_agent', 'google_web', 'youtube_search'], target_platforms: ['youtube'], platforms: 'youtube', target_count: 10, exclusions: '', purpose: '' },
-  { cycle: 'C2', name: 'Category Search', priority: 2, keywords: '', search_sources: ['maton_agent', 'google_web', 'youtube_search'], target_platforms: ['youtube'], platforms: 'youtube', target_count: 10, exclusions: '', purpose: '' },
-  { cycle: 'C3', name: 'Use-case Search', priority: 3, keywords: '', search_sources: ['maton_agent', 'google_web', 'youtube_search'], target_platforms: ['youtube'], platforms: 'youtube', target_count: 10, exclusions: '', purpose: '' },
-  { cycle: 'C4', name: 'Feature / Technical Search', priority: 4, keywords: '', search_sources: ['maton_agent', 'google_web', 'youtube_search'], target_platforms: ['youtube'], platforms: 'youtube', target_count: 10, exclusions: '', purpose: '' },
-  { cycle: 'C5', name: 'Community / Audience Search', priority: 5, keywords: '', search_sources: ['maton_agent', 'google_web'], target_platforms: ['youtube'], platforms: 'youtube', target_count: 10, exclusions: '', purpose: '' },
-  { cycle: 'C6', name: 'Platform Native Search', priority: 6, keywords: '', search_sources: ['youtube_search', 'instagram_search', 'tiktok_search'], target_platforms: ['youtube', 'instagram', 'tiktok'], platforms: 'youtube, instagram, tiktok', target_count: 10, exclusions: '', purpose: '' },
-  { cycle: 'C7', name: 'Spider-web Expansion', priority: 7, keywords: '', search_sources: ['maton_agent', 'google_web', 'youtube_search'], target_platforms: ['youtube'], platforms: 'youtube', target_count: 10, exclusions: '', purpose: '' }
-];
-
-const CYCLE_ORDER = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
 const MIN_RELEVANT_SIGNAL_SCORE = 20; // soft-signal floor for entering raw candidate pool
-const DEFAULT_CYCLE_BY_ID = Object.fromEntries(DEFAULT_SEARCH_CYCLES.map((cycle) => [cycle.cycle, cycle]));
-const SEARCH_INTENSITY_CYCLES = {
-  youtube: {
-    quick: ['C1', 'C2', 'C4'],
-    standard: ['C1', 'C2', 'C3', 'C4'],
-    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
-  },
-  instagram: {
-    quick: ['C2', 'C3', 'C5'],
-    standard: ['C1', 'C2', 'C3', 'C5'],
-    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
-  },
-  tiktok: {
-    quick: ['C2', 'C3', 'C5'],
-    standard: ['C2', 'C3', 'C5', 'C6'],
-    full: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
-  }
-};
-
+const EVIDENCE_SIGNAL_TYPES = new Set(['competitor', 'category', 'use_case', 'feature', 'community']);
 const PROVIDER_LABELS = {
   maton_agent: 'Maton Agent',
   google_web: 'Google Web',
@@ -58,71 +29,22 @@ const PROVIDER_LABELS = {
   scrapecreators: 'ScrapeCreators'
 };
 
-const SEARCH_SOURCES = ['maton_agent', 'google_web', 'youtube_search', 'instagram_search', 'tiktok_search'];
-const DISCOVERY_ROUTES = [
-  'cycle_multi_route',
-  'youtube_native_search',
-  'google_web_to_youtube',
-  'youtube_to_instagram',
-  'google_web_to_instagram',
-  'seed_posts_to_profile',
-  'instagram_native_small_batch',
-  'reddit_to_instagram',
-  'google_web_to_tiktok',
-  'youtube_to_tiktok',
-  'instagram_to_tiktok',
-  'reddit_to_tiktok',
-  'tiktok_native_small_batch',
-  'spider_web_expansion'
-];
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
-const LEGAL_SOURCE_TARGETS = {
-  maton_agent: TARGET_PLATFORMS,
-  google_web: TARGET_PLATFORMS,
-  youtube_search: ['youtube'],
-  instagram_search: ['instagram'],
-  tiktok_search: ['tiktok']
-};
-const ROUTE_SOURCE_TARGETS = {
-  youtube_native_search: [{ searchSource: 'auto', targetPlatform: 'youtube', sourcePlatform: 'youtube' }],
-  google_web_to_youtube: [{ searchSource: 'google_web', targetPlatform: 'youtube', sourcePlatform: 'google_web' }],
-  youtube_to_instagram: [{ searchSource: 'maton_agent', targetPlatform: 'instagram', sourcePlatform: 'youtube' }],
-  google_web_to_instagram: [{ searchSource: 'google_web', targetPlatform: 'instagram', sourcePlatform: 'google_web' }],
-  seed_posts_to_profile: [
-    { searchSource: 'maton_agent', targetPlatform: 'instagram', sourcePlatform: 'seed_url' },
-    { searchSource: 'maton_agent', targetPlatform: 'tiktok', sourcePlatform: 'seed_url' }
-  ],
-  instagram_native_small_batch: [{ searchSource: 'instagram_search', targetPlatform: 'instagram', sourcePlatform: 'instagram' }],
-  reddit_to_instagram: [{ searchSource: 'google_web', targetPlatform: 'instagram', sourcePlatform: 'reddit' }],
-  google_web_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'google_web' }],
-  youtube_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'youtube' }],
-  instagram_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'instagram' }],
-  reddit_to_tiktok: [{ searchSource: 'google_web', targetPlatform: 'tiktok', sourcePlatform: 'reddit' }],
-  tiktok_native_small_batch: [{ searchSource: 'tiktok_search', targetPlatform: 'tiktok', sourcePlatform: 'tiktok' }],
-  spider_web_expansion: TARGET_PLATFORMS.map((platform) => ({ searchSource: 'maton_agent', targetPlatform: platform, sourcePlatform: 'cross_platform' }))
-};
-
-const ROUTE_PREFERRED_CYCLES = {
-  youtube_native_search: ['C1', 'C2', 'C6'],
-  google_web_to_youtube: ['C2', 'C1', 'C4'],
-  youtube_to_instagram: ['C1', 'C3', 'C7'],
-  google_web_to_instagram: ['C2', 'C4', 'C1'],
-  reddit_to_instagram: ['C5', 'C3'],
-  seed_posts_to_profile: ['C7', 'C6'],
-  instagram_native_small_batch: ['C6'],
-  google_web_to_tiktok: ['C2', 'C3', 'C4'],
-  youtube_to_tiktok: ['C1', 'C3', 'C4'],
-  instagram_to_tiktok: ['C3', 'C6'],
-  reddit_to_tiktok: ['C5', 'C3'],
-  tiktok_native_small_batch: ['C6'],
-  spider_web_expansion: ['C7']
-};
-
 const cancelledTasks = new Set();
 
 function clean(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
+}
+
+function normalizeEvidenceSignals(value) {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : []).flatMap((item) => {
+    const signal = clean(typeof item === 'string' ? item : item?.signal).toLowerCase();
+    if (!EVIDENCE_SIGNAL_TYPES.has(signal) || seen.has(signal)) return [];
+    seen.add(signal);
+    return [{ signal, reason: clean(typeof item === 'string' ? '' : item?.reason) }];
+  });
 }
 
 function parseJson(value, fallback = {}) {
@@ -138,71 +60,6 @@ function parseJson(value, fallback = {}) {
 function parseList(value) {
   if (Array.isArray(value)) return value.map(clean).filter(Boolean);
   return clean(value).split(/[,，\n;]/).map(clean).filter(Boolean);
-}
-
-function normalizeSearchIntensity(value) {
-  const text = clean(value).toLowerCase();
-  return ['quick', 'standard', 'full'].includes(text) ? text : 'standard';
-}
-
-function recommendedCycleIdsForTargets(targets = [], intensity = 'standard') {
-  const normalizedTargets = [...new Set(targets.filter((target) => TARGET_PLATFORMS.includes(target)))];
-  const selectedTargets = normalizedTargets.length ? normalizedTargets : ['youtube'];
-  const cycleIds = selectedTargets.flatMap((target) => (
-    SEARCH_INTENSITY_CYCLES[target]?.[normalizeSearchIntensity(intensity)] || SEARCH_INTENSITY_CYCLES.youtube.standard
-  ));
-  return CYCLE_ORDER.filter((cycleId) => cycleIds.includes(cycleId) && cycleId !== 'C7');
-}
-
-function expansionDeferredSummary(reason = 'waiting_for_seeds') {
-  return {
-    expansion_cycle: 'C7',
-    expansion_status: 'deferred',
-    expansion_reason: reason
-  };
-}
-
-function hasExpansionSeeds(seedUrls = [], existing = {}) {
-  if (seedUrls.length) return true;
-  const acceptedRaw = (existing.raw_candidates || []).some((candidate) => (
-    ['new', 'approved'].includes(clean(candidate.status || 'new')) && clean(candidate.profile_url)
-  ));
-  if (acceptedRaw) return true;
-  return (existing.kol_master || []).some((kol) => (
-    clean(kol.profile_url || kol.youtube_url || kol.instagram_url || kol.tiktok_url)
-  ));
-}
-
-function selectSubtaskCycles({ allCycles, explicitCycles, requestedTargets, searchIntensity, phase, hasSeeds }) {
-  const requested = explicitCycles.length
-    ? explicitCycles
-    : phase === 'expansion'
-      ? ['C7']
-      : recommendedCycleIdsForTargets(requestedTargets, searchIntensity);
-  const normalized = CYCLE_ORDER.filter((cycleId) => requested.includes(cycleId));
-  const shouldDeferC7 = normalized.includes('C7') && !hasSeeds;
-  const runnable = normalized.filter((cycleId) => cycleId !== 'C7' || hasSeeds);
-  return {
-    cycles: allCycles.filter((cycle) => runnable.includes(cycle.cycle)),
-    deferred: shouldDeferC7 ? expansionDeferredSummary('waiting_for_seeds') : null
-  };
-}
-
-function normalizeSearchStrategy(value) {
-  const parsed = Array.isArray(value) ? value : parseJson(value, DEFAULT_SEARCH_CYCLES);
-  const byCycle = {};
-  for (const item of Array.isArray(parsed) ? parsed : []) {
-    const cycleId = clean(item?.cycle).toUpperCase();
-    if (CYCLE_ORDER.includes(cycleId)) {
-      byCycle[cycleId] = { ...item, cycle: cycleId };
-    }
-  }
-  return CYCLE_ORDER.map((cycleId, index) => ({
-    ...DEFAULT_CYCLE_BY_ID[cycleId],
-    ...(byCycle[cycleId] || {}),
-    cycle: cycleId,
-    priority: index + 1
-  }));
 }
 
 function normalizeNumber(value) {
@@ -293,6 +150,7 @@ function normalizeParsedAnalysis(parsed, rawText) {
   const result = {
     hard_filter: { passed: true, is_real_creator: true, target_platform_match: true, follower_range_match: true, market_language_match: 'certain', profile_accessible: true, hard_filter_notes: '' },
     signal_scores: { competitor_fit: 0, category_fit: 0, use_case_fit: 0, feature_fit: 0, community_fit: 0 },
+    evidence_signals: [],
     evidence_strength_score: 0,
     creator_profile_scores: { creator_tone_fit: 0, content_consistency: 0, posting_frequency: 0, traffic_quality: 0, audience_market_fit: 0, contactability: 0 },
     risk: { risk_level: 'low', risk_notes: '', risk_deduction: 0 },
@@ -312,6 +170,7 @@ function normalizeParsedAnalysis(parsed, rawText) {
     merge(result.creator_profile_scores, parsed.creator_profile_scores);
     merge(result.risk, parsed.risk);
     merge(result.candidate_decision, parsed.candidate_decision);
+    if (Array.isArray(parsed.evidence_signals)) result.evidence_signals = parsed.evidence_signals;
     if (parsed.evidence_strength_score !== undefined) result.evidence_strength_score = parsed.evidence_strength_score;
   }
 
@@ -450,11 +309,6 @@ async function preferredSearchSourceForTargetPlatform(platform) {
   const selection = await getSelection();
   const provider = clean(selection.platforms?.[platform]?.primary);
   return searchSourceForPlatformProvider(platform, provider) || searchSourceForPlatformProvider(platform);
-}
-
-async function preferredSearchSourcesForTargetPlatforms(platforms = []) {
-  const sources = await Promise.all(platforms.map((platform) => preferredSearchSourceForTargetPlatform(platform)));
-  return [...new Set(sources.filter((source) => SEARCH_SOURCES.includes(source)))];
 }
 
 async function fetchJson(url, options = {}) {
@@ -638,6 +492,7 @@ function normalizeFinderEvidenceResult(parsed = {}) {
 
   return {
     hard_filter: normalizedHardFilter,
+    evidence_signals: normalizeEvidenceSignals(parsed.evidence_signals),
     signal_scores: {
       competitor_fit: clampScore(signalScores.competitor_fit),
       category_fit: clampScore(signalScores.category_fit),
@@ -685,7 +540,8 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
     'You are a KOL Finder evidence analyst.',
     'Return valid JSON only. Do not include Markdown, explanations, or chain-of-thought.',
     'Your job is to evaluate whether the video author is a KOL candidate worth entering the raw candidate pool.',
-    'Evaluate in two layers: (1) video evidence fit (signal_scores) and (2) creator profile / account quality (creator_profile_scores).',
+    'Evaluate in two layers: (1) video evidence fit and multi-label evidence_signals, and (2) creator profile / account quality.',
+    'Assign zero or more evidence_signals from competitor, category, use_case, feature, community. A video may match multiple signals.',
     'Do not analyze cooperation performance. Do not assume comments are available.',
     'AI score is for ranking only; do not use it as a hard filter to reject candidates.',
     `Enter raw candidates when: (1) hard_filter passes, (2) at least one signal score >= ${MIN_RELEVANT_SIGNAL_SCORE} (competitor, category, use_case, feature, or community), and (3) risk is not high.`,
@@ -756,6 +612,7 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
         community_fit: 0
       },
       evidence_strength_score: 0,
+      evidence_signals: [{ signal: 'competitor | category | use_case | feature | community', reason: 'Why the video supports this signal' }],
       creator_profile_scores: {
         creator_tone_fit: 0,
         content_consistency: 0,
@@ -816,367 +673,24 @@ async function getReadyStrategy(strategyId) {
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
-    search_strategy: normalizeSearchStrategy(row.search_strategy),
     scoring_weights: parseJson(row.scoring_weights, {}),
     finder_handoff: parseJson(row.finder_handoff, {})
   };
 }
 
-function targetPlatformsForCycle(cycle, strategy, requestedTargets = []) {
-  const cycleTargets = parseList(cycle.target_platforms);
-  const cyclePlatforms = parseList(cycle.platforms);
-  const handoffPlatforms = parseList(strategy.finder_handoff?.required_platforms);
-  const strategyPlatforms = [strategy.primary_platform, ...(strategy.secondary_platforms || [])].map(clean).filter(Boolean);
-  return [...new Set((requestedTargets.length ? requestedTargets : cycleTargets.length ? cycleTargets : cyclePlatforms.length ? cyclePlatforms : handoffPlatforms.length ? handoffPlatforms : strategyPlatforms).filter((p) => TARGET_PLATFORMS.includes(p)))];
-}
-
-function searchSourcesForCycle(cycle, requestedSources = []) {
-  const cycleSources = parseList(cycle.search_sources);
-  return [...new Set((requestedSources.length ? requestedSources : cycleSources.length ? cycleSources : ['maton_agent', 'google_web', 'youtube_search']).filter((source) => SEARCH_SOURCES.includes(source)))];
-}
-
-function defaultDiscoveryRoutesForTargets(targets) {
-  const routes = [];
-  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube', 'spider_web_expansion');
-  if (targets.includes('instagram')) routes.push('youtube_to_instagram', 'google_web_to_instagram', 'seed_posts_to_profile');
-  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'seed_posts_to_profile');
-  return [...new Set(routes.length ? routes : ['youtube_native_search'])];
-}
-
-function defaultSubagentRoutesForTargets(targets) {
-  const routes = [];
-  if (targets.includes('youtube')) routes.push('youtube_native_search', 'google_web_to_youtube');
-  if (targets.includes('instagram')) {
-    routes.push('youtube_to_instagram', 'google_web_to_instagram', 'reddit_to_instagram', 'seed_posts_to_profile', 'instagram_native_small_batch');
-  }
-  if (targets.includes('tiktok')) routes.push('google_web_to_tiktok', 'youtube_to_tiktok', 'instagram_to_tiktok', 'reddit_to_tiktok');
-  return [...new Set(routes.length ? routes : ['youtube_native_search'])];
-}
-
-function discoveryRoutesForCycle(cycle, strategy, requestedRoutes = [], requestedTargets = []) {
-  const cycleRoutes = parseList(cycle.discovery_routes);
-  const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
-  return [...new Set((requestedRoutes.length ? requestedRoutes : cycleRoutes.length ? cycleRoutes : defaultDiscoveryRoutesForTargets(targets)).filter((route) => DISCOVERY_ROUTES.includes(route)))];
-}
-
-async function sourceTargetPairs(cycle, strategy, requestedSources = [], requestedTargets = [], requestedRoutes = []) {
-  const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
-  const routes = discoveryRoutesForCycle(cycle, strategy, requestedRoutes, targets);
-  const pairs = [];
-  for (const route of routes) {
-    for (const mapped of ROUTE_SOURCE_TARGETS[route] || []) {
-      if (targets.includes(mapped.targetPlatform)) {
-        const searchSource = mapped.searchSource === 'auto'
-          ? await preferredSearchSourceForTargetPlatform(mapped.targetPlatform)
-          : mapped.searchSource;
-        pairs.push({ ...mapped, searchSource, discoveryRoute: route });
-      }
-    }
-  }
-  if (pairs.length) return pairs;
-  const sources = searchSourcesForCycle(cycle, requestedSources);
-  for (const source of sources) {
-    for (const target of targets) {
-      if ((LEGAL_SOURCE_TARGETS[source] || []).includes(target)) {
-        pairs.push({ searchSource: source, targetPlatform: target, sourcePlatform: source.replace('_search', ''), discoveryRoute: source });
-      }
-    }
-  }
-  return pairs;
-}
-
-function sourceTargetPairsForSubagents(cycle, strategy, requestedTargets = [], requestedRoutes = []) {
-  const targets = targetPlatformsForCycle(cycle, strategy, requestedTargets);
-  const cycleRoutes = parseList(cycle.discovery_routes);
-  const routes = [...new Set((requestedRoutes.length ? requestedRoutes : cycleRoutes.length ? cycleRoutes : defaultSubagentRoutesForTargets(targets)).filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route)))];
-  const pairs = [];
-  for (const route of routes) {
-    for (const mapped of ROUTE_SOURCE_TARGETS[route] || []) {
-      if (targets.includes(mapped.targetPlatform)) pairs.push({ ...mapped, discoveryRoute: route });
-    }
-  }
-  return pairs;
-}
-
-function routeLabel(route) {
-  return PROVIDER_LABELS[route] || route;
-}
-
-function routeMappingsForTargets(route, targets) {
-  return (ROUTE_SOURCE_TARGETS[route] || []).filter((mapped) => targets.includes(mapped.targetPlatform));
-}
-
-function routeExecutor(route) {
-  if (route === 'seed_posts_to_profile' || route === 'spider_web_expansion') return 'seed_expansion';
-  if (route === 'tiktok_native_small_batch') return 'native_unavailable';
-  if (route.includes('_to_tiktok') && route !== 'google_web_to_tiktok') return 'cross_platform_lookup';
-  if (route.includes('_to_instagram') && route !== 'google_web_to_instagram') return 'cross_platform_lookup';
-  if (route.includes('_to_youtube') && route !== 'google_web_to_youtube') return 'cross_platform_lookup';
-  return 'web_search';
-}
-
-function routePlanItem(route, targets, required, reason) {
-  return {
-    route,
-    label: routeLabel(route),
-    executor: routeExecutor(route),
-    mappings: routeMappingsForTargets(route, targets),
-    required: Boolean(required),
-    reason
-  };
-}
-
-function skippedRouteItem(route, reason) {
-  return {
-    route,
-    label: routeLabel(route),
-    executor: routeExecutor(route),
-    required: false,
-    skipped: true,
-    reason
-  };
-}
-
-function closestSelectedCycle(preferred, selectedCycleIds) {
-  const selected = selectedCycleIds.filter((cycle) => CYCLE_ORDER.includes(cycle));
-  if (!selected.length) return '';
-  for (const cycle of preferred) {
-    if (selected.includes(cycle)) return cycle;
-  }
-  const preferredIndex = CYCLE_ORDER.indexOf(preferred.find((cycle) => CYCLE_ORDER.includes(cycle)) || selected[0]);
-  return selected.reduce((best, cycle) => {
-    const distance = Math.abs(CYCLE_ORDER.indexOf(cycle) - preferredIndex);
-    const bestDistance = Math.abs(CYCLE_ORDER.indexOf(best) - preferredIndex);
-    return distance < bestDistance ? cycle : best;
-  }, selected[0]);
-}
-
-function buildRouteCoveragePlan(cycles, strategy, requestedTargets = [], requestedRoutes = [], seedUrls = []) {
-  const selectedCycleIds = cycles.map((cycle) => cycle.cycle);
-  const targets = [...new Set((requestedTargets.length ? requestedTargets : cycles.flatMap((cycle) => targetPlatformsForCycle(cycle, strategy))).filter((p) => TARGET_PLATFORMS.includes(p)))];
-  const fallbackRoutes = defaultSubagentRoutesForTargets(targets);
-  const baseRoutes = requestedRoutes.length ? requestedRoutes : fallbackRoutes;
-  const routes = [...new Set([
-    ...baseRoutes,
-    ...(targets.includes('tiktok') ? ['google_web_to_tiktok'] : [])
-  ].filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route)))];
-  const usableRoutes = routes.filter((route) => routeMappingsForTargets(route, targets).length);
-  const hasSeedUrls = seedUrls.length > 0;
-  const unavailableRoutes = usableRoutes.filter((route) => route === 'tiktok_native_small_batch');
-  const executableRoutes = usableRoutes.filter((route) => (
-    route !== 'tiktok_native_small_batch'
-    && (route !== 'seed_posts_to_profile' || hasSeedUrls)
-  ));
-  const requiredByCycle = Object.fromEntries(selectedCycleIds.map((cycle) => [cycle, []]));
-
-  for (const route of executableRoutes.filter((route) => !(targets.includes('tiktok') && route !== 'seed_posts_to_profile' && route !== 'google_web_to_tiktok'))) {
-    const preferred = ROUTE_PREFERRED_CYCLES[route] || ['C2'];
-    const assignedCycle = closestSelectedCycle(preferred, selectedCycleIds);
-    if (assignedCycle) requiredByCycle[assignedCycle].push(route);
-  }
-
-  return cycles.map((cycle) => {
-    const cycleTargets = targetPlatformsForCycle(cycle, strategy, targets);
-    const cycleTargetSet = cycleTargets.length ? cycleTargets : targets;
-    const isTikTokCycle = cycleTargetSet.includes('tiktok') && targets.includes('tiktok');
-    const skippedRoutes = [
-      ...(!hasSeedUrls && usableRoutes.includes('seed_posts_to_profile') ? [skippedRouteItem('seed_posts_to_profile', 'no_seed')] : []),
-      ...unavailableRoutes.map((route) => skippedRouteItem(route, 'native_unavailable_no_login_v1'))
-    ].filter((item, index, list) => item.route && list.findIndex((other) => other.route === item.route) === index);
-
-    if (isTikTokCycle && cycle.cycle === 'C7' && !hasSeedUrls) {
-      return {
-        cycle: cycle.cycle,
-        cycle_name: cycle.name,
-        purpose: cycle.purpose || '',
-        target_platforms: cycleTargets.length ? cycleTargets : targets,
-        source_query: keywordString(cycle, strategy),
-        seed_urls: seedUrls,
-        target_count: 0,
-        cycle_status: 'skipped',
-        cycle_status_reason: 'no_seed',
-        required_routes: [],
-        optional_routes: [],
-        skipped_routes: skippedRoutes,
-        cycle_status_rule: 'Skipped because C7 is seed expansion and no seed URLs were provided.',
-        coverage_rule: 'Return route_coverage with skipped/no_seed and do not import candidates for this cycle.'
-      };
-    }
-
-    const requiredRouteNames = isTikTokCycle
-      ? cycle.cycle === 'C7' && hasSeedUrls
-        ? ['seed_posts_to_profile']
-        : executableRoutes.includes('google_web_to_tiktok')
-          ? ['google_web_to_tiktok']
-          : []
-      : [...new Set([
-        ...(requiredByCycle[cycle.cycle] || []),
-        ...((requiredByCycle[cycle.cycle] || []).length ? [] : executableRoutes.find((route) => routeMappingsForTargets(route, cycleTargetSet).length) ? [executableRoutes.find((route) => routeMappingsForTargets(route, cycleTargetSet).length)] : [])
-      ])];
-    const requiredRoutes = requiredRouteNames.map((route) => routePlanItem(
-      route,
-      targets,
-      true,
-      isTikTokCycle
-        ? route === 'seed_posts_to_profile'
-          ? 'Required seed expansion path for C7 when seed URLs are available'
-          : `Baseline executable route for ${cycle.cycle} ${cycle.name || ''}`.trim()
-        : (requiredByCycle[cycle.cycle] || []).includes(route)
-          ? `Primary coverage for ${cycle.cycle} ${cycle.name || ''}`.trim()
-          : `Required executable route for ${cycle.cycle} ${cycle.name || ''}`.trim()
-    ));
-    const optionalRoutes = usableRoutes
-      .filter((route) => !requiredRoutes.some((item) => item.route === route))
-      .filter((route) => !skippedRoutes.some((item) => item.route === route))
-      .filter((route) => routeMappingsForTargets(route, cycleTargetSet).length)
-      .filter((route) => !(isTikTokCycle && route === 'seed_posts_to_profile' && cycle.cycle !== 'C7'))
-      .map((route) => routePlanItem(
-        route,
-        cycleTargetSet,
-        false,
-        'Optional evidence path if it fits this cycle intent'
-      ));
-    return {
-      cycle: cycle.cycle,
-      cycle_name: cycle.name,
-      purpose: cycle.purpose || '',
-      target_platforms: cycleTargets.length ? cycleTargets : targets,
-      source_query: keywordString(cycle, strategy),
-      seed_urls: seedUrls,
-      target_count: cycle.target_count || 10,
-      cycle_status: 'pending',
-      required_routes: requiredRoutes,
-      optional_routes: optionalRoutes,
-      skipped_routes: skippedRoutes,
-      cycle_status_rule: 'completed = required routes attempted with coverage/no_result notes; skipped = system says this cycle should not run; blocked = required route cannot be attempted.',
-      coverage_rule: 'Required routes must be attempted or reported with a skip/no_result/block reason. Optional routes should be attempted when useful and reported when skipped. Candidates must record their actual discovery_route.'
-    };
-  });
-}
-
-function keywordString(cycle, strategy) {
-  const pieces = [
-    cycle.keywords,
-    strategy.finder_handoff?.required_keywords,
-    cycle.name,
-    strategy.product || strategy.campaign_product || '',
-    strategy.category || ''
-  ];
-  return [...new Set(pieces.flatMap(parseList))].filter(Boolean).slice(0, 12).join(', ');
+function discoveryKeywords(strategy) {
+  return [...new Set([
+    ...parseList(strategy.finder_handoff?.required_keywords),
+    ...parseList(strategy.finder_handoff?.competitor_keywords),
+    strategy.product || strategy.campaign_product || strategy.campaign_name,
+    strategy.category
+  ].flatMap(parseList))].filter(Boolean).slice(0, 12).join(', ');
 }
 
 function keywordQueries(request) {
-  const queries = parseList(request.cycle.keywords || request.campaign.product || request.campaign.name);
-  const fallback = clean(request.campaign.product || request.campaign.name || request.cycle.name);
+  const queries = parseList(request.discovery.keywords || request.campaign.product || request.campaign.name);
+  const fallback = clean(request.campaign.product || request.campaign.name);
   return [...new Set((queries.length ? queries : [fallback]).filter(Boolean))].slice(0, 8);
-}
-
-async function existingProfiles(strategyId, campaignId) {
-  const customers = await dbOperations.query(`
-    SELECT id, name, email, profile_url, youtube_url, instagram_url, tiktok_url
-    FROM customers
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 200
-  `);
-  const raw = await dbOperations.query(`
-    SELECT id, strategy_id, campaign_id, platform, kol_name, email, profile_url, status
-    FROM raw_candidates
-    WHERE strategy_id = ? OR campaign_id = ?
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 200
-  `, [strategyId, campaignId]);
-  return { kol_master: customers, raw_candidates: raw };
-}
-
-function buildSubagentPrompt({ subtaskId, task, strategy, cycle, pair, routePlan, sourceQuery, seedUrls, existing }) {
-  const isCycleSubtask = Boolean(routePlan);
-  const routeName = pair?.discoveryRoute || 'cycle_multi_route';
-  const routeLabelText = isCycleSubtask ? `${cycle.cycle} ${cycle.name || 'Cycle Research'}` : routeLabel(routeName);
-  const sourceAgent = isCycleSubtask ? `codex_subagent_${cycle.cycle.toLowerCase()}_cycle` : `codex_subagent_${routeName}`;
-  const payload = {
-    finder_subtask_id: subtaskId,
-    strategy_id: strategy.id,
-    source_agent: sourceAgent,
-    route_coverage: isCycleSubtask ? [] : undefined,
-    accepted_candidates: [],
-    rejected_candidates: []
-  };
-  if (!isCycleSubtask) delete payload.route_coverage;
-  return [
-    isCycleSubtask
-      ? `You are a KOL Finder cycle subagent for KOL Campaign OS. Work only on this search intent: ${routeLabelText}.`
-      : `You are a KOL Finder subagent for KOL Campaign OS. Work only on this focused discovery route: ${routeLabelText}.`,
-    '',
-    'Campaign:',
-    JSON.stringify({
-      id: strategy.campaign_id,
-      name: strategy.campaign_name,
-      brand: strategy.brand || strategy.campaign_brand || '',
-      product: strategy.product || strategy.campaign_product || '',
-      category: strategy.category || '',
-      target_market: strategy.target_market || '',
-      language: strategy.language || '',
-      goal: strategy.campaign_goal || ''
-    }, null, 2),
-    '',
-    'Strategy:',
-    JSON.stringify({
-      id: strategy.id,
-      name: strategy.name,
-      product_context: strategy.product_context,
-      persona_config: strategy.persona_config,
-      scoring_weights: strategy.scoring_weights,
-      finder_handoff: strategy.finder_handoff
-    }, null, 2),
-    '',
-    'Subtask scope:',
-    JSON.stringify(isCycleSubtask ? {
-      finder_task_id: task.id,
-      search_cycle: cycle.cycle,
-      cycle_name: cycle.name,
-      cycle_purpose: cycle.purpose || '',
-      discovery_route: 'cycle_multi_route',
-      target_platforms: routePlan.target_platforms,
-      source_query: sourceQuery,
-      seed_urls: seedUrls,
-      route_plan: routePlan
-    } : {
-      finder_task_id: task.id,
-      search_cycle: cycle.cycle,
-      cycle_name: cycle.name,
-      discovery_route: pair.discoveryRoute,
-      source_platform: pair.sourcePlatform,
-      target_platform: pair.targetPlatform,
-      source_query: sourceQuery,
-      seed_urls: seedUrls
-    }, null, 2),
-    '',
-    'Existing records to avoid duplicating:',
-    JSON.stringify(existing, null, 2),
-    '',
-    'Rules:',
-    '- Return valid JSON only. No Markdown.',
-    '- Do not approve candidates or write to KOL Master.',
-    '- Treat search results as leads. Inspect enough evidence before accepting.',
-    '- Do not invent follower counts, emails, countries, prices, or engagement numbers. Leave unknown fields blank.',
-    '- Every candidate must include its real discovery_route, source_platform, target_platform, evidence_url, source_query, and search_cycle.',
-    '- For cycle_multi_route subtasks, do not import candidates with discovery_route = cycle_multi_route. Use the actual route that found the candidate.',
-    '- For Instagram targets, accepted candidates must have a reachable profile_url and verified handle attribution. Do not rely only on a listicle, directory, Reddit mention, or search snippet.',
-    '- For TikTok targets, accepted candidates must use the real TikTok profile_url and the handle must be attributable to the creator through the TikTok profile, creator-owned page, YouTube/Instagram bio, brand collaboration page, or a trustworthy article. Do not rely only on listicles, search snippets, or Reddit mentions.',
-    '- Import meaningful rejected candidates with a clear reject_reason so the same bad path is not repeated.',
-    '- When orchestrating multiple generated cycle prompts, use parallel workers if your agent platform supports them. If it only supports sequential execution, tell the user before starting because it will be slower.',
-    '- If web search, browser, or relevant API tools are unavailable, return cycle_status = "blocked" with a clear cycle_status_reason. Do not fabricate no-result candidates from tool failure.',
-    isCycleSubtask ? '- Required routes must be attempted. If a required route cannot be searched or produces no useful leads, include it in route_coverage with a blocked, skip_reason, or no_result reason.' : '',
-    isCycleSubtask ? '- Optional routes should be attempted when useful. If skipped, include a short reason in route_coverage or route_attempts.' : '',
-    isCycleSubtask ? '- Skipped routes must not be forced. Record the skipped reason and do not fabricate candidates for them.' : '',
-    isCycleSubtask ? '- If route_plan.cycle_status is skipped, return empty accepted_candidates and rejected_candidates plus route_coverage explaining the skip.' : '',
-    isCycleSubtask ? '- Do not include candidates from other search cycles in this subtask output.' : '',
-    '',
-    'Required output shape:',
-    JSON.stringify(payload, null, 2),
-    '',
-    'Each candidate must include: platform, target_platform, source_platform, discovery_route, kol_name, profile_url, evidence_url, evidence_type, source_query, search_cycle, ai_match_reason, status. Rejected candidates must also include reject_reason.'
-  ].join('\n');
 }
 
 const EU_COUNTRIES = [
@@ -1344,7 +858,7 @@ function applyFinderGates(candidate, request) {
   return applyInstagramCreatorQualityGate(applyFollowerGate(applyMarketGate(candidate, request), request));
 }
 
-function buildCycleRequest(strategy, cycle, searchSource, targetPlatform, limit, discoveryRoute = searchSource, sourcePlatform = searchSource) {
+function buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetPlatform, limit) {
   return {
     campaign: {
       id: strategy.campaign_id,
@@ -1364,17 +878,14 @@ function buildCycleRequest(strategy, cycle, searchSource, targetPlatform, limit,
       scoring_weights: strategy.scoring_weights,
       finder_handoff: strategy.finder_handoff
     },
-    cycle: {
-      cycle: cycle.cycle,
-      name: cycle.name,
-      purpose: cycle.purpose || '',
-      keywords: keywordString(cycle, strategy),
-      exclusions: clean(cycle.exclusions || strategy.finder_handoff?.exclusion_keywords || ''),
+    discovery: {
+      keywords,
+      exclusions: parseList(strategy.finder_handoff?.exclusion_keywords).join(', '),
       target_count: limit
     },
     search_source: searchSource,
-    discovery_route: discoveryRoute,
-    source_platform: sourcePlatform,
+    discovery_route: 'target_platform_first',
+    source_platform: targetPlatform,
     target_platform: targetPlatform,
     platform: targetPlatform,
     limit,
@@ -1383,17 +894,9 @@ function buildCycleRequest(strategy, cycle, searchSource, targetPlatform, limit,
         platform: 'youtube | instagram | tiktok',
         kol_name: 'Creator name',
         profile_url: 'Creator profile URL',
-        followers: 'Follower count if available',
-        avg_views: 'Average views if available',
-        email: 'Public email if available',
-        country_region: 'Country or region if available',
-        matched_keywords: 'Matched keywords',
-        matched_persona: 'Persona match',
-        representative_video_url: 'Best evidence video URL',
-        representative_video_title: 'Best evidence video title',
-        ai_score: 0,
-        reason: 'Short approval reason',
-        scoring_breakdown: {},
+        representative_video_url: 'Relevant target-platform video URL',
+        representative_video_title: 'Relevant target-platform video title',
+        reason: 'Why the video is relevant evidence',
         raw_data: {}
       }]
     }
@@ -1459,7 +962,7 @@ async function youtubeMatonGatewayAdapter(request, setting, baseUrl) {
       const channelData = await fetchJson(channelEndpoint, { headers: matonHeaders(setting) });
       channels = Object.fromEntries((channelData.items || []).map((item) => [item.id, item]));
     }
-    candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, cycle: { ...request.cycle, keywords: query } }, `Matched Maton YouTube Gateway search: ${query}`));
+    candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, discovery: { ...request.discovery, keywords: query } }, `Matched Maton YouTube Gateway search: ${query}`));
   }
   if (!candidates.length) throw new Error('Maton 已连通，但 YouTube Search 返回 0 条候选；建议先用更短关键词测试，例如单个竞品名 + review。');
   return { provider: 'maton_youtube_gateway', endpoint: lastEndpoint, candidates };
@@ -1488,7 +991,7 @@ async function youtubeSearchAdapter(request) {
       const channelData = await fetchJson(channelUrl);
       channels = Object.fromEntries((channelData.items || []).map((item) => [item.id, item]));
     }
-    candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, cycle: { ...request.cycle, keywords: query } }, `Matched YouTube search: ${query}`));
+    candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, discovery: { ...request.discovery, keywords: query } }, `Matched YouTube search: ${query}`));
   }
   if (!candidates.length) throw new Error('YouTube Search 返回 0 条候选；建议先用更短关键词测试。');
   return { provider: 'youtube_search', endpoint: lastEndpoint, candidates };
@@ -1506,7 +1009,7 @@ function youtubeItemsToCandidates(items, channels, request, reason) {
       avg_views: '',
       email: '',
       country_region: channel.snippet?.country || '',
-      matched_keywords: request.cycle.keywords,
+      matched_keywords: request.discovery.keywords,
       matched_persona: request.strategy.persona_config?.primary_persona || '',
       representative_video_url: item.id?.videoId ? `https://www.youtube.com/watch?v=${item.id.videoId}` : '',
       representative_video_title: snippet.title || '',
@@ -1521,7 +1024,7 @@ async function scrapeCreatorsFinderAdapter(request) {
   if (!setting?.api_key) throw new Error('ScrapeCreators API Key 未配置');
   const baseUrl = (setting.base_url || 'https://api.scrapecreators.com').replace(/\/$/, '');
   const headers = { 'x-api-key': setting.api_key, Authorization: `Bearer ${setting.api_key}` };
-  const q = encodeURIComponent(request.cycle.keywords || request.campaign.product || request.campaign.name);
+  const q = encodeURIComponent(request.discovery.keywords || request.campaign.product || request.campaign.name);
   const limit = encodeURIComponent(String(request.limit || 10));
   const endpoints = request.target_platform === 'instagram'
     ? [`${baseUrl}/v1/instagram/search?query=${q}&limit=${limit}`, `${baseUrl}/v1/instagram/profile/search?query=${q}&limit=${limit}`, `${baseUrl}/v1/instagram/users/search?query=${q}&limit=${limit}`]
@@ -1541,11 +1044,11 @@ async function scrapeCreatorsFinderAdapter(request) {
       avg_views: clean(user.avg_views || item.avg_views || item.views),
       email: clean(user.email || item.email),
       country_region: clean(user.country || user.region || item.country_region),
-      matched_keywords: request.cycle.keywords,
+      matched_keywords: request.discovery.keywords,
       matched_persona: request.strategy.persona_config?.primary_persona || '',
       representative_video_url: clean(item.video_url || item.url || item.post_url),
       representative_video_title: clean(item.title || item.desc || item.description),
-      reason: `Matched ${PROVIDER_LABELS[request.search_source] || PROVIDER_LABELS.scrapecreators} search: ${request.cycle.keywords}`,
+      reason: `Matched ${PROVIDER_LABELS[request.search_source] || PROVIDER_LABELS.scrapecreators} search: ${request.discovery.keywords}`,
       raw_data: item
     };
   });
@@ -1625,7 +1128,7 @@ function normalizeCandidate(input, request, provider) {
     avg_views: clean(input.avg_views || input.average_views || input.views),
     email: clean(input.email),
     country_region: clean(input.country_region || input.country || input.region),
-    matched_keywords: clean(input.matched_keywords || request.cycle.keywords),
+    matched_keywords: clean(input.matched_keywords || request.discovery.keywords),
     matched_persona: clean(input.matched_persona || request.strategy.persona_config?.primary_persona),
     ai_score: normalizeNumber(input.ai_score || input.score),
     ai_match_reason: clean(input.reason || input.ai_match_reason || `Found by ${PROVIDER_LABELS[provider] || provider}`),
@@ -1635,7 +1138,7 @@ function normalizeCandidate(input, request, provider) {
     evidence_url: evidenceUrl,
     evidence_title: evidenceTitle,
     evidence_type: evidenceType,
-    source_query: clean(input.source_query || request.cycle.keywords),
+    source_query: clean(input.source_query || request.discovery.keywords),
     discovery_route: clean(input.discovery_route || request.discovery_route),
     source_platform: clean(input.source_platform || request.source_platform),
     target_platform: platform,
@@ -1731,7 +1234,7 @@ async function masterExists(candidate) {
   return null;
 }
 
-async function upsertRawCandidate(candidate, task, cycle, provider) {
+async function upsertRawCandidate(candidate, task, provider) {
   if (!candidate.kol_name && !candidate.profile_url) {
     return { inserted: false, skipped: true, reason: 'Missing kol_name/profile_url' };
   }
@@ -1743,7 +1246,6 @@ async function upsertRawCandidate(candidate, task, cycle, provider) {
   const rawData = JSON.stringify({
     provider,
     finder_task_id: task.id,
-    search_cycle: cycle.cycle,
     discovery_route: candidate.discovery_route,
     source_platform: candidate.source_platform,
     target_platform: candidate.target_platform,
@@ -1936,19 +1438,6 @@ async function updateTask(id, patch) {
     `UPDATE finder_tasks SET ${assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [...values, id]
   );
-}
-
-function sourceSignalForCycle(cycle = {}) {
-  const cycleId = clean(cycle.cycle).toUpperCase();
-  if (cycle.source_signal) return clean(cycle.source_signal);
-  if (cycleId === 'C1') return 'competitor';
-  if (cycleId === 'C2') return 'category';
-  if (cycleId === 'C3') return 'use_case';
-  if (cycleId === 'C4') return 'feature';
-  if (cycleId === 'C5') return 'community';
-  if (cycleId === 'C6') return 'native_platform';
-  if (cycleId === 'C7') return 'seed_graph';
-  return 'native_platform';
 }
 
 const SNAPSHOT_TTL_DAYS = 30;
@@ -2154,156 +1643,81 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
   if (!task) return;
   const strategy = await getReadyStrategy(task.strategy_id);
-  const cycles = parseJson(task.search_cycles, DEFAULT_SEARCH_CYCLES);
   const rawRequest = parseJson(task.raw_request, {});
-  const storedTargets = parseJson(task.target_platforms, parseList(task.platform));
-  const targetPlatforms = (rawRequest.target_platforms?.length ? rawRequest.target_platforms : options.targetPlatforms?.length ? options.targetPlatforms : storedTargets).filter((p) => TARGET_PLATFORMS.includes(p));
-  const targets = targetPlatforms.length ? targetPlatforms : ['youtube'];
+  const targetPlatform = clean(rawRequest.target_platform || options.targetPlatform || task.platform);
+  const limit = Math.max(1, Math.min(Number(rawRequest.limit || options.limit || 10), 50));
+  const keywords = discoveryKeywords(strategy);
+  const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
+  const request = buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetPlatform, limit);
   const allAttempts = [];
   const responseSummary = [];
   let insertedCount = 0;
   let failedCount = 0;
-  let completedCycles = 0;
 
-  await updateTask(taskId, { status: 'running', started_at: new Date().toISOString(), total_cycles: cycles.length, source_agent: 'video_evidence_finder' });
+  await updateTask(taskId, { status: 'running', started_at: new Date().toISOString(), source_agent: 'video_evidence_finder' });
 
-  for (const cycle of cycles) {
-    if (cancelledTasks.has(taskId)) {
-      await updateTask(taskId, { status: 'cancelled', finished_at: new Date().toISOString(), provider_attempts: JSON.stringify(allAttempts), raw_response_summary: JSON.stringify(responseSummary) });
-      cancelledTasks.delete(taskId);
-      return;
-    }
-    await updateTask(taskId, { current_cycle: sourceSignalForCycle(cycle) });
-    for (const targetPlatform of targets) {
-      const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
-      const request = buildCycleRequest(strategy, cycle, searchSource, targetPlatform, options.limit || 10, 'target_platform_first', targetPlatform);
-      try {
-        const result = await runProvider(request, options.allowFallback !== false);
-        allAttempts.push(...result.attempts.map((attempt) => ({ ...attempt, source_signal: sourceSignalForCycle(cycle), discovery_route: 'target_platform_first', source_platform: targetPlatform, target_platform: targetPlatform })));
-        let inserted = 0;
-        let skipped = 0;
-        for (const raw of result.candidates.slice(0, options.limit || 10)) {
-          const normalized = normalizeCandidate(raw, request, result.provider);
-          const videoUrl = clean(normalized.video_url || normalized.evidence_url);
-          if (!isVideoEvidenceUrl(videoUrl)) {
-            skipped += 1;
-            continue;
-          }
-          const saved = await saveVideoEvidence(task, {
-            ...normalized,
-            video_url: videoUrl,
-            title: normalized.video_title || normalized.evidence_title,
-            author_name: normalized.kol_name,
-            author_profile_url: normalized.profile_url,
-            evidence_reason: normalized.ai_match_reason,
-            raw_data: { provider: result.provider, data: raw }
-          }, {
-            target_platform: targetPlatform,
-            evidence_platform: targetPlatform,
-            source_signal: sourceSignalForCycle(cycle),
-            source_query: normalized.source_query || keywordString(cycle, strategy),
-            discovery_scope: 'target_platform_only',
-            discovery_route: 'target_platform_first'
-          });
-          if (saved.inserted) inserted += 1;
-          else skipped += 1;
-        }
-        insertedCount += inserted;
-        responseSummary.push({ stage: 'video_evidence_discovery', source_signal: sourceSignalForCycle(cycle), target_platform: targetPlatform, provider: result.provider, returned: result.candidates.length, inserted, skipped });
-      } catch (error) {
-        failedCount += 1;
-        allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]).map((attempt) => ({ ...attempt, source_signal: sourceSignalForCycle(cycle), discovery_route: 'target_platform_first', source_platform: targetPlatform, target_platform: targetPlatform })));
-        responseSummary.push({ stage: 'video_evidence_discovery', source_signal: sourceSignalForCycle(cycle), target_platform: targetPlatform, error: error.message });
+  if (cancelledTasks.has(taskId)) {
+    await updateTask(taskId, { status: 'cancelled', finished_at: new Date().toISOString() });
+    cancelledTasks.delete(taskId);
+    return;
+  }
+
+  try {
+    const result = await runProvider(request, true);
+    allAttempts.push(...result.attempts.map((attempt) => ({
+      ...attempt,
+      discovery_route: 'target_platform_first',
+      source_platform: targetPlatform,
+      target_platform: targetPlatform
+    })));
+    let skipped = 0;
+    for (const raw of result.candidates.slice(0, limit)) {
+      const normalized = normalizeCandidate(raw, request, result.provider);
+      const videoUrl = clean(normalized.video_url || normalized.evidence_url);
+      if (!isVideoEvidenceUrl(videoUrl) || detectPlatformFromUrl(videoUrl) !== targetPlatform) {
+        skipped += 1;
+        continue;
       }
+      const saved = await saveVideoEvidence(task, {
+        ...normalized,
+        video_url: videoUrl,
+        title: normalized.video_title || normalized.evidence_title,
+        author_name: normalized.kol_name,
+        author_profile_url: normalized.profile_url,
+        evidence_reason: normalized.ai_match_reason,
+        raw_data: { provider: result.provider, data: raw }
+      }, {
+        target_platform: targetPlatform,
+        evidence_platform: targetPlatform,
+        source_signal: 'unclassified',
+        source_query: normalized.source_query || keywords,
+        discovery_scope: 'target_platform_only',
+        discovery_route: 'target_platform_first'
+      });
+      if (saved.inserted) insertedCount += 1;
+      else skipped += 1;
     }
-    completedCycles += 1;
-    await updateTask(taskId, {
-      completed_cycles: completedCycles,
-      success_count: insertedCount,
-      failed_count: failedCount,
-      result_count: insertedCount,
-      provider_attempts: JSON.stringify(allAttempts),
-      raw_response_summary: JSON.stringify(responseSummary)
+    responseSummary.push({
+      stage: 'video_evidence_discovery',
+      target_platform: targetPlatform,
+      provider: result.provider,
+      returned: result.candidates.length,
+      inserted: insertedCount,
+      skipped
     });
+  } catch (error) {
+    failedCount = 1;
+    allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]));
+    responseSummary.push({ stage: 'video_evidence_discovery', target_platform: targetPlatform, error: error.message });
   }
 
   const status = insertedCount > 0 && failedCount > 0 ? 'partial_failed' : insertedCount > 0 ? 'success' : 'failed';
   await updateTask(taskId, {
     status,
-    error_message: status === 'failed' ? 'No video evidence was inserted. Import video links manually or check provider attempts.' : '',
-    finished_at: new Date().toISOString(),
-    provider_attempts: JSON.stringify(allAttempts),
-    raw_response_summary: JSON.stringify(responseSummary)
-  });
-}
-
-async function processTask(taskId, options = {}) {
-  const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
-  if (!task) return;
-  const strategy = await getReadyStrategy(task.strategy_id);
-  const cycles = parseJson(task.search_cycles, DEFAULT_SEARCH_CYCLES);
-  const allAttempts = [];
-  const responseSummary = [];
-  let successCount = 0;
-  let failedCount = 0;
-  let completedCycles = 0;
-
-  await updateTask(taskId, { status: 'running', started_at: new Date().toISOString(), total_cycles: cycles.length });
-
-  for (const cycle of cycles) {
-    if (cancelledTasks.has(taskId)) {
-      await updateTask(taskId, { status: 'cancelled', finished_at: new Date().toISOString(), provider_attempts: JSON.stringify(allAttempts), raw_response_summary: JSON.stringify(responseSummary) });
-      cancelledTasks.delete(taskId);
-      return;
-    }
-    const pairs = await sourceTargetPairs(cycle, strategy, options.searchSources || [], options.targetPlatforms || [], options.discoveryRoutes || []);
-    await updateTask(taskId, { current_cycle: cycle.cycle });
-
-    for (const pair of pairs) {
-      const { searchSource, targetPlatform, discoveryRoute, sourcePlatform } = pair;
-      const request = buildCycleRequest(strategy, cycle, searchSource, targetPlatform, options.limit || 10, discoveryRoute, sourcePlatform);
-      try {
-        const result = await runProvider(request, options.allowFallback !== false);
-        allAttempts.push(...result.attempts.map((attempt) => ({ ...attempt, cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform })));
-        const seen = new Set();
-        let inserted = 0;
-        let skipped = 0;
-        for (const raw of result.candidates.slice(0, options.limit || 10)) {
-          const normalized = applyFinderGates(normalizeCandidate(raw, request, result.provider), request);
-          const key = profileKey(normalized);
-          if (seen.has(key)) {
-            skipped += 1;
-            continue;
-          }
-          seen.add(key);
-          const saved = await upsertRawCandidate(normalized, task, cycle, result.provider);
-          if (saved.inserted && saved.status !== 'ignored') inserted += 1;
-          if (saved.skipped || saved.status === 'ignored') skipped += 1;
-        }
-        successCount += inserted;
-        responseSummary.push({ cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform, provider: result.provider, returned: result.candidates.length, inserted, skipped });
-      } catch (error) {
-        failedCount += 1;
-        allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]).map((attempt) => ({ ...attempt, cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform })));
-        responseSummary.push({ cycle: cycle.cycle, discovery_route: discoveryRoute, source_platform: sourcePlatform, search_source: searchSource, target_platform: targetPlatform, error: error.message });
-      }
-    }
-
-    completedCycles += 1;
-    await updateTask(taskId, {
-      completed_cycles: completedCycles,
-      success_count: successCount,
-      failed_count: failedCount,
-      result_count: successCount,
-      provider_attempts: JSON.stringify(allAttempts),
-      raw_response_summary: JSON.stringify(responseSummary)
-    });
-  }
-
-  const status = successCount > 0 && failedCount > 0 ? 'partial_failed' : successCount > 0 ? 'success' : 'failed';
-  await updateTask(taskId, {
-    status,
-    error_message: status === 'failed' ? 'No candidates were inserted. Check provider attempts.' : '',
+    success_count: insertedCount,
+    failed_count: failedCount,
+    result_count: insertedCount,
+    error_message: status === 'failed' ? 'No target-platform video evidence was inserted.' : '',
     finished_at: new Date().toISOString(),
     provider_attempts: JSON.stringify(allAttempts),
     raw_response_summary: JSON.stringify(responseSummary)
@@ -2339,8 +1753,7 @@ router.get('/', async (req, res) => {
       ...row,
       search_sources: parseJson(row.search_sources, parseList(row.search_sources)),
       discovery_routes: parseJson(row.discovery_routes, parseList(row.discovery_routes)),
-      target_platforms: parseJson(row.target_platforms, parseList(row.target_platforms || row.platform)),
-      search_cycles: parseJson(row.search_cycles, []),
+      target_platform: clean(row.platform),
       provider_attempts: parseJson(row.provider_attempts, []),
       raw_response_summary: parseJson(row.raw_response_summary, [])
     })) });
@@ -2354,8 +1767,7 @@ router.post('/:id/video-evidence/import', async (req, res) => {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
     const rawRequest = parseJson(task.raw_request, {});
-    const targetPlatforms = parseJson(task.target_platforms, parseList(task.platform)).filter((p) => TARGET_PLATFORMS.includes(p));
-    const defaultTarget = clean(req.body?.target_platform || req.body?.targetPlatform || targetPlatforms[0] || rawRequest.target_platforms?.[0] || task.platform).split(',')[0] || 'youtube';
+    const defaultTarget = clean(req.body?.target_platform || req.body?.targetPlatform || rawRequest.target_platform || task.platform).split(',')[0] || 'youtube';
     const rows = Array.isArray(req.body?.video_evidence)
       ? req.body.video_evidence
       : Array.isArray(req.body?.videos)
@@ -2373,7 +1785,7 @@ router.post('/:id/video-evidence/import', async (req, res) => {
         const saved = await saveVideoEvidence(task, row, {
           target_platform: targetPlatform,
           evidence_platform: targetPlatform,
-          source_signal: clean(row.source_signal || 'native_platform'),
+          source_signal: clean(row.source_signal || 'unclassified'),
           source_query: clean(row.source_query || req.body?.source_query || ''),
           discovery_scope: 'target_platform_only',
           discovery_route: 'target_platform_first'
@@ -2407,6 +1819,7 @@ router.get('/:id/video-evidence', async (req, res) => {
         vs.crawl_status, vs.analysis_status as video_analysis_status,
         snap.play_count, snap.like_count, snap.comment_count, snap.primary_exposure_count, snap.exposure_metric_type, snap.snapshot_at,
         vai.status as finder_analysis_status,
+        vai.evidence_signals,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.content_relevance_score')) as content_relevance_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.creator_fit_score')) as creator_fit_score,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.evidence_strength_score')) as evidence_strength_score,
@@ -2493,12 +1906,12 @@ router.post('/:id/evidence-analysis', async (req, res) => {
         await dbOperations.run(
           `INSERT INTO video_ai_analysis_results
            (video_source_id, analysis_type, analysis_scope_id, status, model_name, score, summary,
-            raw_result, extra_data, final_prompt)
-           VALUES (?, 'finder_evidence', ?, ?, ?, ?, ?, ?, ?, ?)
+            raw_result, extra_data, evidence_signals, final_prompt)
+           VALUES (?, 'finder_evidence', ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE
             status = VALUES(status), model_name = VALUES(model_name), score = VALUES(score),
             summary = VALUES(summary), raw_result = VALUES(raw_result), extra_data = VALUES(extra_data),
-            final_prompt = VALUES(final_prompt), error_message = NULL, updated_at = CURRENT_TIMESTAMP`,
+            evidence_signals = VALUES(evidence_signals), final_prompt = VALUES(final_prompt), error_message = NULL, updated_at = CURRENT_TIMESTAMP`,
           [
             evidence.video_source_id,
             evidence.id,
@@ -2508,6 +1921,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
             normalized.candidate_decision.reason || normalized.hard_filter.hard_filter_notes,
             JSON.stringify(ai.raw || parsed),
             extraData,
+            JSON.stringify(normalized.evidence_signals),
             ai.finalPrompt
           ]
         );
@@ -2654,7 +2068,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
           }))
         }
       };
-      const saved = await upsertRawCandidate(candidate, task, { cycle: 'video_evidence', name: 'Video Evidence Finder' }, 'video_evidence_finder');
+      const saved = await upsertRawCandidate(candidate, task, 'video_evidence_finder');
       if (saved.inserted) inserted.push(saved);
       else skipped.push(saved);
     }
@@ -2693,8 +2107,7 @@ router.get('/:id', async (req, res) => {
       ...row,
       search_sources: parseJson(row.search_sources, parseList(row.search_sources)),
       discovery_routes: parseJson(row.discovery_routes, parseList(row.discovery_routes)),
-      target_platforms: parseJson(row.target_platforms, parseList(row.target_platforms || row.platform)),
-      search_cycles: parseJson(row.search_cycles, []),
+      target_platform: clean(row.platform),
       provider_attempts: parseJson(row.provider_attempts, []),
       raw_response_summary: parseJson(row.raw_response_summary, [])
     } });
@@ -2706,112 +2119,63 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const body = req.body || {};
+    const legacyFields = [
+      'cycles', 'search_cycles', 'searchCycles', 'search_intensity', 'searchIntensity',
+      'discovery_routes', 'discoveryRoutes', 'execution_mode', 'executionMode',
+      'subtask_mode', 'subtaskMode', 'allow_cross_platform_evidence',
+      'allowCrossPlatformEvidence', 'target_platforms', 'platforms'
+    ].filter((key) => Object.prototype.hasOwnProperty.call(body, key));
+    if (legacyFields.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'Legacy Finder fields are no longer supported: ' + legacyFields.join(', ')
+      });
+    }
+
     const strategy = await getReadyStrategy(body.strategy_id);
-    const executionMode = clean(body.execution_mode || body.executionMode || 'system_provider');
-    const targetPlatforms = (body.target_platforms || body.platforms || []).filter((p) => TARGET_PLATFORMS.includes(p));
-    const searchIntensity = normalizeSearchIntensity(body.search_intensity || body.searchIntensity);
-    const explicitCycleIds = parseList(body.cycles || body.search_cycles || body.searchCycles);
-    const cyclesSource = clean(body.cycles_source || body.cyclesSource);
-    const hasManualCycles = explicitCycleIds.length > 0 && cyclesSource !== 'intensity';
-    const requestedTargets = targetPlatforms.length
-      ? targetPlatforms
-      : [...new Set((strategy.search_strategy || DEFAULT_SEARCH_CYCLES).flatMap((cycle) => targetPlatformsForCycle(cycle, strategy)))];
-    const requestedCycles = hasManualCycles
-      ? explicitCycleIds
-      : executionMode === 'video_evidence_finder'
-        ? ['C2', 'C3', 'C6']
-        : recommendedCycleIdsForTargets(requestedTargets, searchIntensity);
-    const videoEvidenceSearchSources = executionMode === 'video_evidence_finder'
-      ? await preferredSearchSourcesForTargetPlatforms(requestedTargets)
-      : [];
-    const fullStrategyCycles = (strategy.search_strategy || DEFAULT_SEARCH_CYCLES)
-      .map((cycle) => ({ ...cycle, target_count: Math.min(Number(body.limit_per_platform || cycle.target_count || 10), 50) }));
-    const cycles = fullStrategyCycles
-      .filter((cycle) => requestedCycles.includes(cycle.cycle))
-      .map((cycle) => ({ ...cycle }));
-    if (!cycles.length) return res.status(400).json({ success: false, error: 'Please select at least one search cycle' });
-    const searchSources = (body.search_sources || []).filter((source) => SEARCH_SOURCES.includes(source));
-    const discoveryRoutes = (body.discovery_routes || body.discoveryRoutes || []).filter((route) => route !== 'cycle_multi_route' && DISCOVERY_ROUTES.includes(route));
-    const normalizedCycles = cycles.map((cycle) => ({
-      ...cycle,
-      discovery_routes: discoveryRoutes.length ? discoveryRoutes : discoveryRoutesForCycle(cycle, strategy, [], targetPlatforms),
-      search_sources: videoEvidenceSearchSources.length ? videoEvidenceSearchSources : searchSources.length ? searchSources : searchSourcesForCycle(cycle),
-      target_platforms: targetPlatforms.length ? targetPlatforms : targetPlatformsForCycle(cycle, strategy)
-    }));
-    const rawRequest = {
-      strategy_id: strategy.id,
-      execution_mode: executionMode,
-      subtask_mode: clean(body.subtask_mode || body.subtaskMode || 'cycle'),
-      search_intensity: searchIntensity,
-      cycles_source: hasManualCycles ? 'manual' : 'intensity',
-      cycles: normalizedCycles.map((c) => c.cycle),
-      discovery_routes: discoveryRoutes,
-      search_sources: videoEvidenceSearchSources.length ? videoEvidenceSearchSources : searchSources,
-      target_platforms: targetPlatforms.length ? targetPlatforms : [...new Set(normalizedCycles.flatMap((cycle) => cycle.target_platforms || []))],
-      discovery_scope: executionMode === 'video_evidence_finder' ? 'target_platform_only' : clean(body.discovery_scope || body.discoveryScope || ''),
-      discovery_route: executionMode === 'video_evidence_finder' ? 'target_platform_first' : '',
-      allow_cross_platform_evidence: executionMode === 'video_evidence_finder' ? false : Boolean(body.allow_cross_platform_evidence || body.allowCrossPlatformEvidence),
-      seed_urls: parseList(body.seed_urls || body.seedUrls),
-      limit_per_platform: Number(body.limit_per_platform || 10),
-      allow_fallback: body.allow_fallback !== false
-    };
+    const targetPlatform = clean(body.target_platform);
+    if (!TARGET_PLATFORMS.includes(targetPlatform)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Finder requires exactly one target_platform: youtube, instagram, or tiktok'
+      });
+    }
+    const limit = Math.max(1, Math.min(Number(body.limit || 10), 50));
+    const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
+    const keywords = discoveryKeywords(strategy);
+    const rawRequest = { strategy_id: strategy.id, target_platform: targetPlatform, limit };
     const result = await dbOperations.run(
-      `INSERT INTO finder_tasks
-       (campaign_id, strategy_id, name, platform, keywords, status, search_sources, discovery_routes, target_platforms, raw_request, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'INSERT INTO finder_tasks ' +
+      '(campaign_id, strategy_id, name, platform, keywords, status, search_sources, ' +
+      'discovery_routes, raw_request, notes, source_agent) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         strategy.campaign_id,
         strategy.id,
-        `${strategy.name} Finder ${new Date().toLocaleString()}`,
-        (targetPlatforms.length ? targetPlatforms : [...new Set(normalizedCycles.flatMap((cycle) => cycle.target_platforms || []))]).join(','),
-        normalizedCycles.map((cycle) => keywordString(cycle, strategy)).join(' | '),
-        executionMode === 'video_evidence_finder' ? 'draft' : 'draft',
-        JSON.stringify(searchSources.length ? searchSources : [...new Set(normalizedCycles.flatMap((cycle) => cycle.search_sources || []))]),
-        JSON.stringify(executionMode === 'video_evidence_finder' ? ['target_platform_first'] : (discoveryRoutes.length ? discoveryRoutes : [...new Set(normalizedCycles.flatMap((cycle) => cycle.discovery_routes || []))])),
-        JSON.stringify(targetPlatforms.length ? targetPlatforms : [...new Set(normalizedCycles.flatMap((cycle) => cycle.target_platforms || []))]),
+        strategy.name + ' Finder ' + new Date().toLocaleString(),
+        targetPlatform,
+        keywords,
+        'draft',
+        JSON.stringify([searchSource]),
+        JSON.stringify(['target_platform_first']),
         JSON.stringify(rawRequest),
-        body.notes || ''
+        clean(body.notes),
+        'video_evidence_finder'
       ]
     );
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [result.id]);
-    if (rawRequest.execution_mode === 'video_evidence_finder') {
-      if (process.env.NODE_ENV !== 'test') {
-        setImmediate(() => {
-          processVideoEvidenceTask(result.id, {
-            targetPlatforms: targetPlatforms.length ? targetPlatforms : [...new Set(normalizedCycles.flatMap((cycle) => cycle.target_platforms || []))],
-            limit: Math.max(1, Math.min(Number(body.limit_per_platform || 10), 50)),
-            allowFallback: body.allow_fallback !== false
-          }).catch((error) => {
-            updateTask(result.id, {
-              status: 'failed',
-              error_message: error.message,
-              finished_at: new Date().toISOString()
-            });
+    if (process.env.NODE_ENV !== 'test') {
+      setImmediate(() => {
+        processVideoEvidenceTask(result.id, { targetPlatform, limit }).catch((error) => {
+          updateTask(result.id, {
+            status: 'failed',
+            error_message: error.message,
+            finished_at: new Date().toISOString()
           });
         });
-      }
-    } else if (rawRequest.execution_mode !== 'subagent_hybrid') {
-      if (process.env.NODE_ENV !== 'test') {
-        setImmediate(() => {
-          processTask(result.id, {
-            searchSources,
-            discoveryRoutes,
-            targetPlatforms,
-            limit: Math.max(1, Math.min(Number(body.limit_per_platform || 10), 50)),
-            allowFallback: body.allow_fallback !== false
-          }).catch((error) => {
-            updateTask(result.id, {
-              status: 'failed',
-              error_message: error.message,
-              finished_at: new Date().toISOString()
-            });
-          });
-        });
-      }
-    } else {
-      await updateTask(result.id, { source_agent: 'subagent_hybrid', status: 'draft' });
+      });
     }
-    res.json({ success: true, data: task, message: rawRequest.execution_mode === 'subagent_hybrid' ? 'Finder task created for subagent subtasks' : rawRequest.execution_mode === 'video_evidence_finder' ? 'Video Evidence Finder task started' : 'Finder task started' });
+    res.json({ success: true, data: task, message: 'Video Evidence Finder task started' });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
