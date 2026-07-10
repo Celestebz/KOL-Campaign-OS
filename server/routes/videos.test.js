@@ -45,9 +45,9 @@ test('GET /api/videos returns finder evidence analysis as discovery scene fallba
     ['Video Test Campaign', 'PETKIT', 'Breezy 2']
   );
   const strategy = await dbOperations.run(
-    `INSERT INTO kol_strategies (campaign_id, name, status, campaign_goal, product_context, persona_config, search_strategy, scoring_weights, finder_handoff)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [campaign.id, 'Video Test Strategy', 'ready', 'goal', '{}', '{}', '{}', '{}', '{}']
+    `INSERT INTO kol_strategies (campaign_id, name, status, campaign_goal, product_context, persona_config, scoring_weights, finder_handoff)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [campaign.id, 'Video Test Strategy', 'ready', 'goal', '{}', '{}', '{}', '{}']
   );
   const task = await dbOperations.run(
     `INSERT INTO finder_tasks (campaign_id, strategy_id, name, status, platform)

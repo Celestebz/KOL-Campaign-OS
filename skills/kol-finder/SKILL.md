@@ -1,246 +1,145 @@
 ---
 name: kol-finder
-description: Run KOL Campaign OS Finder with the new Target Platform First + Video Evidence First workflow. Use when Kimi Code, Codex, WorkBuddy, or another agent must find KOL profile links by first importing target-platform video evidence. Requires explicit user confirmation of product/project/strategy before any Finder task is created, reused, or continued.
+description: Use when an external agent must find KOL profile links in KOL Campaign OS by collecting and analyzing video evidence on one explicitly confirmed target platform.
 ---
 
 # KOL Finder External Agent
 
 ## Core Rule
 
-Use **Video Evidence Finder v1** only.
-
-## Mandatory User Confirmation Gate
-
-Before reading, creating, reusing, or continuing any Finder task, confirm the business context with the user.
-
-If the user has not explicitly provided or confirmed the target product/project/campaign and strategy for this run, stop and ask. Do not infer these values from local database contents, recent records, existing candidates, previous Finder tasks, default rows, or project names seen in the UI.
-
-Required confirmation:
-
-- target product/project/campaign
-- target platform: `youtube`, `instagram`, or `tiktok`
-- strategy to use, or explicit permission to create/complete a strategy first
-
-Hard stops:
-
-- Do not default to the most recent `campaign`, `strategy`, `finder_task`, or candidate pool record.
-- Do not use `Default Campaign` as a valid campaign unless the user explicitly confirms it by name for this run.
-- Do not use an empty strategy, blank strategy name, blank product/category/market fields, or generic placeholder strategy as valid strategy context.
-- Do not continue an existing Finder task unless the user explicitly identifies that task, or confirms the exact campaign/product + platform + strategy after you show the candidate task.
-- If multiple possible campaigns, strategies, or Finder tasks exist, list the relevant options briefly and ask the user to choose.
-- If the user says only "找KOL", "run Finder", "use existing Finder", or similar without product/project/strategy, ask for the missing context before making API calls that create, import, analyze, or generate candidates.
-
-Only after this gate is satisfied may the agent run pre-flight checks, create/use Finder tasks, import evidence, analyze evidence, or generate Raw Candidates.
-
-The final business goal is to find KOL profile links, but Finder must first collect video evidence:
+Finder discovers creators from target-platform videos. A profile link identifies the creator; a video proves why that creator belongs in the candidate pool.
 
 ```text
-author_profile_url = final KOL identity / profile link
-video_url = evidence proving why this creator should become a candidate
+author_profile_url = KOL identity
+video_url = evidence
 ```
 
-Do not import a profile URL by itself as evidence.
+A profile URL alone is not evidence.
+
+## Mandatory Confirmation
+
+Before creating, reusing, or continuing a Finder task, confirm:
+
+- product/project/campaign
+- one target platform: `youtube`, `instagram`, or `tiktok`
+- ready strategy, or permission to create/complete it first
+
+Do not infer these values from the newest database record, UI state, previous task, candidate pool, or `Default Campaign`. If several records fit, show concise options and ask the user to choose.
 
 ## Required Flow
 
 ```text
-Read Agent Brief and Strategy
--> confirm target platform (target_platform = evidence_platform)
--> use or create video_evidence_finder task
--> search target-platform KOL content evidence
--> import video_url + author_profile_url
--> system crawl and analyze video evidence
--> system aggregate evidence by author
--> system generate Raw Candidates
--> human approves in UI
+confirm context
+-> check configuration
+-> create or confirm one-platform Finder task
+-> find videos on that platform
+-> import video_url plus author_profile_url
+-> analyze evidence
+-> generate Raw Candidates from analyzed evidence
+-> human reviews candidates in UI
 ```
 
-The Finder goal is to discover KOLs supported by video evidence, not to collect videos for their own sake.
+The system selects discovery providers from Settings. The agent does not choose execution modes, routes, or search passes.
 
-Do not directly write Raw Candidates from search results.
+## Platform Boundary
 
-## MVP Boundary
+The task and every imported video use the same platform:
 
-Finder v1 is target-platform-only:
+- YouTube task: YouTube videos, Shorts, and channel/profile identity.
+- Instagram task: Instagram Reels/Posts and Instagram profile identity.
+- TikTok task: TikTok videos and TikTok profile identity.
 
-```text
-target_platform = evidence_platform
-discovery_scope = target_platform_only
-discovery_route = target_platform_first
-allow_cross_platform_evidence = false
-```
+Accepted `video_url` forms:
 
-Platform rules:
+- `https://www.youtube.com/watch?v=...`
+- `https://www.youtube.com/shorts/...`
+- `https://youtu.be/...`
+- `https://www.instagram.com/reel/.../`
+- `https://www.instagram.com/p/.../`
+- `https://www.tiktok.com/@handle/video/...`
 
-- `target_platform = youtube`: find YouTube videos/Shorts and the YouTube channel/profile.
-- `target_platform = instagram`: find Instagram Reels/Posts and the Instagram profile.
-- `target_platform = tiktok`: find TikTok videos and the TikTok profile.
+Profile pages belong only in `author_profile_url`. If a profile has no relevant video, keep it in `profile_leads_needing_video_evidence` and do not import it.
 
-Do not use YouTube videos as evidence for Instagram Finder.
-Do not use Instagram profile pages as video evidence.
-Do not use YouTube channel pages as video evidence.
-Do not use TikTok profile pages as video evidence.
-
-## Accepted Video URL Formats
-
-Use only these as `video_url`:
-
-- YouTube: `https://www.youtube.com/watch?v=...`
-- YouTube Shorts: `https://www.youtube.com/shorts/...`
-- YouTube short URL: `https://youtu.be/...`
-- Instagram Reel: `https://www.instagram.com/reel/.../`
-- Instagram Post: `https://www.instagram.com/p/.../`
-- TikTok video: `https://www.tiktok.com/@handle/video/...`
-
-Profile URLs are allowed only as `author_profile_url`.
-
-## Profile Leads
-
-It is okay to discover a possible KOL profile first.
-
-Correct behavior:
-
-```text
-Find possible profile
--> open or inspect profile
--> find relevant Reel/Post/video
--> import video_url with author_profile_url
-```
-
-If you only found a profile and no relevant video:
-
-```text
-Do not import it.
-Keep it as profile_leads_needing_video_evidence in your final report.
-Continue searching for video evidence.
-```
-
-## Pre-flight Check
-
-Before creating or running a Finder task, verify required configuration:
+## Pre-flight
 
 ```http
 GET {base_url}/api/settings/health/config
 ```
 
-If AI or the target platform data source is not configured, stop and ask the user to set it in Settings. Do not start search if `data.ready` is `false`.
+If `data.ready` is false, stop and tell the user which AI or platform provider setting is missing.
 
-## Create Or Use Finder Task
+## Create Or Reuse A Task
 
-If a Video Evidence Finder task already exists for the explicitly confirmed campaign/product, target platform, and strategy, continue using it unless the user explicitly asks to create a new task.
-
-Never continue a task merely because it is the newest task or the only task returned by the database.
-
-Create task:
+Reuse a task only after the user confirms its exact campaign/product, target platform, and strategy. Otherwise create:
 
 ```http
-POST /api/finder-tasks
+POST {base_url}/api/finder-tasks
 Content-Type: application/json
 
 {
   "strategy_id": 1,
-  "execution_mode": "video_evidence_finder",
-  "target_platforms": ["instagram"],
-  "discovery_scope": "target_platform_only",
-  "allow_cross_platform_evidence": false,
-  "limit_per_platform": 10
+  "target_platform": "instagram",
+  "limit": 10
 }
 ```
 
-Do not ask for Quick / Standard / Full cycle intensity for Video Evidence Finder v1. Those old Cycle settings do not control the new default workflow.
+The request represents one target platform and one video discovery run.
 
 ## Import Video Evidence
 
-Search for relevant KOL content on the target platform. Acceptable discovery providers:
-
-- Maton Agent
-- Google Web Search
-- platform-native search
-- fallback web search
-
-**Important:** Google Web and generic web search are discovery providers only. Filter results strictly to target-platform `video_url`s. Do not import blog posts, e-commerce pages, or cross-platform links as evidence.
+Discovery may use the configured provider, web search, or platform search, but imported results must be valid videos from the task platform.
 
 ```http
-POST /api/finder-tasks/{finder_task_id}/video-evidence/import
+POST {base_url}/api/finder-tasks/{finder_task_id}/video-evidence/import
 Content-Type: application/json
-```
 
-Payload:
-
-```json
 {
-  "video_evidence": [
+  "evidence": [
     {
       "video_url": "https://www.instagram.com/reel/xxxx/",
-      "target_platform": "instagram",
-      "evidence_platform": "instagram",
-      "discovery_scope": "target_platform_only",
-      "discovery_route": "target_platform_first",
       "author_profile_url": "https://www.instagram.com/creator/",
-      "source_signal": "use_case",
+      "title": "Relevant product demonstration",
+      "author_name": "Creator name",
       "source_query": "vocal processor live performance",
-      "evidence_reason": "This video shows a relevant vocal setup, product use case, category fit, or creator fit."
+      "evidence_reason": "Why this video is relevant enough for AI analysis"
     }
   ]
 }
 ```
 
-Required fields:
+Required: `video_url`. Preserve `author_profile_url` whenever available. Never invent creator metrics or contact data.
 
-- `video_url`
-- `target_platform`
-- `evidence_platform`
-- `author_profile_url` when available
-- `source_signal`
-- `source_query`
-- `evidence_reason`
+## Evidence Signals
 
-Recommended `source_signal` values:
+The agent does not pre-classify imported videos. After analysis, AI assigns zero or more evidence signals:
 
+- `competitor`
 - `category`
 - `use_case`
-- `native_platform`
-- `competitor`
 - `feature`
 - `community`
-- `seed_graph`
 
-Default first-pass signals:
+A video may match multiple evidence signals. These labels describe what the video proves; they are not separate searches.
 
-```text
-category
-use_case
-native_platform
-```
+## Analyze And Generate
 
-These are signal labels, not mandatory sequential cycles.
-
-## System Analysis and Candidate Generation
-
-After importing video evidence, the system automatically:
-
-- writes or reuses `video_sources` (deduplicated by canonical URL / platform video ID)
-- fetches or reuses `video_snapshots` (skips if a recent snapshot already exists)
-
-The agent does not need to call `POST /api/videos/crawl` manually.
-
-Then run evidence analysis:
+Import automatically writes or reuses canonical `video_sources` and snapshots. Then call:
 
 ```http
-POST /api/finder-tasks/{finder_task_id}/evidence-analysis
+POST {base_url}/api/finder-tasks/{finder_task_id}/evidence-analysis
 ```
 
-Then generate Raw Candidates:
+Evidence analysis evaluates video relevance, the five labels, creator profile quality, hard filters, risk, and candidate priority.
+
+Generate candidates only through:
 
 ```http
-POST /api/finder-tasks/{finder_task_id}/generate-candidates-from-evidence
+POST {base_url}/api/finder-tasks/{finder_task_id}/generate-candidates-from-evidence
 ```
 
-The system aggregates evidence by author and generates one Raw Candidate per KOL. AI score is for ranking only; eligible candidates enter the pool as `manual_review` or `risk_review`, not filtered out by score.
+The system aggregates analyzed videos by author and creates one Raw Candidate per creator. Score ranks eligible candidates; human review makes the approval decision.
 
-## Output Report
-
-At the end, report:
+## Final Report
 
 ```json
 {
@@ -255,22 +154,15 @@ At the end, report:
 }
 ```
 
-## Hard Rules
+## Hard Boundaries
 
-- Do not call approve APIs.
-- Do not write directly to KOL Master or Campaign KOL.
-- Do not directly import Raw Candidates from search results.
-- Do not ask the user to choose old Cycle / Route / Subagent Hybrid settings for Video Evidence Finder v1.
-- Do not use `youtube_to_instagram`, `google_web_to_instagram`, `reddit_to_instagram`, or other cross-platform routes in the default v1 workflow.
-- Do not import `discovery_route: "cycle_multi_route"`.
-- Do not import a profile URL as `video_url`.
-- Do not drop `author_profile_url`; it is the final profile link the user needs.
-- Do not invent follower counts, views, emails, country, price, or engagement.
-- If web/browser/API access is blocked, report the blocker clearly. Do not fabricate video evidence.
-- If a field is unknown, leave it blank and explain uncertainty in `evidence_reason`.
+- Do not call approval APIs or write to KOL Master/Campaign KOL.
+- Do not write directly to MySQL or use SQLite.
+- Do not create candidates from unprocessed search results.
+- Do not use evidence from a different platform.
+- Do not put profile pages in `video_url`.
+- Do not lose `author_profile_url`.
+- Do not fabricate evidence, metrics, identity, contact data, market, or engagement.
+- If access is blocked, report the blocker and preserve uncertainty.
 
-## Core Principle
-
-The agent may discover leads, but it must not bypass the system to generate Raw Candidates.
-
-Every `video_url` must enter `video_sources` / `video_snapshots` / `video_ai_analysis_results` first. Raw Candidates are generated by the system after evidence analysis and author aggregation.
+Every candidate must originate from analyzed video evidence in the system.

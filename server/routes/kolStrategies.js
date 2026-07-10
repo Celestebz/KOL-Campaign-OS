@@ -48,19 +48,6 @@ const DEFAULT_SCORING_WEIGHTS = {
   micro_threshold: 65
 };
 
-const DEFAULT_SEARCH_CYCLES = [
-  { cycle: 'C1', name: 'Competitor Reviews', priority: 1, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Find creators already reviewing competitors.' },
-  { cycle: 'C2', name: 'Category Search', priority: 2, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Find creators ranking or reviewing the category.' },
-  { cycle: 'C3', name: 'Use-case Search', priority: 3, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Find creators around specific usage scenarios.' },
-  { cycle: 'C4', name: 'Feature / Technical Search', priority: 4, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Find technical demos and feature-led creators.' },
-  { cycle: 'C5', name: 'Community / Audience Search', priority: 5, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Find audience communities and niche experts.' },
-  { cycle: 'C6', name: 'Platform Native Search', priority: 6, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Use hashtags, playlists, reels, shorts, and native search.' },
-  { cycle: 'C7', name: 'Spider-web Expansion', priority: 7, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: 'Expand from similar creators, collaborations, tags, and comments.' }
-];
-
-const CYCLE_ORDER = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'];
-const DEFAULT_CYCLE_BY_ID = Object.fromEntries(DEFAULT_SEARCH_CYCLES.map((cycle) => [cycle.cycle, cycle]));
-
 function clean(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
@@ -82,25 +69,14 @@ function asJson(value, fallback) {
   return JSON.stringify(value);
 }
 
-function normalizeSearchStrategy(value) {
-  const parsed = Array.isArray(value) ? value : parseJson(value, DEFAULT_SEARCH_CYCLES);
-  const byCycle = {};
-  for (const item of Array.isArray(parsed) ? parsed : []) {
-    const cycleId = clean(item?.cycle).toUpperCase();
-    if (CYCLE_ORDER.includes(cycleId)) {
-      byCycle[cycleId] = { ...item, cycle: cycleId };
-    }
+function rejectLegacyCycleFields(body = {}) {
+  const legacy = ['search_strategy', 'cycles', 'search_cycles', 'search_intensity']
+    .filter((key) => Object.prototype.hasOwnProperty.call(body, key));
+  if (legacy.length) {
+    const error = new Error(`Legacy Cycle fields are no longer supported: ${legacy.join(', ')}`);
+    error.statusCode = 400;
+    throw error;
   }
-  return CYCLE_ORDER.map((cycleId, index) => ({
-    ...DEFAULT_CYCLE_BY_ID[cycleId],
-    ...(byCycle[cycleId] || {}),
-    cycle: cycleId,
-    priority: index + 1
-  }));
-}
-
-function searchStrategyJson(value) {
-  return JSON.stringify(normalizeSearchStrategy(value));
 }
 
 function normalizeStrategy(row) {
@@ -110,7 +86,6 @@ function normalizeStrategy(row) {
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
-    search_strategy: normalizeSearchStrategy(row.search_strategy),
     scoring_weights: parseJson(row.scoring_weights, DEFAULT_SCORING_WEIGHTS),
     finder_handoff: parseJson(row.finder_handoff, {}),
     source_material_meta: parseJson(row.source_material_meta, {}),
@@ -333,7 +308,6 @@ function buildStrategyPrompt(strategy, campaign, materialContext = null) {
         negative_signals: [],
         best_content_formats: []
       },
-      search_strategy: normalizeSearchStrategy(DEFAULT_SEARCH_CYCLES),
       scoring_weights: DEFAULT_SCORING_WEIGHTS,
       finder_handoff: {
         required_platforms: [],
@@ -355,7 +329,6 @@ function buildStrategyPrompt(strategy, campaign, materialContext = null) {
     existing_strategy_sections: {
       product_context: parseJson(strategy.product_context, {}),
       persona_config: parseJson(strategy.persona_config, {}),
-      search_strategy: normalizeSearchStrategy(strategy.search_strategy),
       scoring_weights: parseJson(strategy.scoring_weights, DEFAULT_SCORING_WEIGHTS),
       finder_handoff: parseJson(strategy.finder_handoff, {})
     },
@@ -384,7 +357,7 @@ async function generateDraft(strategy, materialContext = null) {
     'You are a senior KOL campaign strategist inside KOL Campaign OS.',
     'Return valid JSON only. Do not include Markdown, comments, or chain-of-thought.',
     'Follow the bundled kol-strategy skill instructions and output schema exactly.',
-    skillContext || 'Use a structured KOL strategy schema with product_context, persona_config, search_strategy, scoring_weights, and finder_handoff.'
+    skillContext || 'Use a structured KOL strategy schema with product_context, persona_config, scoring_weights, and finder_handoff.'
   ].join('\n\n');
   const userPrompt = buildStrategyPrompt(strategy, campaign, materialContext);
   const content = provider === 'minimax'
@@ -412,7 +385,7 @@ function validateReady(strategy) {
   if (!clean(strategy.campaign_goal)) missing.push('Campaign goal');
   if (!Object.keys(strategy.product_context || {}).length) missing.push('Product Breakdown');
   if (!Object.keys(strategy.persona_config || {}).length) missing.push('KOL Persona');
-  if (!Array.isArray(strategy.search_strategy) || !strategy.search_strategy.length) missing.push('Search Strategy');
+
   if (!Object.keys(strategy.finder_handoff || {}).length) missing.push('Finder Handoff');
   if (missing.length) throw new Error(`Cannot mark ready. Missing: ${missing.join(', ')}`);
 }
@@ -451,6 +424,7 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const body = req.body || {};
+    rejectLegacyCycleFields(body);
     const campaignId = Number(body.campaign_id || 1);
     const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [campaignId]);
     const name = clean(body.name || `${campaign?.name || 'Campaign'} Strategy`);
@@ -458,8 +432,8 @@ router.post('/', async (req, res) => {
       `INSERT INTO kol_strategies
        (campaign_id, name, brand, product, category, target_market, language, primary_platform,
         secondary_platforms, campaign_goal, status, product_context, persona_config,
-        search_strategy, scoring_weights, finder_handoff)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        scoring_weights, finder_handoff)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         campaignId,
         name,
@@ -474,25 +448,25 @@ router.post('/', async (req, res) => {
         clean(body.status) || 'draft',
         asJson(body.product_context, {}),
         asJson(body.persona_config, {}),
-        searchStrategyJson(body.search_strategy),
         asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
         asJson(body.finder_handoff, {})
       ]
     );
     res.json({ success: true, data: await getStrategy(result.id), message: 'Strategy created' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
 router.put('/:id', async (req, res) => {
   try {
     const body = req.body || {};
+    rejectLegacyCycleFields(body);
     await dbOperations.run(
       `UPDATE kol_strategies SET
        campaign_id = ?, name = ?, brand = ?, product = ?, category = ?, target_market = ?,
        language = ?, primary_platform = ?, secondary_platforms = ?, campaign_goal = ?,
-       product_context = ?, persona_config = ?, search_strategy = ?, scoring_weights = ?,
+       product_context = ?, persona_config = ?, scoring_weights = ?,
        finder_handoff = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
@@ -508,7 +482,6 @@ router.put('/:id', async (req, res) => {
         clean(body.campaign_goal),
         asJson(body.product_context, {}),
         asJson(body.persona_config, {}),
-        searchStrategyJson(body.search_strategy),
         asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
         asJson(body.finder_handoff, {}),
         req.params.id
@@ -516,7 +489,7 @@ router.put('/:id', async (req, res) => {
     );
     res.json({ success: true, data: await getStrategy(req.params.id), message: 'Strategy saved' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -528,17 +501,15 @@ router.post('/:id/generate-draft', async (req, res) => {
     const merged = {
       product_context: draft.product_context || strategy.product_context || {},
       persona_config: draft.persona_config || strategy.persona_config || {},
-      search_strategy: normalizeSearchStrategy(draft.search_strategy || strategy.search_strategy || DEFAULT_SEARCH_CYCLES),
       scoring_weights: draft.scoring_weights || strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS,
       finder_handoff: draft.finder_handoff || strategy.finder_handoff || {}
     };
     await dbOperations.run(
-      `UPDATE kol_strategies SET product_context = ?, persona_config = ?, search_strategy = ?,
+      `UPDATE kol_strategies SET product_context = ?, persona_config = ?,
        scoring_weights = ?, finder_handoff = ?, status = 'draft', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [
         JSON.stringify(merged.product_context),
         JSON.stringify(merged.persona_config),
-        searchStrategyJson(merged.search_strategy),
         JSON.stringify(merged.scoring_weights),
         JSON.stringify(merged.finder_handoff),
         req.params.id
@@ -562,7 +533,6 @@ router.post('/:id/analyze-materials', upload.array('files', MAX_MATERIAL_FILES),
       source_material_summary: clean(draft.source_material_summary),
       product_context: draft.product_context || strategy.product_context || {},
       persona_config: draft.persona_config || strategy.persona_config || {},
-      search_strategy: normalizeSearchStrategy(draft.search_strategy || strategy.search_strategy || DEFAULT_SEARCH_CYCLES),
       scoring_weights: draft.scoring_weights || strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS,
       finder_handoff: draft.finder_handoff || strategy.finder_handoff || {}
     };
@@ -575,7 +545,7 @@ router.post('/:id/analyze-materials', upload.array('files', MAX_MATERIAL_FILES),
       `UPDATE kol_strategies SET
        source_material_summary = ?, source_material_meta = ?, source_material_type = ?,
        research_status = ?, research_sources = ?,
-       product_context = ?, persona_config = ?, search_strategy = ?,
+       product_context = ?, persona_config = ?,
        scoring_weights = ?, finder_handoff = ?, status = 'draft',
        updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
@@ -587,7 +557,6 @@ router.post('/:id/analyze-materials', upload.array('files', MAX_MATERIAL_FILES),
         JSON.stringify([]),
         JSON.stringify(merged.product_context),
         JSON.stringify(merged.persona_config),
-        searchStrategyJson(merged.search_strategy),
         JSON.stringify(merged.scoring_weights),
         JSON.stringify(merged.finder_handoff),
         req.params.id
@@ -611,6 +580,8 @@ router.post('/:id/analyze-materials', upload.array('files', MAX_MATERIAL_FILES),
 
 router.post('/:id/mark-ready', async (req, res) => {
   try {
+    const body = req.body || {};
+    rejectLegacyCycleFields(body);
     const strategy = await getStrategy(req.params.id);
     if (!strategy) return res.status(404).json({ success: false, error: 'Strategy not found' });
     validateReady(strategy);
@@ -620,7 +591,7 @@ router.post('/:id/mark-ready', async (req, res) => {
     );
     res.json({ success: true, data: await getStrategy(req.params.id), message: 'Strategy is ready' });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    res.status(error.statusCode || 400).json({ success: false, error: error.message });
   }
 });
 
@@ -641,8 +612,8 @@ router.post('/:id/duplicate', async (req, res) => {
       `INSERT INTO kol_strategies
        (campaign_id, name, brand, product, category, target_market, language, primary_platform,
         secondary_platforms, campaign_goal, status, product_context, persona_config,
-        search_strategy, scoring_weights, finder_handoff)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
+        scoring_weights, finder_handoff)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
       [
         strategy.campaign_id,
         `${strategy.name} Copy`,
@@ -656,7 +627,6 @@ router.post('/:id/duplicate', async (req, res) => {
         strategy.campaign_goal || '',
         JSON.stringify(strategy.product_context || {}),
         JSON.stringify(strategy.persona_config || {}),
-        searchStrategyJson(strategy.search_strategy || DEFAULT_SEARCH_CYCLES),
         JSON.stringify(strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS),
         JSON.stringify(strategy.finder_handoff || {})
       ]

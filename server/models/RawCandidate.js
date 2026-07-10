@@ -28,7 +28,6 @@ module.exports = (sequelize, DataTypes) => {
     approved_customer_id: DataTypes.INTEGER,
     approved_campaign_kol_id: DataTypes.INTEGER,
     error_message: DataTypes.TEXT,
-    search_cycle: DataTypes.STRING(100),
     matched_persona: DataTypes.TEXT,
     scoring_breakdown: DataTypes.TEXT,
     evidence_url: DataTypes.STRING(1024),

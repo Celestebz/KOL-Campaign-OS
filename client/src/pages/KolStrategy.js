@@ -56,16 +56,6 @@ const defaultPersona = {
   best_content_formats: []
 };
 
-const defaultSearch = [
-  { cycle: 'C1', name: 'Competitor Reviews', priority: 1, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: '' },
-  { cycle: 'C2', name: 'Category Search', priority: 2, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: '' },
-  { cycle: 'C3', name: 'Use-case Search', priority: 3, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: '' },
-  { cycle: 'C4', name: 'Feature / Technical Search', priority: 4, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: '' },
-  { cycle: 'C5', name: 'Community / Audience Search', priority: 5, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: '' },
-  { cycle: 'C6', name: 'Platform Native Search', priority: 6, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: '' },
-  { cycle: 'C7', name: 'Spider-web Expansion', priority: 7, keywords: '', platforms: '', target_count: '', exclusions: '', purpose: '' }
-];
-
 const defaultScoring = {
   content_relevance: 25,
   audience_market_fit: 20,
@@ -249,7 +239,6 @@ const KolStrategy = () => {
       secondary_platforms: strategy.secondary_platforms || [],
       product_context_text: stringifySection(strategy.product_context, defaultProductContext),
       persona_config_text: stringifySection(strategy.persona_config, defaultPersona),
-      search_strategy_text: stringifySection(strategy.search_strategy, defaultSearch),
       scoring_weights_text: stringifySection(strategy.scoring_weights, defaultScoring),
       finder_handoff_text: stringifySection(handoff, defaultHandoff),
       minimum_followers: handoff.minimum_followers ? Number(handoff.minimum_followers) : null,
@@ -273,7 +262,6 @@ const KolStrategy = () => {
       secondary_platforms: [],
       product_context_text: emptyJson(defaultProductContext),
       persona_config_text: emptyJson(defaultPersona),
-      search_strategy_text: emptyJson(defaultSearch),
       scoring_weights_text: emptyJson(defaultScoring),
       finder_handoff_text: emptyJson(defaultHandoff),
       minimum_followers: null,
@@ -301,7 +289,6 @@ const KolStrategy = () => {
       ...values,
       product_context: parseSection(values.product_context_text, 'Product Breakdown'),
       persona_config: parseSection(values.persona_config_text, 'KOL画像'),
-      search_strategy: parseSection(values.search_strategy_text, '7轮搜索策略'),
       scoring_weights: parseSection(values.scoring_weights_text, 'Scoring Weights'),
       finder_handoff: finderHandoff
     };
@@ -505,7 +492,7 @@ const KolStrategy = () => {
           <Button key="save" type="primary" icon={<SaveOutlined />} loading={saving} onClick={saveStrategy}>保存草稿</Button>
         ]}
       >
-        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="策略发布给 KOL 寻找后，可启动 System Provider 搜索，或生成 Subagent Hybrid 任务与 Prompt。" />
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="策略发布后，可按目标平台创建视频证据寻找任务。" />
         <Form form={form} layout="vertical">
           <Row gutter={16}>
             <Col span={8}>
@@ -657,11 +644,6 @@ const KolStrategy = () => {
               <Card size="small" title="KOL画像" style={{ marginBottom: 12 }}>
                 <Form.Item name="persona_config_text">
                   <TextArea rows={8} />
-                </Form.Item>
-              </Card>
-              <Card size="small" title="7轮搜索策略" style={{ marginBottom: 12 }}>
-                <Form.Item name="search_strategy_text">
-                  <TextArea rows={10} />
                 </Form.Item>
               </Card>
               <Card size="small" title="评分权重" style={{ marginBottom: 12 }}>
