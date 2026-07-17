@@ -39,7 +39,6 @@ export const PLATFORM_META = {
       provider('scrapecreators', 'ScrapeCreators'),
       provider('brightdata', 'Bright Data', { reserved: true }),
       provider('apify', 'Apify', { reserved: true }),
-      provider('maton_gateway', 'Maton Gateway', { reserved: true, fields: ['api_key', 'base_url', 'connection_id'] }),
       provider('custom', 'Custom', {
         reserved: true,
         fields: ['custom_provider_name', 'api_key', 'base_url', 'auth_header_name', 'auth_scheme', 'notes']
@@ -52,7 +51,6 @@ export const PLATFORM_META = {
       provider('scrapecreators', 'ScrapeCreators'),
       provider('brightdata', 'Bright Data', { reserved: true }),
       provider('apify', 'Apify', { reserved: true }),
-      provider('maton_gateway', 'Maton Gateway', { reserved: true, fields: ['api_key', 'base_url', 'connection_id'] }),
       provider('custom', 'Custom', {
         reserved: true,
         fields: ['custom_provider_name', 'api_key', 'base_url', 'auth_header_name', 'auth_scheme', 'notes']

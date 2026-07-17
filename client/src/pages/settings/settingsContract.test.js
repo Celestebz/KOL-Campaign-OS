@@ -1,5 +1,6 @@
 import {
   DEFAULT_SETTINGS,
+  PLATFORM_META,
   SECRET_MASK,
   getProviderState,
   mergeSettings,
@@ -44,4 +45,10 @@ test('provider status distinguishes configured and partial values', () => {
     api_key: SECRET_MASK,
     connection_id: 'conn-1'
   }, true, false).status).toBe('configured');
+});
+
+test('Maton Gateway is unavailable for Instagram and TikTok platform data', () => {
+  expect(PLATFORM_META.youtube.providers.map((item) => item.value)).toContain('maton_gateway');
+  expect(PLATFORM_META.instagram.providers.map((item) => item.value)).not.toContain('maton_gateway');
+  expect(PLATFORM_META.tiktok.providers.map((item) => item.value)).not.toContain('maton_gateway');
 });
