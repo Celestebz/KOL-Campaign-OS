@@ -166,6 +166,34 @@ published Strategy revision, not to a mutable draft.
 brief. OS extracts known facts, identifies missing required facts, and returns
 either clarification questions or a generated draft.
 
+Strategy Intake is a mandatory business-context gate, not an optional assistant
+feature. No Strategy draft may become publishable and no Finder confirmation may
+be created until the gate is complete.
+
+At minimum, OS must obtain and have the user confirm:
+
+- the exact campaign, project, product, or service being promoted
+- the campaign goal
+- target market or region
+- content language
+- exactly one initial target platform
+- target creator profile or persona
+- important product selling points and content scenarios
+- exclusions, competitors, or prohibited creator types when applicable
+- target count
+- follower or creator-tier preference, or explicit acceptance of system defaults
+
+The system, not the external agent, decides whether required context is missing.
+The agent must relay OS questions without silently answering them from old
+conversations, recent database rows, placeholder campaigns, inferred defaults,
+or its own assumptions.
+
+Before draft generation, OS returns a normalized intake summary and asks the
+user to confirm that the captured requirements are correct. This intake
+confirmation is distinct from Strategy publication confirmation: the first
+confirms the user's requirements, while the second approves the generated
+Strategy revision.
+
 `continue_strategy_intake` accepts answers using question identifiers generated
 by OS. The external agent must not invent required fields or silently infer a
 campaign, product, market, platform, or Strategy.
@@ -178,6 +206,7 @@ Strategy Intake states are:
 
 ```text
 collecting_input
+-> awaiting_intake_confirmation
 -> generating
 -> draft_ready
 -> awaiting_publish_confirmation
@@ -191,6 +220,15 @@ Terminal or exceptional states are `blocked`, `failed`, and `cancelled`.
 Strategy publication and Finder execution require separate confirmations.
 Confirmation is an OS record, not an agent interpretation of conversational
 sentiment.
+
+There are three explicit user gates in total:
+
+1. confirm the normalized Strategy Intake requirements
+2. confirm publication of the generated Strategy revision
+3. confirm the Finder run, target platform, target count, and potential cost
+
+Completing a later gate is impossible without valid completion records for all
+earlier gates.
 
 For Strategy publication, OS returns a user-facing summary and a confirmation
 record bound to:
@@ -313,6 +351,9 @@ Automated tests must prove:
 - the same action produces equivalent responses through both transports
 - external agents cannot submit internal Strategy JSON
 - incomplete intake produces system questions rather than an invalid draft
+- Strategy generation cannot start before explicit intake confirmation
+- agents cannot fill missing context from recent records, placeholders, or inferred defaults
+- changing an intake answer invalidates intake confirmation and any generated draft based on it
 - Strategy publication requires a valid, current confirmation
 - draft revision changes invalidate old confirmations
 - Finder requires a separate valid confirmation
