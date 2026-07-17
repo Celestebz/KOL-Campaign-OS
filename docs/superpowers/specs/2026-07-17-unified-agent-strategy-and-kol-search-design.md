@@ -80,11 +80,12 @@ not read `agent.maton_gateway` as the primary configuration.
 
 Existing configuration must be preserved safely:
 
-1. Verify that `youtube.maton_gateway` is configured and usable.
-2. If verification fails, abort cleanup without deleting or changing any
-   existing provider configuration.
-3. If verification succeeds, keep `youtube.maton_gateway` unchanged and delete
-   the obsolete `agent.maton_gateway` record.
+1. If `youtube.maton_gateway` exists, keep it unchanged.
+2. If it is missing and `agent.maton_gateway` exists, copy the complete legacy
+   record to `youtube.maton_gateway` once.
+3. Verify that the canonical row exists after the optional copy, then delete the
+   obsolete `agent.maton_gateway` record. If verification fails, abort cleanup
+   without deleting legacy Maton configuration.
 4. Delete other obsolete `agent.*` automation-provider records for BrowserAct,
    Playwright Local, and Custom Tool Gateway.
 5. Stop reading and writing `agents.active`, `agents.providers`, and all
@@ -397,7 +398,8 @@ Automated tests must prove:
 - agents cannot fill missing context from recent records, placeholders, or inferred defaults
 - changing an intake answer invalidates intake confirmation and any generated draft based on it
 - YouTube Finder reads Maton credentials only from `youtube.maton_gateway`
-- cleanup aborts without deletion when `youtube.maton_gateway` is not usable
+- missing `youtube.maton_gateway` is copied once from legacy Maton configuration
+- cleanup aborts without deleting legacy Maton when canonical creation fails
 - an existing `youtube.maton_gateway` configuration is never overwritten or changed by cleanup
 - verified cleanup removes `agent.maton_gateway` and other obsolete agent automation records
 - Agent Automation providers are absent from settings responses and the user interface
