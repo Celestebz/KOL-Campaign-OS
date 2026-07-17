@@ -18,6 +18,12 @@ test('builds the public Instagram Reel keyword-search endpoint', () => {
   );
 });
 
+test('never constructs the legacy Instagram Profile Search endpoint', () => {
+  const url = buildInstagramReelSearchUrl('https://api.scrapecreators.com', 'creator tools');
+  assert.equal(url.includes('/instagram/search/profiles'), false);
+  assert.equal(url.includes('/v2/instagram/reels/search'), true);
+});
+
 test('maps a public Reel and its owner to existing Finder candidate fields', () => {
   const reel = {
     id: '3723045213787686915',

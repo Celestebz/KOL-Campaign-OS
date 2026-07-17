@@ -1,5 +1,10 @@
 const express = require('express');
 const { dbOperations } = require('../database');
+const {
+  buildInstagramReelSearchUrl,
+  extractInstagramReels,
+  instagramReelToCandidate
+} = require('../utils/instagramReelSearch');
 
 const router = express.Router();
 
@@ -1066,13 +1071,25 @@ async function scrapeCreatorsFinderAdapterV2(request) {
 
   for (const query of keywordQueries(request)) {
     if (candidates.length >= maxResults) break;
-    const endpoints = request.target_platform === 'instagram'
-      ? [buildUrl(baseUrl, '/v1/instagram/search/profiles', { query })]
-      : [
-        buildUrl(baseUrl, '/v1/tiktok/search', { query, limit: maxResults }),
-        buildUrl(baseUrl, '/v1/tiktok/users/search', { query, limit: maxResults }),
-        buildUrl(baseUrl, '/v1/tiktok/user/search', { query, limit: maxResults })
-      ];
+    if (request.target_platform === 'instagram') {
+      const endpoint = buildInstagramReelSearchUrl(baseUrl, query);
+      const data = await fetchJson(endpoint, { headers });
+      lastEndpoint = endpoint;
+      const mapped = extractInstagramReels(data)
+        .map((reel) => instagramReelToCandidate(reel, {
+          ...request,
+          discovery: { ...request.discovery, keywords: query }
+        }))
+        .filter(Boolean);
+      candidates.push(...mapped.slice(0, maxResults - candidates.length));
+      continue;
+    }
+
+    const endpoints = [
+      buildUrl(baseUrl, '/v1/tiktok/search', { query, limit: maxResults }),
+      buildUrl(baseUrl, '/v1/tiktok/users/search', { query, limit: maxResults }),
+      buildUrl(baseUrl, '/v1/tiktok/user/search', { query, limit: maxResults })
+    ];
     const result = await fetchFirstJson(endpoints, { headers });
     lastEndpoint = result.url;
     const rawCandidates = extractCandidateArray(result.data);
@@ -1106,7 +1123,9 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   }
 
   if (!candidates.length) {
-    throw new Error('ScrapeCreators returned 0 candidates. Try shorter Instagram keywords.');
+    throw new Error(request.target_platform === 'instagram'
+      ? 'ScrapeCreators returned 0 usable Instagram Reels. Try shorter Strategy keywords.'
+      : 'ScrapeCreators returned 0 candidates. Try shorter Instagram keywords.');
   }
   return { provider: request.search_source || 'scrapecreators', endpoint: lastEndpoint, candidates: candidates.slice(0, maxResults) };
 }
