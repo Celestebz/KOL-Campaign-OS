@@ -656,6 +656,61 @@ test('YouTube video evidence end-to-end: import -> analyze -> generate candidate
   }
 });
 
+test('Instagram Reel evidence reuses the existing analysis and candidate pipeline', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await models.KolStrategy.update(
+    { primary_platform: 'instagram' },
+    { where: { id: strategy.id } }
+  );
+  const { server: mockServer, port } = await startMockAiServer();
+  await seedMockAiSettings(port);
+
+  try {
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'instagram'
+    });
+    const taskId = createRes.body.data.id;
+    const profileUrl = 'https://www.instagram.com/demo_creator/';
+
+    const importRes = await request
+      .post(`/api/finder-tasks/${taskId}/video-evidence/import`)
+      .send({ evidence: [{
+        video_url: 'https://www.instagram.com/reel/DOq6eV6iIgD/',
+        title: 'Live vocal processor demo',
+        author_name: 'Demo Creator',
+        author_profile_url: profileUrl,
+        source_query: 'vocal processor'
+      }] });
+    assert.equal(importRes.status, 200);
+    assert.equal(importRes.body.data.inserted, 1);
+
+    const analyzeRes = await request
+      .post(`/api/finder-tasks/${taskId}/evidence-analysis`)
+      .send({});
+    assert.equal(analyzeRes.status, 200);
+    assert.equal(analyzeRes.body.data.success_count, 1);
+
+    const generateRes = await request
+      .post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`)
+      .send({});
+    assert.equal(generateRes.status, 200);
+    assert.equal(generateRes.body.data.inserted_count, 1);
+
+    const candidates = await models.RawCandidate.findAll();
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].platform, 'instagram');
+    assert.equal(candidates[0].profile_url, profileUrl);
+    assert.equal(candidates[0].video_url, 'https://www.instagram.com/reel/DOq6eV6iIgD/');
+  } finally {
+    mockServer.close();
+  }
+});
+
 test('video_source reuse and snapshot TTL across campaigns', async () => {
   await resetTestDatabase();
   await initDatabase();
