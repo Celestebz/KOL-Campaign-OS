@@ -67,6 +67,44 @@ An agent must never:
 Provider or configuration failures must fail closed. The run becomes `blocked`
 and reports the exact OS setting that needs attention.
 
+## Settings Cleanup
+
+Remove the `Agent / Automation Providers` settings area. BrowserAct, Playwright
+Local, and Custom Tool Gateway are not valid OS discovery providers, and keeping
+reserved controls for them would contradict Strict Execution Mode.
+
+Maton Gateway remains supported, but only as a YouTube platform data provider.
+`youtube.maton_gateway` is the canonical configuration key. Finder must read the
+selected YouTube platform provider and then load `youtube.maton_gateway`; it must
+not read `agent.maton_gateway` as the primary configuration.
+
+Existing configuration must be preserved safely:
+
+1. If `youtube.maton_gateway` is configured, keep it unchanged.
+2. If it is missing and legacy `agent.maton_gateway` is configured, copy the
+   legacy values once into `youtube.maton_gateway`.
+3. Never overwrite an existing YouTube Maton configuration with legacy values.
+4. Stop reading and writing `agents.active`, `agents.providers`, and `agent.*`
+   automation-provider settings after compatibility migration.
+5. Do not delete legacy `api_settings` rows; retain them as unused historical
+   configuration so user data is not destroyed.
+
+Rename `External Agent API` to `Agent Access` in the user interface. This area
+owns MCP and HTTP access, protocol version, access credentials, connection
+status, and the always-enabled Strict Mode notice. It must not claim that an
+external agent can import or write Raw Candidates directly.
+
+The resulting settings information architecture is:
+
+- platform data providers
+- AI model providers
+- agent access
+- cloud storage
+- runtime and OS-provider fallback policy
+
+Runtime fallback may select only formally integrated OS platform providers. It
+must never fall back to agent browser search or browser automation.
+
 ## Transport Architecture
 
 MCP is the preferred agent transport. HTTP is a compatibility transport for
@@ -354,6 +392,11 @@ Automated tests must prove:
 - Strategy generation cannot start before explicit intake confirmation
 - agents cannot fill missing context from recent records, placeholders, or inferred defaults
 - changing an intake answer invalidates intake confirmation and any generated draft based on it
+- YouTube Finder reads Maton credentials only from `youtube.maton_gateway`
+- an existing `youtube.maton_gateway` configuration is never overwritten by legacy data
+- legacy `agent.maton_gateway` is copied only when the canonical configuration is missing
+- Agent Automation providers are absent from settings responses and the user interface
+- legacy agent-provider rows remain stored but unused
 - Strategy publication requires a valid, current confirmation
 - draft revision changes invalidate old confirmations
 - Finder requires a separate valid confirmation
@@ -372,12 +415,13 @@ workflow regardless of transport.
 
 Implement in this order:
 
-1. Strategy Contract v1, strict validation, revisioning, and publication snapshot.
-2. Strategy Intake and separate confirmation records.
-3. Shared Agent Action schemas and internal action interface.
-4. MCP adapter and HTTP compatibility adapter.
-5. Persistent Agent Run orchestration over the existing Finder workflow.
-6. Codex and Kimi integration tests and skill updates.
+1. Remove Agent Automation settings and make `youtube.maton_gateway` canonical.
+2. Strategy Contract v1, strict validation, revisioning, and publication snapshot.
+3. Strategy Intake and separate confirmation records.
+4. Shared Agent Action schemas and internal action interface.
+5. MCP adapter and HTTP compatibility adapter.
+6. Persistent Agent Run orchestration over the existing Finder workflow.
+7. Codex and Kimi integration tests and skill updates.
 
 Do not release MCP as a one-to-one wrapper around existing routes. The stable
 action interface must exist before transport adapters are exposed.
