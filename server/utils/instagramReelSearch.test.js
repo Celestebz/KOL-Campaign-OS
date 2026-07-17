@@ -67,6 +67,29 @@ test('extracts only the documented reels array', () => {
   assert.deepEqual(extractInstagramReels(null), []);
 });
 
+test('maps official view-count fields in order and preserves numeric zero', () => {
+  const response = {
+    reels: [{
+      media_id: '3723045213787686915_12345',
+      code: 'DOq6eV6iIgD',
+      url: 'https://www.instagram.com/reel/DOq6eV6iIgD/',
+      video_play_count: 0,
+      play_count: 12000,
+      video_view_count: 11000,
+      view_count: 10000,
+      views: 9000,
+      owner: {
+        pk: '12345',
+        username: 'demo_creator',
+        full_name: 'Demo Creator'
+      }
+    }]
+  };
+
+  const [reel] = extractInstagramReels(response);
+  assert.equal(instagramReelToCandidate(reel, request).avg_views, '0');
+});
+
 test('rejects profile URLs and records without an identifiable owner', () => {
   assert.equal(instagramReelToCandidate({
     url: 'https://www.instagram.com/demo_creator/',
@@ -75,6 +98,32 @@ test('rejects profile URLs and records without an identifiable owner', () => {
   assert.equal(instagramReelToCandidate({
     url: 'https://www.instagram.com/reel/abc/'
   }, request), null);
+});
+
+test('rejects non-HTTP, deceptive-host, and invalid-path Reel URLs', () => {
+  const owner = { username: 'demo_creator' };
+  for (const url of [
+    'ftp://www.instagram.com/reel/abc/',
+    'https://www.instagram.com.evil.example/reel/abc/',
+    'https://www.instagram.com/reel/abc/extra'
+  ]) {
+    assert.equal(instagramReelToCandidate({ url, owner }, request), null, url);
+  }
+});
+
+test('rejects usernames outside Instagram username rules', () => {
+  for (const username of [
+    'bad/name',
+    'bad?name',
+    'bad#name',
+    'bad-name',
+    'a'.repeat(31)
+  ]) {
+    assert.equal(instagramReelToCandidate({
+      url: 'https://www.instagram.com/reel/abc/',
+      owner: { username }
+    }, request), null, username);
+  }
 });
 
 test('leaves unavailable public metadata empty instead of inventing it', () => {

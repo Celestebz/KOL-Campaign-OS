@@ -218,6 +218,21 @@ async function startMockAiServer() {
   });
 }
 
+async function startMockScrapeCreatorsServer(responder) {
+  const requests = [];
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      requests.push({ method: req.method, url: req.url, headers: req.headers });
+      const response = responder(req) || {};
+      res.writeHead(response.status || 200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(response.body || {}));
+    });
+    server.listen(0, '127.0.0.1', () => {
+      resolve({ server, port: server.address().port, requests });
+    });
+  });
+}
+
 async function seedMockAiSettings(port) {
   await models.ApiSetting.create({
     provider: 'system.provider_selection',
@@ -228,6 +243,14 @@ async function seedMockAiSettings(port) {
     api_key: 'test-key',
     base_url: `http://127.0.0.1:${port}`,
     model: 'deepseek-chat'
+  });
+}
+
+async function seedMockScrapeCreatorsSettings(port, apiKey = 'scrape-test-key') {
+  await models.ApiSetting.create({
+    provider: 'instagram.scrapecreators',
+    api_key: apiKey,
+    base_url: `http://127.0.0.1:${port}`
   });
 }
 
@@ -656,44 +679,96 @@ test('YouTube video evidence end-to-end: import -> analyze -> generate candidate
   }
 });
 
-test('Instagram Reel evidence reuses the existing analysis and candidate pipeline', async () => {
+test('Instagram automatic Reel discovery persists evidence, analyzes it, and aggregates by author', async () => {
   await resetTestDatabase();
   await initDatabase();
   const app = await buildApp();
   const request = supertest(app);
   const { strategy } = await seedBaseData();
   await models.KolStrategy.update(
-    { primary_platform: 'instagram' },
+    { primary_platform: 'instagram', product: 'vocal processor' },
     { where: { id: strategy.id } }
   );
-  const { server: mockServer, port } = await startMockAiServer();
-  await seedMockAiSettings(port);
+  const scrapeApiKey = 'scrape-test-key';
+  const reelFixture = {
+    reels: [
+      {
+        media_id: '3723045213787686915_12345',
+        code: 'DOq6eV6iIgD',
+        url: 'https://www.instagram.com/reel/DOq6eV6iIgD/?igsh=first',
+        caption: 'Live vocal processor demo',
+        video_play_count: 0,
+        play_count: 12000,
+        owner: {
+          pk: '12345',
+          username: 'demo_creator',
+          full_name: 'Demo Creator',
+          follower_count: 188406
+        }
+      },
+      {
+        media_id: '3723045213787686915_12345_duplicate',
+        code: 'DOq6eV6iIgD',
+        url: 'https://instagram.com/reel/DOq6eV6iIgD/?utm_source=copy_link',
+        caption: 'Equivalent URL for the same Reel',
+        video_play_count: 0,
+        owner: { username: 'demo_creator', full_name: 'Demo Creator' }
+      },
+      {
+        media_id: '3723045213787686916_12345',
+        code: 'DOq6eV6iIgE',
+        url: 'https://www.instagram.com/reel/DOq6eV6iIgE/',
+        caption: 'Second demo from the same author',
+        video_view_count: 6400,
+        owner: { username: 'demo_creator', full_name: 'Demo Creator' }
+      }
+    ]
+  };
+  const { server: scrapeServer, port: scrapePort, requests: scrapeRequests } = await startMockScrapeCreatorsServer((req) => {
+    const query = new URL(req.url, 'http://127.0.0.1').searchParams.get('query');
+    return { body: query === 'vocal processor' ? reelFixture : { reels: [] } };
+  });
+  const { server: aiServer, port: aiPort } = await startMockAiServer();
+  await seedMockScrapeCreatorsSettings(scrapePort, scrapeApiKey);
+  await seedMockAiSettings(aiPort);
 
   try {
     const createRes = await request.post('/api/finder-tasks').send({
       strategy_id: strategy.id,
-      target_platform: 'instagram'
+      target_platform: 'instagram',
+      limit: 10
     });
     const taskId = createRes.body.data.id;
-    const profileUrl = 'https://www.instagram.com/demo_creator/';
 
-    const importRes = await request
-      .post(`/api/finder-tasks/${taskId}/video-evidence/import`)
-      .send({ evidence: [{
-        video_url: 'https://www.instagram.com/reel/DOq6eV6iIgD/',
-        title: 'Live vocal processor demo',
-        author_name: 'Demo Creator',
-        author_profile_url: profileUrl,
-        source_query: 'vocal processor'
-      }] });
-    assert.equal(importRes.status, 200);
-    assert.equal(importRes.body.data.inserted, 1);
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'success');
+    assert.equal(task.success_count, 2);
+    assert.equal(task.provider_attempts.includes(scrapeApiKey), false);
+    assert.equal(task.raw_response_summary.includes(scrapeApiKey), false);
+    assert.ok(scrapeRequests.length > 0);
+    for (const scrapeRequest of scrapeRequests) {
+      const requestedUrl = new URL(scrapeRequest.url, 'http://127.0.0.1');
+      assert.equal(scrapeRequest.method, 'GET');
+      assert.equal(requestedUrl.pathname, '/v2/instagram/reels/search');
+      assert.ok(requestedUrl.searchParams.get('query'));
+      assert.equal(scrapeRequest.headers['x-api-key'], scrapeApiKey);
+      assert.equal(scrapeRequest.headers.authorization, undefined);
+    }
+
+    const sources = await models.VideoSource.findAll();
+    const evidence = await models.FinderVideoEvidence.findAll();
+    assert.equal(sources.length, 2, 'canonical-equivalent Reel URLs should reuse one video source');
+    assert.equal(evidence.length, 2, 'two distinct Reels should persist as two evidence rows');
+    const extractedMetrics = evidence.map((row) => safeParseJson(row.raw_data)?.data?.avg_views);
+    assert.ok(extractedMetrics.includes('0'), 'official video_play_count=0 should be preserved');
 
     const analyzeRes = await request
       .post(`/api/finder-tasks/${taskId}/evidence-analysis`)
       .send({});
     assert.equal(analyzeRes.status, 200);
-    assert.equal(analyzeRes.body.data.success_count, 1);
+    assert.equal(analyzeRes.body.data.success_count, 2);
 
     const generateRes = await request
       .post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`)
@@ -704,10 +779,136 @@ test('Instagram Reel evidence reuses the existing analysis and candidate pipelin
     const candidates = await models.RawCandidate.findAll();
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].platform, 'instagram');
-    assert.equal(candidates[0].profile_url, profileUrl);
-    assert.equal(candidates[0].video_url, 'https://www.instagram.com/reel/DOq6eV6iIgD/');
+    assert.equal(candidates[0].profile_url, 'https://www.instagram.com/demo_creator/');
+    assert.match(candidates[0].video_url, /^https:\/\/(?:www\.)?instagram\.com\/reel\//);
+    assert.notEqual(candidates[0].video_url, candidates[0].profile_url);
+    assert.equal(safeParseJson(candidates[0].scoring_breakdown).evidence_count, 2);
+    assert.equal(safeParseJson(candidates[0].raw_data).data.evidence_ids.length, 2);
   } finally {
-    mockServer.close();
+    scrapeServer.close();
+    aiServer.close();
+  }
+});
+
+test('Instagram automatic discovery preserves missing configuration errors on the task', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'instagram' });
+
+  const createRes = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    target_platform: 'instagram'
+  });
+  const taskId = createRes.body.data.id;
+
+  await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+
+  const task = await models.FinderTask.findByPk(taskId);
+  assert.equal(task.status, 'failed');
+  assert.match(task.error_message, /ScrapeCreators API Key is not configured/);
+  assert.match(task.provider_attempts, /ScrapeCreators API Key is not configured/);
+  assert.match(task.raw_response_summary, /ScrapeCreators API Key is not configured/);
+});
+
+test('Instagram automatic discovery reports an upstream success with zero Reels', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'instagram' });
+  const { server, port } = await startMockScrapeCreatorsServer(() => ({ body: { reels: [] } }));
+
+  try {
+    await seedMockScrapeCreatorsSettings(port);
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'instagram'
+    });
+    const taskId = createRes.body.data.id;
+
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'failed');
+    assert.equal(
+      task.error_message,
+      'ScrapeCreators returned 0 Instagram Reels. Try shorter or broader Strategy keywords.'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('Instagram automatic discovery preserves a non-success upstream response', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'instagram' });
+  const { server, port } = await startMockScrapeCreatorsServer(() => ({
+    status: 503,
+    body: { message: 'ScrapeCreators upstream unavailable' }
+  }));
+
+  try {
+    await seedMockScrapeCreatorsSettings(port);
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'instagram'
+    });
+    const taskId = createRes.body.data.id;
+
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error_message, 'ScrapeCreators upstream unavailable');
+    assert.match(task.provider_attempts, /ScrapeCreators upstream unavailable/);
+    assert.match(task.raw_response_summary, /ScrapeCreators upstream unavailable/);
+  } finally {
+    server.close();
+  }
+});
+
+test('Instagram automatic discovery reports Reels that are all invalid or unmappable', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'instagram' });
+  const { server, port } = await startMockScrapeCreatorsServer(() => ({
+    body: {
+      reels: [{
+        url: 'https://www.instagram.com/demo_creator/',
+        owner: { username: 'demo_creator' }
+      }]
+    }
+  }));
+
+  try {
+    await seedMockScrapeCreatorsSettings(port);
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'instagram'
+    });
+    const taskId = createRes.body.data.id;
+
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'failed');
+    assert.equal(
+      task.error_message,
+      'ScrapeCreators returned Instagram Reels, but none contained valid public Reel evidence with an identifiable author.'
+    );
+  } finally {
+    server.close();
   }
 });
 

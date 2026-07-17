@@ -1024,42 +1024,6 @@ function youtubeItemsToCandidates(items, channels, request, reason) {
   });
 }
 
-async function scrapeCreatorsFinderAdapter(request) {
-  const setting = await getSetting(providerKey(request.target_platform, 'scrapecreators'), legacyKeysFor(request.target_platform, 'scrapecreators'));
-  if (!setting?.api_key) throw new Error('ScrapeCreators API Key 未配置');
-  const baseUrl = (setting.base_url || 'https://api.scrapecreators.com').replace(/\/$/, '');
-  const headers = { 'x-api-key': setting.api_key, Authorization: `Bearer ${setting.api_key}` };
-  const q = encodeURIComponent(request.discovery.keywords || request.campaign.product || request.campaign.name);
-  const limit = encodeURIComponent(String(request.limit || 10));
-  const endpoints = request.target_platform === 'instagram'
-    ? [`${baseUrl}/v1/instagram/search?query=${q}&limit=${limit}`, `${baseUrl}/v1/instagram/profile/search?query=${q}&limit=${limit}`, `${baseUrl}/v1/instagram/users/search?query=${q}&limit=${limit}`]
-    : [`${baseUrl}/v1/tiktok/search?query=${q}&limit=${limit}`, `${baseUrl}/v1/tiktok/users/search?query=${q}&limit=${limit}`, `${baseUrl}/v1/tiktok/user/search?query=${q}&limit=${limit}`];
-  const result = await fetchFirstJson(endpoints, { headers });
-  const rawCandidates = extractCandidateArray(result.data);
-  if (!rawCandidates.length) throw new Error('ScrapeCreators 未返回候选结果');
-  const candidates = rawCandidates.map((item) => {
-    const user = item.user || item.author || item.owner || item;
-    const username = clean(user.username || user.unique_id || user.handle || user.nickname || item.username || item.author_name);
-    const profileUrl = clean(user.profile_url || item.profile_url || (username ? (request.platform === 'instagram' ? `https://www.instagram.com/${username}/` : `https://www.tiktok.com/@${username}`) : ''));
-    return {
-      platform: request.target_platform,
-      kol_name: clean(user.full_name || user.nickname || username || item.name),
-      profile_url: profileUrl,
-      followers: clean(user.follower_count || user.followers || user.followers_count || item.followers),
-      avg_views: clean(user.avg_views || item.avg_views || item.views),
-      email: clean(user.email || item.email),
-      country_region: clean(user.country || user.region || item.country_region),
-      matched_keywords: request.discovery.keywords,
-      matched_persona: request.strategy.persona_config?.primary_persona || '',
-      representative_video_url: clean(item.video_url || item.url || item.post_url),
-      representative_video_title: clean(item.title || item.desc || item.description),
-      reason: `Matched ${PROVIDER_LABELS[request.search_source] || PROVIDER_LABELS.scrapecreators} search: ${request.discovery.keywords}`,
-      raw_data: item
-    };
-  });
-  return { provider: request.search_source || 'scrapecreators', endpoint: result.url, candidates };
-}
-
 async function scrapeCreatorsFinderAdapterV2(request) {
   const setting = await getSetting(providerKey(request.target_platform, 'scrapecreators'), legacyKeysFor(request.target_platform, 'scrapecreators'));
   if (!setting?.api_key) throw new Error('ScrapeCreators API Key is not configured');
@@ -1068,14 +1032,17 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
   const candidates = [];
   let lastEndpoint = '';
+  let instagramReelCount = 0;
 
   for (const query of keywordQueries(request)) {
     if (candidates.length >= maxResults) break;
     if (request.target_platform === 'instagram') {
       const endpoint = buildInstagramReelSearchUrl(baseUrl, query);
-      const data = await fetchJson(endpoint, { headers });
+      const data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
       lastEndpoint = endpoint;
-      const mapped = extractInstagramReels(data)
+      const reels = extractInstagramReels(data);
+      instagramReelCount += reels.length;
+      const mapped = reels
         .map((reel) => instagramReelToCandidate(reel, {
           ...request,
           discovery: { ...request.discovery, keywords: query }
@@ -1123,9 +1090,13 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   }
 
   if (!candidates.length) {
-    throw new Error(request.target_platform === 'instagram'
-      ? 'ScrapeCreators returned 0 usable Instagram Reels. Try shorter Strategy keywords.'
-      : 'ScrapeCreators returned 0 candidates. Try shorter Instagram keywords.');
+    if (request.target_platform === 'instagram' && instagramReelCount === 0) {
+      throw new Error('ScrapeCreators returned 0 Instagram Reels. Try shorter or broader Strategy keywords.');
+    }
+    if (request.target_platform === 'instagram') {
+      throw new Error('ScrapeCreators returned Instagram Reels, but none contained valid public Reel evidence with an identifiable author.');
+    }
+    throw new Error('ScrapeCreators returned 0 candidates. Try shorter Instagram keywords.');
   }
   return { provider: request.search_source || 'scrapecreators', endpoint: lastEndpoint, candidates: candidates.slice(0, maxResults) };
 }
@@ -1672,6 +1643,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   const responseSummary = [];
   let insertedCount = 0;
   let failedCount = 0;
+  let discoveryError = '';
 
   await updateTask(taskId, { status: 'running', started_at: new Date().toISOString(), source_agent: 'video_evidence_finder' });
 
@@ -1726,6 +1698,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
     });
   } catch (error) {
     failedCount = 1;
+    discoveryError = error.message;
     allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]));
     responseSummary.push({ stage: 'video_evidence_discovery', target_platform: targetPlatform, error: error.message });
   }
@@ -1736,7 +1709,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
     success_count: insertedCount,
     failed_count: failedCount,
     result_count: insertedCount,
-    error_message: status === 'failed' ? 'No target-platform video evidence was inserted.' : '',
+    error_message: status === 'failed' ? (discoveryError || 'No target-platform video evidence was inserted.') : '',
     finished_at: new Date().toISOString(),
     provider_attempts: JSON.stringify(allAttempts),
     raw_response_summary: JSON.stringify(responseSummary)
@@ -2211,3 +2184,4 @@ router.post('/:id/cancel', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
