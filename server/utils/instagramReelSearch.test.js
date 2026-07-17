@@ -90,6 +90,20 @@ test('maps official view-count fields in order and preserves numeric zero', () =
   assert.equal(instagramReelToCandidate(reel, request).avg_views, '0');
 });
 
+test('maps follower fields in order and preserves numeric zero', () => {
+  const result = instagramReelToCandidate({
+    url: 'https://www.instagram.com/reel/abc/',
+    owner: {
+      username: 'zero_followers_creator',
+      follower_count: 0,
+      followers_count: 120,
+      followers: 240
+    }
+  }, request);
+
+  assert.equal(result.followers, '0');
+});
+
 test('rejects profile URLs and records without an identifiable owner', () => {
   assert.equal(instagramReelToCandidate({
     url: 'https://www.instagram.com/demo_creator/',
@@ -117,6 +131,11 @@ test('rejects usernames outside Instagram username rules', () => {
     'bad?name',
     'bad#name',
     'bad-name',
+    '.',
+    '..',
+    '.creator',
+    'creator.',
+    'creator..name',
     'a'.repeat(31)
   ]) {
     assert.equal(instagramReelToCandidate({
@@ -124,6 +143,12 @@ test('rejects usernames outside Instagram username rules', () => {
       owner: { username }
     }, request), null, username);
   }
+
+  const validDottedUsername = instagramReelToCandidate({
+    url: 'https://www.instagram.com/reel/abc/',
+    owner: { username: 'valid.creator' }
+  }, request);
+  assert.equal(validDottedUsername.profile_url, 'https://www.instagram.com/valid.creator/');
 });
 
 test('leaves unavailable public metadata empty instead of inventing it', () => {

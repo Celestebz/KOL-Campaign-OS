@@ -28,7 +28,11 @@ function isInstagramReelUrl(value) {
 }
 
 function isInstagramUsername(value) {
-  return /^[a-zA-Z0-9._]{1,30}$/.test(clean(value));
+  const username = clean(value);
+  return /^[a-zA-Z0-9._]{1,30}$/.test(username)
+    && !username.startsWith('.')
+    && !username.endsWith('.')
+    && !username.includes('..');
 }
 
 function firstDefinedMetric(...values) {
@@ -48,7 +52,11 @@ function instagramReelToCandidate(reel, request) {
     platform: 'instagram',
     kol_name: clean(owner.full_name || owner.name || username),
     profile_url: `https://www.instagram.com/${username}/`,
-    followers: clean(owner.follower_count || owner.followers_count || owner.followers),
+    followers: clean(firstDefinedMetric(
+      owner.follower_count,
+      owner.followers_count,
+      owner.followers
+    )),
     avg_views: clean(firstDefinedMetric(
       reel?.video_play_count,
       reel?.play_count,
