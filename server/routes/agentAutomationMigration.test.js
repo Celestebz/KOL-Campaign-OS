@@ -6,8 +6,8 @@ const migration = require('../migrations/20260717000001-remove-agent-automation-
 require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '.env') });
 require('dotenv').config();
 process.env.NODE_ENV = 'test';
-process.env.DB_NAME = 'kol_campaign_os_agent_test';
-process.env.DB_NAME_TEST = 'kol_campaign_os_agent_test';
+process.env.DB_NAME = 'kol_campaign_os_agent_automation_migration_test';
+process.env.DB_NAME_TEST = 'kol_campaign_os_agent_automation_migration_test';
 
 const { Sequelize } = require('sequelize');
 const { initDatabase, models, sequelize } = require('../database');
