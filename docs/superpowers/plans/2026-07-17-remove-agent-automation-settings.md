@@ -2,16 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `youtube.maton_gateway` the only active Maton configuration, remove Agent Automation settings, and safely migrate then delete legacy `agent.*` provider records.
+**Goal:** Make `youtube.maton_gateway` the only active Maton configuration, remove Agent Automation settings, and directly delete obsolete `agent.*` provider records.
 
-**Architecture:** Add one forward migration that copies `agent.maton_gateway` only when the canonical YouTube row is absent, then removes obsolete automation rows. Settings and Finder become consumers of platform-provider configuration only; the external-agent access token remains separate under `agent.external_api`.
+**Architecture:** Add one forward migration that removes obsolete automation rows without copying their values. Settings and Finder become consumers of platform-provider configuration only; the external-agent access token remains separate under `agent.external_api`.
 
 **Tech Stack:** Node.js, Express, Sequelize/Umzug, MySQL 8, React, Ant Design, Node test runner, React Testing Library.
 
 ## Global Constraints
 
 - Existing `youtube.maton_gateway` values must never be overwritten.
-- If canonical configuration is absent, copy legacy Maton values before deleting the legacy row.
 - Delete only obsolete automation keys: `agent.maton_gateway`, `agent.browseract`, `agent.playwright_local`, and `agent.custom_tool_gateway`.
 - Preserve `agent.external_api`; it is the external-agent access credential.
 - Finder must never read `agent.maton_gateway` after this change.
@@ -34,11 +33,11 @@
 Create tests using the project test database that prove:
 
 ```js
-test('copies legacy Maton config only when canonical YouTube config is missing', async () => {
+test('deletes legacy Maton without creating canonical configuration', async () => {
   await ApiSetting.create({ provider: 'agent.maton_gateway', api_key: 'legacy-key', base_url: 'https://legacy.example' });
   await migration.up(sequelize.getQueryInterface());
   const canonical = await ApiSetting.findOne({ where: { provider: 'youtube.maton_gateway' } });
-  assert.equal(canonical.api_key, 'legacy-key');
+  assert.equal(canonical, null);
   assert.equal(await ApiSetting.count({ where: { provider: 'agent.maton_gateway' } }), 0);
 });
 
@@ -66,7 +65,7 @@ Expected: FAIL because the migration module does not exist.
 
 - [ ] **Step 3: Implement the forward migration**
 
-Use a transaction. Lock/read both Maton keys, insert canonical values only when no canonical row exists, then delete only the four obsolete automation keys. Make `down()` a documented no-op because deleted duplicate settings cannot be reconstructed safely.
+Use one scoped `DELETE` for the four obsolete automation keys. Do not read, create, or update `youtube.maton_gateway`. Make `down()` a documented no-op because deleted obsolete settings cannot be reconstructed safely.
 
 - [ ] **Step 4: Run migration tests and verify GREEN**
 
@@ -220,7 +219,7 @@ Expected: migration succeeds.
 Confirm:
 
 ```text
-youtube.maton_gateway exists and remains configured
+youtube.maton_gateway is unchanged from its pre-migration state
 agent.maton_gateway does not exist
 agent.browseract does not exist
 agent.playwright_local does not exist

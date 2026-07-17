@@ -78,21 +78,16 @@ Maton Gateway remains supported, but only as a YouTube platform data provider.
 selected YouTube platform provider and then load `youtube.maton_gateway`; it must
 not read `agent.maton_gateway` as the primary configuration.
 
-Existing configuration must be preserved safely:
+Configuration cleanup is intentionally direct:
 
-1. If `youtube.maton_gateway` exists, keep it unchanged.
-2. If it is missing and `agent.maton_gateway` exists, copy the complete legacy
-   record to `youtube.maton_gateway` once.
-3. Verify that the canonical row exists after the optional copy, then delete the
-   obsolete `agent.maton_gateway` record. If verification fails, abort cleanup
-   without deleting legacy Maton configuration.
-4. Delete other obsolete `agent.*` automation-provider records for BrowserAct,
+1. Keep `youtube.maton_gateway` unchanged as the only canonical Maton setting.
+2. Delete the obsolete `agent.maton_gateway` record without copying or fallback.
+3. Delete other obsolete `agent.*` automation-provider records for BrowserAct,
    Playwright Local, and Custom Tool Gateway.
-5. Stop reading and writing `agents.active`, `agents.providers`, and all
+4. Stop reading and writing `agents.active`, `agents.providers`, and all
    automation-provider settings after cleanup.
 
-The cleanup must run transactionally where supported and must never copy legacy
-Maton values over the canonical YouTube configuration.
+The cleanup must never modify `youtube.maton_gateway` or `agent.external_api`.
 
 Rename `External Agent API` to `Agent Access` in the user interface. This area
 owns MCP and HTTP access, protocol version, access credentials, connection
@@ -398,10 +393,9 @@ Automated tests must prove:
 - agents cannot fill missing context from recent records, placeholders, or inferred defaults
 - changing an intake answer invalidates intake confirmation and any generated draft based on it
 - YouTube Finder reads Maton credentials only from `youtube.maton_gateway`
-- missing `youtube.maton_gateway` is copied once from legacy Maton configuration
-- cleanup aborts without deleting legacy Maton when canonical creation fails
 - an existing `youtube.maton_gateway` configuration is never overwritten or changed by cleanup
-- verified cleanup removes `agent.maton_gateway` and other obsolete agent automation records
+- cleanup removes `agent.maton_gateway` without copy or fallback
+- cleanup removes other obsolete agent automation records
 - Agent Automation providers are absent from settings responses and the user interface
 - Strategy publication requires a valid, current confirmation
 - draft revision changes invalidate old confirmations
