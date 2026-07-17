@@ -4,21 +4,6 @@
   --settings-border: #dfe7ee;
 }
 
-.settings-page-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.settings-page-kicker {
-  margin-bottom: 4px;
-  color: #60758a;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: .08em;
-}
-
 .settings-section-nav {
   position: sticky;
   top: 0;
@@ -161,7 +146,6 @@
   .settings-mobile-nav { display: block; }
   .settings-provider-grid,
   .settings-overview-grid { grid-template-columns: 1fr; }
-  .settings-page-header,
   .settings-section-heading { align-items: stretch; flex-direction: column; }
   .settings-provider-drawer .ant-drawer-content-wrapper { width: 100% !important; }
 }

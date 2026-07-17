@@ -297,11 +297,6 @@ const Settings = () => {
 
   return (
     <div className="settings-page">
-      <div className="page-header settings-page-header">
-        <div><div className="settings-page-kicker">SYSTEM CONFIGURATION</div><h1 className="page-title">API 设置</h1></div>
-        <Text type="secondary">每次只处理一个配置分区</Text>
-      </div>
-
       <Tabs className="settings-section-nav" activeKey={activeSection} onChange={setActiveSection} items={sectionItems} />
       <Select className="settings-mobile-nav" aria-label="选择设置分类" value={activeSection} onChange={setActiveSection} options={sectionItems.map(({ key, label }) => ({ value: key, label }))} />
 
