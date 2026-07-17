@@ -263,7 +263,6 @@ function providerKey(scope, provider) {
 
 function legacyKeysFor(scope, provider) {
   if (scope === 'youtube' && provider === 'google_official') return ['youtube'];
-  if (scope === 'agent' && provider === 'maton_gateway') return ['youtube.maton_gateway', 'maton_gateway'];
   if (provider === 'scrapecreators') return ['scrapecreators'];
   if (provider === 'maton_gateway') return ['maton_gateway'];
   if (scope === 'ai' && provider === 'deepseek') return ['ai'];
@@ -926,7 +925,7 @@ function extractCandidateArray(data) {
 }
 
 async function matonFinderAdapter(request) {
-  const setting = await getSetting(providerKey('agent', 'maton_gateway'), legacyKeysFor('agent', 'maton_gateway'));
+  const setting = await getSetting(providerKey('youtube', 'maton_gateway'));
   if (!setting?.api_key && !setting?.base_url) throw new Error('Maton Gateway 未配置');
   const baseUrl = (setting.base_url || 'https://api.maton.ai').replace(/\/$/, '');
   if (request.target_platform === 'youtube') {

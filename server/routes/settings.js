@@ -14,7 +14,6 @@ const PLATFORM_PROVIDERS = {
 };
 
 const AI_PROVIDERS = ['openai', 'deepseek', 'minimax', 'custom_openai_compatible', 'custom_http_api'];
-const AGENT_PROVIDERS = ['maton_gateway', 'browseract', 'playwright_local', 'custom_tool_gateway'];
 
 const DEFAULT_SELECTION = {
   platforms: {
@@ -23,7 +22,6 @@ const DEFAULT_SELECTION = {
     tiktok: { primary: 'scrapecreators', fallbacks: [] }
   },
   aiModels: { active: 'deepseek' },
-  agents: { active: 'maton_gateway' },
   fallbackStrategy: {
     enableFallback: false,
     saveFailureReasons: true,
@@ -138,7 +136,6 @@ function mergeSelection(saved) {
       tiktok: { ...DEFAULT_SELECTION.platforms.tiktok, ...(saved.platforms?.tiktok || {}) }
     },
     aiModels: { ...DEFAULT_SELECTION.aiModels, ...(saved.aiModels || {}) },
-    agents: { ...DEFAULT_SELECTION.agents, ...(saved.agents || {}) },
     fallbackStrategy: { ...DEFAULT_SELECTION.fallbackStrategy, ...(saved.fallbackStrategy || {}) }
   };
 }
@@ -243,7 +240,6 @@ router.get('/', async (req, res) => {
     const data = {
       platforms: {},
       aiModels: { active: selection.aiModels.active, providers: {} },
-      agents: { active: selection.agents.active, providers: {} },
       cloudStorage: {
         primary: 'feishu_bitable',
         feishu: cleanFeishu(getRow(rows, FEISHU_PROVIDER_KEY))
@@ -270,12 +266,6 @@ router.get('/', async (req, res) => {
       const key = providerKey('ai', provider);
       const row = findProviderRow(rows, key, legacyKeysFor('ai', provider));
       data.aiModels.providers[provider] = cleanProvider(row, provider);
-    }
-
-    for (const provider of AGENT_PROVIDERS) {
-      const key = providerKey('agent', provider);
-      const row = findProviderRow(rows, key);
-      data.agents.providers[provider] = cleanProvider(row, provider);
     }
 
     res.json({ success: true, data });
@@ -305,9 +295,6 @@ router.post('/', async (req, res) => {
       aiModels: {
         active: settings.aiModels?.active || DEFAULT_SELECTION.aiModels.active
       },
-      agents: {
-        active: settings.agents?.active || DEFAULT_SELECTION.agents.active
-      },
       fallbackStrategy: {
         ...DEFAULT_SELECTION.fallbackStrategy,
         ...(settings.fallbackStrategy || {})
@@ -326,11 +313,6 @@ router.post('/', async (req, res) => {
     for (const provider of AI_PROVIDERS) {
       const row = settings.aiModels?.providers?.[provider];
       if (row) await upsertProvider(providerKey('ai', provider), row);
-    }
-
-    for (const provider of AGENT_PROVIDERS) {
-      const row = settings.agents?.providers?.[provider];
-      if (row) await upsertProvider(providerKey('agent', provider), row);
     }
 
     if (settings.cloudStorage?.feishu) {
@@ -377,9 +359,6 @@ router.get('/health/config', async (req, res) => {
       };
     }
 
-    const agentActive = selection.agents?.active || DEFAULT_SELECTION.agents.active;
-    const agentRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey('agent', agentActive)]);
-
     const externalAgentRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [EXTERNAL_AGENT_PROVIDER_KEY]);
     const externalAgentExtra = parseJson(externalAgentRow?.extra_config, {});
 
@@ -395,10 +374,6 @@ router.get('/health/config', async (req, res) => {
         missing: []
       },
       platforms,
-      agent: {
-        active: agentActive,
-        configured: isConfigured(agentRow)
-      },
       external_agent: {
         enabled: Boolean(externalAgentExtra.enabled),
         token_configured: Boolean(externalAgentRow?.api_key || externalAgentExtra.token),
