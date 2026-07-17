@@ -43,13 +43,6 @@ const AI_OPTIONS = [
   { value: 'custom_http_api', label: 'Custom HTTP API（仅预留）' }
 ];
 
-const AGENT_OPTIONS = [
-  { value: 'maton_gateway', label: 'Maton Gateway' },
-  { value: 'browseract', label: 'BrowserAct（预留）' },
-  { value: 'playwright_local', label: 'Playwright Local（预留）' },
-  { value: 'custom_tool_gateway', label: 'Custom Tool Gateway（预留）' }
-];
-
 const DEFAULT_SETTINGS = {
   platforms: {
     youtube: { primary: 'google_official', fallbacks: [], providers: {} },
@@ -57,7 +50,6 @@ const DEFAULT_SETTINGS = {
     tiktok: { primary: 'scrapecreators', fallbacks: [], providers: {} }
   },
   aiModels: { active: 'deepseek', providers: {} },
-  agents: { active: 'maton_gateway', providers: {} },
   cloudStorage: {
     primary: 'feishu_bitable',
     feishu: {
@@ -97,10 +89,7 @@ const providerLabel = (provider) => {
     deepseek: 'DeepSeek',
     minimax: 'MiniMax',
     custom_openai_compatible: 'Custom OpenAI-Compatible',
-    custom_http_api: 'Custom HTTP API',
-    browseract: 'BrowserAct',
-    playwright_local: 'Playwright Local',
-    custom_tool_gateway: 'Custom Tool Gateway'
+    custom_http_api: 'Custom HTTP API'
   };
   return map[provider] || provider;
 };
@@ -256,28 +245,6 @@ const Settings = () => {
               showModel
               custom={option.value === 'custom_openai_compatible' || option.value === 'custom_http_api'}
               reserved={option.value === 'custom_http_api'}
-            />
-          ))}
-        </Card>
-
-        <Card title="Agent / Automation Providers" className="content-card" style={{ marginBottom: 16 }}>
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-            message="Agent Provider 负责未来自动找 KOL、自动调工具、执行多步骤任务；当前视频分析流程不会直接调用这些工具。"
-          />
-          <Form.Item label="默认 Agent Provider" name={['settings', 'agents', 'active']}>
-            <Select options={AGENT_OPTIONS} />
-          </Form.Item>
-          {AGENT_OPTIONS.map((option) => (
-            <ProviderFields
-              key={option.value}
-              baseName={['settings', 'agents', 'providers', option.value]}
-              provider={option.value}
-              custom={option.value === 'custom_tool_gateway'}
-              maton={option.value === 'maton_gateway'}
-              reserved={option.value !== 'maton_gateway'}
             />
           ))}
         </Card>
