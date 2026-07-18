@@ -64,7 +64,9 @@ test('maps aweme id and author handle to canonical TikTok identities', () => {
 
 test('rejects missing ids, missing handles, invalid handles, and photo mode', () => {
   assert.equal(tiktokVideoToCandidate({ ...officialVideo, aweme_id: '' }, request), null);
+  assert.equal(tiktokVideoToCandidate({ ...officialVideo, aweme_id: '', id: '7334621391758642478' }, request), null);
   assert.equal(tiktokVideoToCandidate({ ...officialVideo, author: {} }, request), null);
+  assert.equal(tiktokVideoToCandidate({ ...officialVideo, author: { username: 'demo.creator' } }, request), null);
   assert.equal(tiktokVideoToCandidate({ ...officialVideo, author: { unique_id: '../bad' } }, request), null);
   assert.equal(tiktokVideoToCandidate({ ...officialVideo, image_infos: [{}] }, request), null);
 });

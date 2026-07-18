@@ -28,9 +28,9 @@ function validTikTokHandle(value) {
 }
 
 function tiktokVideoToCandidate(video, request) {
-  const videoId = clean(video?.aweme_id || video?.id);
+  const videoId = clean(video?.aweme_id);
   const author = video?.author || {};
-  const handle = clean(author.unique_id || author.username);
+  const handle = clean(author.unique_id);
   if (!/^\d+$/.test(videoId) || !validTikTokHandle(handle)) return null;
   if (Array.isArray(video?.image_infos) && video.image_infos.length) return null;
   if (clean(video?.content_type) === 'multi_photo') return null;
