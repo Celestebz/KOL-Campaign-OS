@@ -28,6 +28,7 @@ function validTikTokHandle(value) {
 }
 
 function tiktokVideoToCandidate(video, request) {
+  if (typeof video?.aweme_id !== 'string') return null;
   const videoId = clean(video?.aweme_id);
   const author = video?.author || {};
   const handle = clean(author.unique_id);

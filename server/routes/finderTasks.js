@@ -47,6 +47,14 @@ function clean(value) {
   return String(value).trim();
 }
 
+function redactKnownSecrets(value, secrets = []) {
+  let redacted = clean(value);
+  for (const secret of secrets.map(clean).filter(Boolean)) {
+    redacted = redacted.split(secret).join('[REDACTED]');
+  }
+  return redacted;
+}
+
 function normalizeEvidenceSignals(value) {
   const seen = new Set();
   return (Array.isArray(value) ? value : []).flatMap((item) => {
@@ -331,7 +339,10 @@ async function fetchJson(url, options = {}) {
     data = { raw: text };
   }
   if (!response.ok) {
-    throw new Error(data?.error?.message || data?.message || `HTTP ${response.status}`);
+    throw Object.assign(
+      new Error(data?.error?.message || data?.message || `HTTP ${response.status}`),
+      { status: response.status }
+    );
   }
   return data;
 }
@@ -1034,6 +1045,9 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   const baseUrl = (setting.base_url || 'https://api.scrapecreators.com').replace(/\/$/, '').replace(/\/v1$/, '');
   const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
   const candidates = [];
+  const seenTikTokVideoIds = new Set();
+  const tiktokQueryAttempts = [];
+  const tiktokQueryErrors = [];
   let lastEndpoint = '';
   let instagramReelCount = 0;
   let tiktokVideoCount = 0;
@@ -1057,24 +1071,66 @@ async function scrapeCreatorsFinderAdapterV2(request) {
     }
 
     const endpoint = buildTikTokKeywordSearchUrl(baseUrl, query);
-    const data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
     lastEndpoint = endpoint;
-    const videos = extractTikTokVideos(data);
-    tiktokVideoCount += videos.length;
-    const mapped = videos
-      .map((video) => tiktokVideoToCandidate(video, {
-        ...request,
-        discovery: { ...request.discovery, keywords: query }
-      }))
-      .filter(Boolean);
-    candidates.push(...mapped.slice(0, maxResults - candidates.length));
+    try {
+      const data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+      const videos = extractTikTokVideos(data);
+      tiktokVideoCount += videos.length;
+      for (const video of videos) {
+        const mapped = tiktokVideoToCandidate(video, {
+          ...request,
+          discovery: { ...request.discovery, keywords: query }
+        });
+        if (!mapped) continue;
+        const videoId = video.aweme_id.trim();
+        if (seenTikTokVideoIds.has(videoId)) continue;
+        seenTikTokVideoIds.add(videoId);
+        candidates.push(mapped);
+        if (candidates.length >= maxResults) break;
+      }
+      tiktokQueryAttempts.push({
+        search_source: request.search_source || 'tiktok_search',
+        provider: 'scrapecreators',
+        ok: true,
+        endpoint,
+        query
+      });
+    } catch (error) {
+      const safeMessage = redactKnownSecrets(error.message, [setting.api_key]);
+      const attempt = {
+        search_source: request.search_source || 'tiktok_search',
+        provider: 'scrapecreators',
+        ok: false,
+        endpoint,
+        query,
+        error: safeMessage
+      };
+      if (error.status !== undefined) attempt.status = error.status;
+      tiktokQueryAttempts.push(attempt);
+      tiktokQueryErrors.push(attempt);
+    }
   }
 
   if (!candidates.length && request.target_platform === 'tiktok') {
-    if (tiktokVideoCount === 0) {
-      throw new Error('TikTok Keyword Search returned 0 videos. Try shorter or broader Strategy keywords.');
+    if (tiktokQueryErrors.length) {
+      const latest = tiktokQueryErrors[tiktokQueryErrors.length - 1];
+      throw Object.assign(new Error(latest.error), {
+        status: latest.status,
+        provider: latest.provider,
+        query: latest.query,
+        attempts: tiktokQueryAttempts
+      });
     }
-    throw new Error('TikTok Keyword Search returned videos, but none contained valid public video evidence with an identifiable author.');
+    if (tiktokVideoCount === 0) {
+      throw Object.assign(
+        new Error('TikTok Keyword Search returned 0 videos. Try shorter or broader Strategy keywords.'),
+        { attempts: tiktokQueryAttempts }
+      );
+    }
+    throw Object.assign(
+      new Error('TikTok Keyword Search returned videos, but none contained valid public video evidence with an identifiable author.'),
+      { attempts: tiktokQueryAttempts }
+    );
   }
 
   if (!candidates.length) {
@@ -1086,7 +1142,12 @@ async function scrapeCreatorsFinderAdapterV2(request) {
     }
     throw new Error('ScrapeCreators returned 0 candidates. Try shorter Instagram keywords.');
   }
-  return { provider: request.search_source || 'scrapecreators', endpoint: lastEndpoint, candidates: candidates.slice(0, maxResults) };
+  return {
+    provider: request.search_source || 'scrapecreators',
+    endpoint: lastEndpoint,
+    candidates: candidates.slice(0, maxResults),
+    attempts: request.target_platform === 'tiktok' ? tiktokQueryAttempts : []
+  };
 }
 
 function normalizeCandidate(input, request, provider) {
@@ -1345,6 +1406,30 @@ async function upsertRawCandidate(candidate, task, provider) {
   return { inserted: true, id: result.id, status };
 }
 
+function appendProviderErrorAttempts(attempts, error, fallback) {
+  if (Array.isArray(error.attempts) && error.attempts.length) {
+    attempts.push(...error.attempts);
+    if (error.attempts.some((attempt) => attempt?.ok === false)) return;
+  }
+  const attempt = {
+    ...fallback,
+    provider: error.provider || fallback.provider,
+    ok: false,
+    error: error.message
+  };
+  if (error.status !== undefined) attempt.status = error.status;
+  if (error.query) attempt.query = error.query;
+  attempts.push(attempt);
+}
+
+function providerErrorWithAttempts(error, attempts) {
+  const wrapped = Object.assign(new Error(error.message), { attempts });
+  for (const field of ['status', 'provider', 'query']) {
+    if (error[field] !== undefined) wrapped[field] = error[field];
+  }
+  return wrapped;
+}
+
 async function runProvider(request, allowFallback) {
   const attempts = [];
   const source = request.search_source;
@@ -1373,11 +1458,14 @@ async function runProvider(request, allowFallback) {
     } else {
       throw new Error(`Unsupported search source: ${source}`);
     }
+    attempts.push(...(maton.attempts || []));
     attempts.push({ search_source: source, provider: maton.provider, ok: true, endpoint: maton.endpoint });
     return { ...maton, attempts };
   } catch (error) {
-    attempts.push({ search_source: source, provider: source, ok: false, error: error.message });
-    if (!allowFallback || source !== 'maton_agent' || externalAgentRoute) throw Object.assign(new Error(error.message), { attempts });
+    appendProviderErrorAttempts(attempts, error, { search_source: source, provider: source });
+    if (!allowFallback || source !== 'maton_agent' || externalAgentRoute) {
+      throw providerErrorWithAttempts(error, attempts);
+    }
   }
 
   try {
@@ -1387,11 +1475,15 @@ async function runProvider(request, allowFallback) {
         ...request,
         search_source: request.target_platform === 'instagram' ? 'instagram_search' : 'tiktok_search'
       });
+    attempts.push(...(fallback.attempts || []));
     attempts.push({ search_source: fallback.provider, provider: fallback.provider, ok: true, endpoint: fallback.endpoint });
     return { ...fallback, attempts };
   } catch (error) {
-    attempts.push({ search_source: request.target_platform === 'youtube' ? 'youtube_search' : `${request.target_platform}_search`, provider: request.target_platform === 'youtube' ? 'google_official' : 'scrapecreators', ok: false, error: error.message });
-    throw Object.assign(new Error(error.message), { attempts });
+    appendProviderErrorAttempts(attempts, error, {
+      search_source: request.target_platform === 'youtube' ? 'youtube_search' : `${request.target_platform}_search`,
+      provider: request.target_platform === 'youtube' ? 'google_official' : 'scrapecreators'
+    });
+    throw providerErrorWithAttempts(error, attempts);
   }
 }
 
@@ -1457,11 +1549,23 @@ async function upsertVideoSourceForEvidence(task, evidence) {
   const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
   const sourceUrl = evidence.video_url;
   const normalized = normalizeVideoUrl(sourceUrl);
+  const platformVideoId = normalized.platformVideoId || evidence.platform_video_id || '';
+  let reusedByTikTokId = false;
 
-  let video = await dbOperations.get(
-    'SELECT * FROM video_sources WHERE canonical_url_hash = ?',
-    [normalized.canonicalUrlHash]
-  );
+  let video = null;
+  if (normalized.platform === 'tiktok' && platformVideoId) {
+    video = await dbOperations.get(
+      'SELECT * FROM video_sources WHERE platform = ? AND platform_video_id = ? ORDER BY id ASC LIMIT 1',
+      [normalized.platform, platformVideoId]
+    );
+    reusedByTikTokId = Boolean(video);
+  }
+  if (!video) {
+    video = await dbOperations.get(
+      'SELECT * FROM video_sources WHERE canonical_url_hash = ?',
+      [normalized.canonicalUrlHash]
+    );
+  }
 
   if (video) {
     await dbOperations.run(
@@ -1479,9 +1583,9 @@ async function upsertVideoSourceForEvidence(task, evidence) {
        WHERE id = ?`,
       [
         normalized.platform,
-        normalized.platformVideoId || evidence.platform_video_id || '',
+        platformVideoId,
         sourceUrl,
-        normalized.canonicalUrl,
+        reusedByTikTokId ? video.canonical_url : normalized.canonicalUrl,
         evidence.title || '',
         evidence.author_name || '',
         evidence.author_name || '',
@@ -1499,7 +1603,7 @@ async function upsertVideoSourceForEvidence(task, evidence) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         normalized.platform,
-        normalized.platformVideoId || evidence.platform_video_id || '',
+        platformVideoId,
         sourceUrl,
         normalized.canonicalUrl,
         normalized.canonicalUrlHash,
@@ -1617,6 +1721,17 @@ async function saveVideoEvidence(task, input, defaults = {}) {
   return { row: await dbOperations.get('SELECT * FROM finder_video_evidence WHERE id = ?', [result.id]), inserted: true };
 }
 
+function failedQueryAudit(attempts = []) {
+  return attempts
+    .filter((attempt) => attempt?.ok === false && attempt?.query)
+    .map((attempt) => ({
+      provider: attempt.provider,
+      query: attempt.query,
+      status: attempt.status,
+      error: attempt.error
+    }));
+}
+
 async function processVideoEvidenceTask(taskId, options = {}) {
   const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
   if (!task) return;
@@ -1682,13 +1797,19 @@ async function processVideoEvidenceTask(taskId, options = {}) {
       provider: result.provider,
       returned: result.candidates.length,
       inserted: insertedCount,
-      skipped
+      skipped,
+      query_failures: failedQueryAudit(result.attempts)
     });
   } catch (error) {
     failedCount = 1;
     discoveryError = error.message;
     allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]));
-    responseSummary.push({ stage: 'video_evidence_discovery', target_platform: targetPlatform, error: error.message });
+    responseSummary.push({
+      stage: 'video_evidence_discovery',
+      target_platform: targetPlatform,
+      error: error.message,
+      query_failures: failedQueryAudit(error.attempts)
+    });
   }
 
   const status = insertedCount > 0 && failedCount > 0 ? 'partial_failed' : insertedCount > 0 ? 'success' : 'failed';

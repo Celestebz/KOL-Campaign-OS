@@ -83,6 +83,13 @@ test('rejects ids and handles that cannot form canonical TikTok URLs', () => {
   }
 });
 
+test('rejects numeric aweme ids before JavaScript can corrupt their precision', () => {
+  assert.equal(tiktokVideoToCandidate({
+    ...officialVideo,
+    aweme_id: 7334621391758642478
+  }, request), null);
+});
+
 test('never trusts provider CDN or profile URLs as evidence identity', () => {
   const result = tiktokVideoToCandidate({
     ...officialVideo,

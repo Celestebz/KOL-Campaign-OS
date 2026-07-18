@@ -1067,6 +1067,52 @@ test('TikTok automatic Keyword Search persists evidence, analyzes it, and aggreg
   }
 });
 
+test('TikTok automatic discovery deduplicates aweme ids before applying the Finder limit', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'tiktok', product: 'duplicate limit query' });
+  const firstVideo = {
+    aweme_id: '7334621391758642478',
+    desc: 'First result',
+    author: { unique_id: 'first.creator' }
+  };
+  const secondVideo = {
+    aweme_id: '7334621391758642479',
+    desc: 'Second unique result',
+    author: { unique_id: 'second.creator' }
+  };
+  const { server, port } = await startMockScrapeCreatorsServer(() => ({
+    body: {
+      search_item_list: [
+        { aweme_info: firstVideo },
+        { aweme_info: { ...firstVideo, desc: 'Duplicate in the first response page' } },
+        { aweme_info: secondVideo }
+      ]
+    }
+  }));
+
+  try {
+    await seedMockScrapeCreatorsSettings(port, 'dedupe-test-key', 'tiktok');
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'tiktok',
+      limit: 2
+    });
+    await finderTaskRoutes.runVideoEvidenceDiscovery(createRes.body.data.id);
+
+    const task = await models.FinderTask.findByPk(createRes.body.data.id);
+    assert.equal(task.status, 'success');
+    assert.equal(task.success_count, 2);
+    assert.equal(await models.VideoSource.count(), 2);
+    assert.equal(await models.FinderVideoEvidence.count(), 2);
+  } finally {
+    server.close();
+  }
+});
+
 async function createAndRunTikTokTask() {
   const app = await buildApp();
   const request = supertest(app);
@@ -1080,6 +1126,91 @@ async function createAndRunTikTokTask() {
   await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
   return models.FinderTask.findByPk(taskId);
 }
+
+async function runTikTokMixedQueryScenario(queries) {
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({
+    primary_platform: 'tiktok',
+    product: 'success-query',
+    finder_handoff: JSON.stringify({ required_keywords: queries })
+  });
+  const apiKey = 'mixed-query-audit-key';
+  const { server, port, requests } = await startMockScrapeCreatorsServer((req) => {
+    const query = new URL(req.url, 'http://127.0.0.1').searchParams.get('query');
+    if (query === 'failure-query') {
+      return {
+        status: 503,
+        body: { message: `Temporary upstream failure for ${apiKey}` }
+      };
+    }
+    return {
+      body: {
+        search_item_list: [{
+          aweme_info: {
+            aweme_id: '7334621391758642478',
+            desc: 'Valid result from another query',
+            author: { unique_id: 'mixed.query.creator' }
+          }
+        }]
+      }
+    };
+  });
+
+  try {
+    await seedMockScrapeCreatorsSettings(port, apiKey, 'tiktok');
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'tiktok'
+    });
+    await finderTaskRoutes.runVideoEvidenceDiscovery(createRes.body.data.id);
+    return {
+      task: await models.FinderTask.findByPk(createRes.body.data.id),
+      queries: requests.map((item) => new URL(item.url, 'http://127.0.0.1').searchParams.get('query')),
+      apiKey
+    };
+  } finally {
+    server.close();
+  }
+}
+
+function assertTikTokFailedQueryAudit(task, apiKey) {
+  const persistedAudit = [task.error_message, task.provider_attempts, task.raw_response_summary].join('\n');
+  assert.equal(persistedAudit.includes(apiKey), false);
+  const attempts = safeParseJson(task.provider_attempts) || [];
+  const failedAttempt = attempts.find((attempt) => attempt.ok === false && attempt.query === 'failure-query');
+  assert.ok(failedAttempt);
+  assert.equal(failedAttempt.status, 503);
+  assert.equal(failedAttempt.provider, 'scrapecreators');
+  assert.match(task.raw_response_summary, /failure-query/);
+  assert.match(task.raw_response_summary, /503/);
+  assert.match(task.raw_response_summary, /scrapecreators/);
+}
+
+test('TikTok automatic discovery keeps success before a later 503 and audits the failed query', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const { task, queries, apiKey } = await runTikTokMixedQueryScenario(['success-query', 'failure-query']);
+
+  assert.deepEqual(queries, ['success-query', 'failure-query']);
+  assert.equal(task.status, 'success');
+  assert.equal(task.success_count, 1);
+  assert.equal(await models.VideoSource.count(), 1);
+  assertTikTokFailedQueryAudit(task, apiKey);
+});
+
+test('TikTok automatic discovery continues after a 503 and keeps a later success', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const { task, queries, apiKey } = await runTikTokMixedQueryScenario(['failure-query', 'success-query']);
+
+  assert.deepEqual(queries, ['failure-query', 'success-query']);
+  assert.equal(task.status, 'success');
+  assert.equal(task.success_count, 1);
+  assert.equal(await models.VideoSource.count(), 1);
+  assertTikTokFailedQueryAudit(task, apiKey);
+});
 
 test('TikTok automatic discovery preserves missing configuration errors', async () => {
   await resetTestDatabase();
@@ -1109,16 +1240,25 @@ test('TikTok automatic discovery reports zero Keyword Search videos', async () =
 test('TikTok automatic discovery preserves upstream HTTP errors', async () => {
   await resetTestDatabase();
   await initDatabase();
+  const apiKey = 'tiktok-upstream-audit-key';
   const { server, port } = await startMockScrapeCreatorsServer(() => ({
     status: 503,
-    body: { message: 'ScrapeCreators upstream unavailable' }
+    body: { message: `ScrapeCreators upstream unavailable for ${apiKey}` }
   }));
   try {
-    await seedMockScrapeCreatorsSettings(port, 'scrape-test-key', 'tiktok');
+    await seedMockScrapeCreatorsSettings(port, apiKey, 'tiktok');
     const task = await createAndRunTikTokTask();
     assert.equal(task.status, 'failed');
-    assert.equal(task.error_message, 'ScrapeCreators upstream unavailable');
+    const persistedAudit = [task.error_message, task.provider_attempts, task.raw_response_summary].join('\n');
+    assert.equal(persistedAudit.includes(apiKey), false);
+    assert.match(task.error_message, /ScrapeCreators upstream unavailable/);
     assert.match(task.raw_response_summary, /ScrapeCreators upstream unavailable/);
+    const attempts = safeParseJson(task.provider_attempts) || [];
+    const failedAttempt = attempts.find((attempt) => attempt.ok === false);
+    assert.ok(failedAttempt);
+    assert.equal(failedAttempt.status, 503);
+    assert.equal(failedAttempt.provider, 'scrapecreators');
+    assert.equal(failedAttempt.query, 'vocal processor');
   } finally {
     server.close();
   }
@@ -1145,6 +1285,51 @@ test('TikTok automatic discovery reports videos that are all invalid', async () 
   } finally {
     server.close();
   }
+});
+
+test('TikTok video source reuse prioritizes platform video id when the author handle changes', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'tiktok' });
+  const firstTask = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    target_platform: 'tiktok'
+  });
+  const secondTask = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    target_platform: 'tiktok'
+  });
+  const videoId = '7334621391758642478';
+
+  const firstImport = await request
+    .post(`/api/finder-tasks/${firstTask.body.data.id}/video-evidence/import`)
+    .send({
+      evidence: [{
+        video_url: `https://www.tiktok.com/@original.handle/video/${videoId}`,
+        author_name: 'Original Handle'
+      }]
+    });
+  const secondImport = await request
+    .post(`/api/finder-tasks/${secondTask.body.data.id}/video-evidence/import`)
+    .send({
+      evidence: [{
+        video_url: `https://www.tiktok.com/@renamed.handle/video/${videoId}`,
+        author_name: 'Renamed Handle'
+      }]
+    });
+
+  assert.equal(firstImport.status, 200);
+  assert.equal(secondImport.status, 200);
+  const sources = await models.VideoSource.findAll();
+  const evidence = await models.FinderVideoEvidence.findAll();
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].platform, 'tiktok');
+  assert.equal(sources[0].platform_video_id, videoId);
+  assert.equal(evidence.length, 2);
+  assert.equal(new Set(evidence.map((item) => item.video_source_id)).size, 1);
 });
 
 test('video_source reuse and snapshot TTL across campaigns', async () => {
