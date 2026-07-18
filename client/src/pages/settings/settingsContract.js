@@ -4,7 +4,6 @@ export const SETTINGS_SECTIONS = [
   { key: 'overview', label: '概览' },
   { key: 'platforms', label: '平台数据源' },
   { key: 'ai', label: 'AI 模型' },
-  { key: 'agents', label: 'Agent 自动化' },
   { key: 'external', label: 'External Agent API' },
   { key: 'storage', label: '云端存储' },
   { key: 'runtime', label: '运行与备用策略' }
@@ -72,16 +71,6 @@ export const AI_PROVIDERS = [
   })
 ];
 
-export const AGENT_PROVIDERS = [
-  provider('maton_gateway', 'Maton Gateway', { fields: ['api_key', 'base_url', 'connection_id'] }),
-  provider('browseract', 'BrowserAct', { reserved: true }),
-  provider('playwright_local', 'Playwright Local', { reserved: true }),
-  provider('custom_tool_gateway', 'Custom Tool Gateway', {
-    reserved: true,
-    fields: ['custom_provider_name', 'api_key', 'base_url', 'auth_header_name', 'auth_scheme', 'notes']
-  })
-];
-
 export const DEFAULT_SETTINGS = {
   platforms: {
     youtube: { primary: 'google_official', fallbacks: [], providers: {} },
@@ -89,7 +78,6 @@ export const DEFAULT_SETTINGS = {
     tiktok: { primary: 'scrapecreators', fallbacks: [], providers: {} }
   },
   aiModels: { active: 'deepseek', providers: {} },
-  agents: { active: 'maton_gateway', providers: {} },
   cloudStorage: {
     primary: 'feishu_bitable',
     feishu: {

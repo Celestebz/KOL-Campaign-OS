@@ -5,7 +5,6 @@ import {
 import { ArrowRightOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import {
-  AGENT_PROVIDERS,
   AI_PROVIDERS,
   DEFAULT_SETTINGS,
   PLATFORM_META,
@@ -114,13 +113,10 @@ const Settings = () => {
     }).length;
     const activeAi = AI_PROVIDERS.find((item) => item.value === settings.aiModels.active);
     const aiReady = activeAi && getProviderState(activeAi, settings.aiModels.providers?.[activeAi.value], true, true).configured;
-    const activeAgent = AGENT_PROVIDERS.find((item) => item.value === settings.agents.active);
-    const agentReady = activeAgent && getProviderState(activeAgent, settings.agents.providers?.[activeAgent.value], true, true).configured;
     const feishu = settings.cloudStorage.feishu;
     return [
       { key: 'platforms', label: '平台数据源', value: `${platformReady}/3 个平台已就绪`, ready: platformReady === 3 },
       { key: 'ai', label: 'AI 模型', value: settings.aiModels.active, ready: Boolean(aiReady) },
-      { key: 'agents', label: 'Agent 自动化', value: settings.agents.active, ready: Boolean(agentReady) },
       { key: 'external', label: 'External Agent API', value: settings.externalAgent.enabled ? '已启用' : '未启用', ready: Boolean(settings.externalAgent.api_token) },
       { key: 'storage', label: '云端存储', value: feishu.app_id && feishu.app_token ? '飞书已配置' : '飞书待配置', ready: Boolean(feishu.app_id && feishu.app_token) },
       { key: 'runtime', label: '运行与备用策略', value: settings.fallbackStrategy.enableFallback ? 'Fallback 已启用' : '仅使用主数据源', ready: true }
@@ -201,14 +197,13 @@ const Settings = () => {
     </>
   );
 
-  const renderProviderSection = (kind) => {
-    const isAi = kind === 'ai';
-    const providers = isAi ? AI_PROVIDERS : AGENT_PROVIDERS;
-    const scope = isAi ? settings.aiModels : settings.agents;
-    const activeKey = isAi ? 'active' : 'active';
-    const rootPath = isAi ? 'aiModels' : 'agents';
-    const title = isAi ? 'AI 模型' : 'Agent 自动化';
-    const context = isAi ? '分析、总结和报告生成' : '自动找 KOL 与多步骤工具调用';
+  const renderProviderSection = () => {
+    const providers = AI_PROVIDERS;
+    const scope = settings.aiModels;
+    const activeKey = 'active';
+    const rootPath = 'aiModels';
+    const title = 'AI 模型';
+    const context = '分析、总结和报告生成';
     return (
       <>
         <SectionHeading
@@ -216,7 +211,7 @@ const Settings = () => {
           description={context}
           extra={<Switch aria-label="显示预留项" checked={showReserved} onChange={setShowReserved} checkedChildren="显示预留" unCheckedChildren="隐藏预留" />}
         />
-        <Form.Item label={isAi ? '当前 AI 模型' : '默认 Agent Provider'} name={['settings', rootPath, activeKey]}>
+        <Form.Item label="当前 AI 模型" name={['settings', rootPath, activeKey]}>
           <Select options={providerOptions(providers)} />
         </Form.Item>
         <div className="settings-provider-grid">
@@ -289,7 +284,6 @@ const Settings = () => {
     overview: renderOverview,
     platforms: renderPlatforms,
     ai: () => renderProviderSection('ai'),
-    agents: () => renderProviderSection('agents'),
     external: renderExternal,
     storage: renderStorage,
     runtime: renderRuntime

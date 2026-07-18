@@ -18,7 +18,6 @@ const remoteSettings = {
     tiktok: { primary: 'scrapecreators', fallbacks: [], providers: {} }
   },
   aiModels: { active: 'deepseek', providers: { deepseek: { api_key: '••••••••', model: 'deepseek-chat' } } },
-  agents: { active: 'maton_gateway', providers: { maton_gateway: { api_key: '••••••••' } } },
   externalAgent: { enabled: true, api_token: '••••••••', notes: '' },
   cloudStorage: { feishu: { app_id: '', app_secret: '', base_url: 'https://open.feishu.cn', app_token: '' } },
   fallbackStrategy: { enableFallback: false, saveFailureReasons: true, saveRawResponses: true, allowAiToolCalls: false }
@@ -46,17 +45,16 @@ beforeEach(() => {
   axios.post.mockResolvedValue({ data: { success: true } });
 });
 
-test('shows one named settings section at a time and hides untouched reserved providers', async () => {
+test('removes Agent Automation while retaining YouTube Maton and External Agent API', async () => {
   render(<Settings />);
   expect(await screen.findByText('配置概览')).toBeInTheDocument();
-
-  await userEvent.click(screen.getByRole('tab', { name: 'Agent 自动化' }));
-  expect(screen.getByText('默认 Agent Provider')).toBeInTheDocument();
+  expect(screen.queryByRole('tab', { name: 'Agent 自动化' })).not.toBeInTheDocument();
   expect(screen.queryByText('BrowserAct')).not.toBeInTheDocument();
+  expect(screen.queryByText('Playwright Local')).not.toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'External Agent API' })).toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole('switch', { name: '显示预留项' }));
-  expect(screen.getByText('BrowserAct')).toBeInTheDocument();
-  expect(screen.queryByText('配置概览')).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('tab', { name: '平台数据源' }));
+  expect(screen.getByRole('button', { name: '配置 Maton Gateway' })).toBeInTheDocument();
 });
 
 test('opens a provider drawer with only the selected provider fields', async () => {

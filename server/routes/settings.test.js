@@ -49,6 +49,8 @@ test('GET /api/settings masks stored secrets', async () => {
     assert.equal(data.cloudStorage.feishu.app_secret, '••••••••');
     assert.equal(data.cloudStorage.feishu.app_token, '••••••••');
     assert.equal(data.externalAgent.api_token, '••••••••');
+    assert.equal(Object.prototype.hasOwnProperty.call(data, 'agents'), false);
+    assert.equal(JSON.stringify(data).includes('browseract'), false);
     assert.equal(JSON.stringify(data).includes('youtube-secret'), false);
     assert.equal(JSON.stringify(data).includes('agent-token'), false);
   } finally {
@@ -90,7 +92,12 @@ test('POST /api/settings preserves existing secrets when masked values are submi
             tiktok: { primary: 'scrapecreators', fallbacks: [], providers: {} }
           },
           aiModels: { active: 'deepseek', providers: {} },
-          agents: { active: 'maton_gateway', providers: {} },
+          agents: {
+            active: 'maton_gateway',
+            providers: {
+              browseract: { api_key: 'browseract-secret', base_url: 'https://browseract.example' }
+            }
+          },
           cloudStorage: {
             feishu: {
               app_secret: '••••••••',
@@ -113,6 +120,10 @@ test('POST /api/settings preserves existing secrets when masked values are submi
     assert.equal(feishuWrite.params[1], 'feishu-secret');
     assert.equal(JSON.parse(feishuWrite.params[3]).app_token, 'base-token');
     assert.equal(agentWrite.params[1], 'agent-token');
+    assert.equal(
+      writes.some((item) => String(item.params[0] || '').startsWith('agent.') && item.params[0] !== 'agent.external_api'),
+      false
+    );
   } finally {
     dbOperations.get = originalGet;
     dbOperations.run = originalRun;

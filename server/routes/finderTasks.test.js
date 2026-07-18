@@ -329,6 +329,83 @@ test('video evidence finder uses selected YouTube Maton Gateway provider', async
   assert.equal(JSON.parse(res.body.data.raw_request).target_platform, 'youtube');
 });
 
+test('video evidence finder reads only canonical YouTube Maton Gateway configuration', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  const providerLookups = [];
+  const originalGet = dbOperations.get;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const mockGateway = await new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.url.startsWith('/youtube/youtube/v3/search')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          items: [{
+            id: { videoId: 'dQw4w9WgXcQ' },
+            snippet: { channelId: 'maton-channel', channelTitle: 'Maton Creator', title: 'Battery review', description: '' }
+          }]
+        }));
+        return;
+      }
+      if (req.url.startsWith('/youtube/youtube/v3/channels')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          items: [{ id: 'maton-channel', snippet: { title: 'Maton Creator' }, statistics: { subscriberCount: '1000', viewCount: '10000' } }]
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+
+  try {
+    await models.ApiSetting.create({
+      provider: 'system.provider_selection',
+      extra_config: JSON.stringify({
+        platforms: { youtube: { primary: 'maton_gateway', fallbacks: [] } }
+      })
+    });
+    await models.ApiSetting.create({
+      provider: 'youtube.maton_gateway',
+      api_key: 'maton-token',
+      base_url: `http://127.0.0.1:${mockGateway.port}`
+    });
+
+    dbOperations.get = async (sql, params = []) => {
+      if (String(sql).includes('FROM api_settings WHERE provider = ?')) providerLookups.push(params[0]);
+      return originalGet(sql, params);
+    };
+    process.env.NODE_ENV = 'development';
+
+    const created = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'youtube',
+      limit: 1
+    });
+    assert.equal(created.status, 200);
+
+    let task = null;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      task = await models.FinderTask.findByPk(created.body.data.id);
+      if (task?.status !== 'draft' && task?.status !== 'running') break;
+      await sleep(20);
+    }
+
+    assert.equal(task.status, 'success');
+    assert.ok(providerLookups.includes('youtube.maton_gateway'));
+    assert.equal(providerLookups.includes('agent.maton_gateway'), false);
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv;
+    dbOperations.get = originalGet;
+    await new Promise((resolve) => mockGateway.server.close(resolve));
+  }
+});
+
 test('finder task -> video evidence -> video_sources reuse', async () => {
   await resetTestDatabase();
   await initDatabase();
