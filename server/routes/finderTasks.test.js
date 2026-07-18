@@ -246,9 +246,9 @@ async function seedMockAiSettings(port) {
   });
 }
 
-async function seedMockScrapeCreatorsSettings(port, apiKey = 'scrape-test-key') {
+async function seedMockScrapeCreatorsSettings(port, apiKey = 'scrape-test-key', platform = 'instagram') {
   await models.ApiSetting.create({
-    provider: 'instagram.scrapecreators',
+    provider: `${platform}.scrapecreators`,
     api_key: apiKey,
     base_url: `http://127.0.0.1:${port}`
   });
@@ -906,6 +906,164 @@ test('Instagram automatic discovery reports Reels that are all invalid or unmapp
     assert.equal(
       task.error_message,
       'ScrapeCreators returned Instagram Reels, but none contained valid public Reel evidence with an identifiable author.'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('TikTok automatic Keyword Search persists evidence, analyzes it, and aggregates by author', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'tiktok', product: 'vocal processor' });
+  const scrapeApiKey = 'tiktok-test-key';
+  const videoA = {
+    aweme_id: '7334621391758642478',
+    desc: 'Live vocal processor demo',
+    region: 'US',
+    author: { unique_id: 'demo.creator', nickname: 'Demo Creator', follower_count: 0 },
+    statistics: { play_count: 0 }
+  };
+  const videoB = {
+    aweme_id: '7334621391758642479',
+    desc: 'Second demo',
+    region: 'US',
+    author: { unique_id: 'demo.creator', nickname: 'Demo Creator' },
+    statistics: { play_count: 6400 }
+  };
+  const fixture = {
+    search_item_list: [
+      { aweme_info: videoA },
+      { aweme_info: { ...videoA } },
+      { aweme_info: videoB }
+    ]
+  };
+  const { server: scrapeServer, port: scrapePort, requests } = await startMockScrapeCreatorsServer((req) => {
+    const query = new URL(req.url, 'http://127.0.0.1').searchParams.get('query');
+    return { body: query === 'vocal processor' ? fixture : { search_item_list: [] } };
+  });
+  const { server: aiServer, port: aiPort } = await startMockAiServer();
+  await seedMockScrapeCreatorsSettings(scrapePort, scrapeApiKey, 'tiktok');
+  await seedMockAiSettings(aiPort);
+
+  try {
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'tiktok',
+      limit: 10
+    });
+    const taskId = createRes.body.data.id;
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'success');
+    assert.equal(task.success_count, 2);
+    assert.equal(task.provider_attempts.includes(scrapeApiKey), false);
+    assert.equal(task.raw_response_summary.includes(scrapeApiKey), false);
+    for (const item of requests) {
+      const url = new URL(item.url, 'http://127.0.0.1');
+      assert.equal(url.pathname, '/v1/tiktok/search/keyword');
+      assert.ok(url.searchParams.get('query'));
+      assert.equal(item.headers['x-api-key'], scrapeApiKey);
+      assert.equal(item.headers.authorization, undefined);
+    }
+
+    assert.equal(await models.VideoSource.count(), 2);
+    assert.equal(await models.FinderVideoEvidence.count(), 2);
+    const analyze = await request.post(`/api/finder-tasks/${taskId}/evidence-analysis`).send({});
+    assert.equal(analyze.body.data.success_count, 2);
+    const generate = await request.post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`).send({});
+    assert.equal(generate.body.data.inserted_count, 1);
+    const candidates = await models.RawCandidate.findAll();
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].platform, 'tiktok');
+    assert.equal(candidates[0].profile_url, 'https://www.tiktok.com/@demo.creator');
+    assert.match(candidates[0].video_url, /^https:\/\/www\.tiktok\.com\/@demo\.creator\/video\/\d+$/);
+    assert.notEqual(candidates[0].profile_url, candidates[0].video_url);
+    assert.equal(safeParseJson(candidates[0].scoring_breakdown).evidence_count, 2);
+  } finally {
+    scrapeServer.close();
+    aiServer.close();
+  }
+});
+
+async function createAndRunTikTokTask() {
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'tiktok', product: 'vocal processor' });
+  const createRes = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    target_platform: 'tiktok'
+  });
+  const taskId = createRes.body.data.id;
+  await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+  return models.FinderTask.findByPk(taskId);
+}
+
+test('TikTok automatic discovery preserves missing configuration errors', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const task = await createAndRunTikTokTask();
+  assert.equal(task.status, 'failed');
+  assert.match(task.error_message, /ScrapeCreators API Key is not configured/);
+  assert.match(task.provider_attempts, /ScrapeCreators API Key is not configured/);
+});
+
+test('TikTok automatic discovery reports zero Keyword Search videos', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const { server, port } = await startMockScrapeCreatorsServer(() => ({
+    body: { search_item_list: [] }
+  }));
+  try {
+    await seedMockScrapeCreatorsSettings(port, 'scrape-test-key', 'tiktok');
+    const task = await createAndRunTikTokTask();
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error_message, 'TikTok Keyword Search returned 0 videos. Try shorter or broader Strategy keywords.');
+  } finally {
+    server.close();
+  }
+});
+
+test('TikTok automatic discovery preserves upstream HTTP errors', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const { server, port } = await startMockScrapeCreatorsServer(() => ({
+    status: 503,
+    body: { message: 'ScrapeCreators upstream unavailable' }
+  }));
+  try {
+    await seedMockScrapeCreatorsSettings(port, 'scrape-test-key', 'tiktok');
+    const task = await createAndRunTikTokTask();
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error_message, 'ScrapeCreators upstream unavailable');
+    assert.match(task.raw_response_summary, /ScrapeCreators upstream unavailable/);
+  } finally {
+    server.close();
+  }
+});
+
+test('TikTok automatic discovery reports videos that are all invalid', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const { server, port } = await startMockScrapeCreatorsServer(() => ({
+    body: {
+      search_item_list: [{
+        aweme_info: { aweme_id: '7334621391758642478', author: {} }
+      }]
+    }
+  }));
+  try {
+    await seedMockScrapeCreatorsSettings(port, 'scrape-test-key', 'tiktok');
+    const task = await createAndRunTikTokTask();
+    assert.equal(task.status, 'failed');
+    assert.equal(
+      task.error_message,
+      'TikTok Keyword Search returned videos, but none contained valid public video evidence with an identifiable author.'
     );
   } finally {
     server.close();

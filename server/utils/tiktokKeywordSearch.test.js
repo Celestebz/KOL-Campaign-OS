@@ -71,6 +71,45 @@ test('rejects missing ids, missing handles, invalid handles, and photo mode', ()
   assert.equal(tiktokVideoToCandidate({ ...officialVideo, image_infos: [{}] }, request), null);
 });
 
+test('rejects ids and handles that cannot form canonical TikTok URLs', () => {
+  for (const aweme_id of ['abc', '../123', '123?lang=en']) {
+    assert.equal(tiktokVideoToCandidate({ ...officialVideo, aweme_id }, request), null);
+  }
+  for (const unique_id of ['.', '..', '.name', 'name.', 'name..x', 'bad/name', 'bad?name']) {
+    assert.equal(tiktokVideoToCandidate({
+      ...officialVideo,
+      author: { ...officialVideo.author, unique_id }
+    }, request), null);
+  }
+});
+
+test('never trusts provider CDN or profile URLs as evidence identity', () => {
+  const result = tiktokVideoToCandidate({
+    ...officialVideo,
+    url: 'https://v45.tiktokcdn.com/video.mp4',
+    profile_url: 'https://www.tiktok.com/@wrong'
+  }, request);
+  assert.equal(result.representative_video_url, 'https://www.tiktok.com/@demo.creator/video/7334621391758642478');
+  assert.equal(result.profile_url, 'https://www.tiktok.com/@demo.creator');
+});
+
+test('rejects Photo Mode response variants', () => {
+  assert.equal(tiktokVideoToCandidate({ ...officialVideo, image_infos: [{}] }, request), null);
+  assert.equal(tiktokVideoToCandidate({ ...officialVideo, content_type: 'multi_photo' }, request), null);
+});
+
+test('preserves provider metrics without inventing absent values', () => {
+  const zero = tiktokVideoToCandidate(officialVideo, request);
+  assert.equal(zero.followers, '0');
+  assert.equal(zero.avg_views, '0');
+});
+
+test('uses the current query in every candidate reason and source field', () => {
+  const result = tiktokVideoToCandidate(officialVideo, request);
+  assert.equal(result.source_query, 'vocal processor');
+  assert.equal(result.reason, 'Matched TikTok Keyword Search: vocal processor');
+});
+
 test('leaves unavailable provider metadata empty', () => {
   const result = tiktokVideoToCandidate({
     aweme_id: '7334621391758642479',
