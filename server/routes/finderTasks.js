@@ -5,6 +5,11 @@ const {
   extractInstagramReels,
   instagramReelToCandidate
 } = require('../utils/instagramReelSearch');
+const {
+  buildTikTokKeywordSearchUrl,
+  extractTikTokVideos,
+  tiktokVideoToCandidate
+} = require('../utils/tiktokKeywordSearch');
 
 const router = express.Router();
 
@@ -1028,11 +1033,11 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   const setting = await getSetting(providerKey(request.target_platform, 'scrapecreators'), legacyKeysFor(request.target_platform, 'scrapecreators'));
   if (!setting?.api_key) throw new Error('ScrapeCreators API Key is not configured');
   const baseUrl = (setting.base_url || 'https://api.scrapecreators.com').replace(/\/$/, '').replace(/\/v1$/, '');
-  const headers = { 'x-api-key': setting.api_key, Authorization: `Bearer ${setting.api_key}` };
   const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
   const candidates = [];
   let lastEndpoint = '';
   let instagramReelCount = 0;
+  let tiktokVideoCount = 0;
 
   for (const query of keywordQueries(request)) {
     if (candidates.length >= maxResults) break;
@@ -1052,41 +1057,25 @@ async function scrapeCreatorsFinderAdapterV2(request) {
       continue;
     }
 
-    const endpoints = [
-      buildUrl(baseUrl, '/v1/tiktok/search', { query, limit: maxResults }),
-      buildUrl(baseUrl, '/v1/tiktok/users/search', { query, limit: maxResults }),
-      buildUrl(baseUrl, '/v1/tiktok/user/search', { query, limit: maxResults })
-    ];
-    const result = await fetchFirstJson(endpoints, { headers });
-    lastEndpoint = result.url;
-    const rawCandidates = extractCandidateArray(result.data);
-    for (const item of rawCandidates) {
-      const user = item.user || item.author || item.owner || item;
-      const username = clean(user.username || user.unique_id || user.handle || user.nickname || item.username || item.author_name);
-      const profileUrl = clean(user.profile_url || user.url || item.profile_url || item.url || (username ? (request.target_platform === 'instagram' ? `https://www.instagram.com/${username}/` : `https://www.tiktok.com/@${username}`) : ''));
-      const evidenceTitle = clean(user.google_title || item.google_title || user.full_name || user.nickname || username || item.name);
-      const inferredCountry = clean(user.country || user.region || item.country_region || inferCountryRegion(user.biography, user.bio, user.google_description, item.google_description, item.description));
-      candidates.push(applyMarketGate({
-        platform: request.target_platform,
-        kol_name: clean(user.full_name || user.nickname || username || item.name),
-        profile_url: profileUrl,
-        followers: clean(user.follower_count || user.followers || user.followers_count || item.followers || item.follower_count),
-        avg_views: clean(user.avg_views || item.avg_views || item.views),
-        email: clean(user.email || item.email),
-        country_region: inferredCountry,
-        matched_keywords: query,
-        matched_persona: request.strategy.persona_config?.primary_persona || '',
-        representative_video_url: clean(item.video_url || item.post_url),
-        representative_video_title: clean(item.title || item.desc || item.description),
-        evidence_url: profileUrl,
-        evidence_title: evidenceTitle,
-        evidence_type: 'profile',
-        source_query: query,
-        reason: `Matched ${PROVIDER_LABELS[request.search_source] || PROVIDER_LABELS.scrapecreators} search: ${query}`,
-        raw_data: item
-      }, request));
-      if (candidates.length >= maxResults) break;
+    const endpoint = buildTikTokKeywordSearchUrl(baseUrl, query);
+    const data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+    lastEndpoint = endpoint;
+    const videos = extractTikTokVideos(data);
+    tiktokVideoCount += videos.length;
+    const mapped = videos
+      .map((video) => tiktokVideoToCandidate(video, {
+        ...request,
+        discovery: { ...request.discovery, keywords: query }
+      }))
+      .filter(Boolean);
+    candidates.push(...mapped.slice(0, maxResults - candidates.length));
+  }
+
+  if (!candidates.length && request.target_platform === 'tiktok') {
+    if (tiktokVideoCount === 0) {
+      throw new Error('TikTok Keyword Search returned 0 videos. Try shorter or broader Strategy keywords.');
     }
+    throw new Error('TikTok Keyword Search returned videos, but none contained valid public video evidence with an identifiable author.');
   }
 
   if (!candidates.length) {
