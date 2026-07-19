@@ -1,0 +1,58 @@
+<h2>项目子表映射：选择交互布局</h2>
+<p class="subtitle">三种方案都从系统项目中选择，不允许手输项目名；未配置映射时同步明确报错。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:18px;background:#f7f9fc">
+      <div style="font-weight:650;margin-bottom:12px">项目子表映射</div>
+      <div style="display:grid;grid-template-columns:1.1fr 1.3fr 70px;gap:8px;margin-bottom:8px">
+        <div class="mock-input">Vivatrees EverJoy ▾</div>
+        <div class="mock-input">tbliXAzgY46zjt3U</div>
+        <button class="mock-button" style="background:#fff;color:#d4380d;border:1px solid #ffccc7">删除</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1.1fr 1.3fr 70px;gap:8px;margin-bottom:12px">
+        <div class="mock-input">Summer Launch ▾</div>
+        <div class="mock-input">tblAAAAAAA</div>
+        <button class="mock-button" style="background:#fff;color:#d4380d;border:1px solid #ffccc7">删除</button>
+      </div>
+      <button class="mock-button">＋ 添加项目映射</button>
+    </div>
+    <div class="card-body">
+      <h3>A · 紧凑行编辑器（推荐）</h3>
+      <p>一行一个项目，直接选择项目并填写 Table ID；信息密度适中，最贴合当前设置页。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:18px;background:#f7f9fc">
+      <div style="font-weight:650;margin-bottom:12px">项目子表映射</div>
+      <div style="border:1px solid #d9d9d9;border-radius:8px;overflow:hidden;background:white">
+        <div style="display:grid;grid-template-columns:1fr 1.2fr 72px;padding:9px;background:#fafafa;font-size:12px;color:#667085"><span>系统项目</span><span>飞书子表 ID</span><span>操作</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1.2fr 72px;padding:10px;border-top:1px solid #eee"><span>Vivatrees EverJoy</span><span>tbliXAzgY46zjt3U</span><span style="color:#1677ff">编辑</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1.2fr 72px;padding:10px;border-top:1px solid #eee"><span>Summer Launch</span><span>tblAAAAAAA</span><span style="color:#1677ff">编辑</span></div>
+      </div>
+      <button class="mock-button" style="margin-top:12px">＋ 新增映射</button>
+    </div>
+    <div class="card-body">
+      <h3>B · 数据表格 + 编辑弹窗</h3>
+      <p>浏览清晰，编辑时弹出小窗口；项目很多时更规整，但操作步骤更多。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:18px;background:#f7f9fc">
+      <div style="font-weight:650;margin-bottom:12px">项目子表映射</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="background:white;border:1px solid #e5e7eb;border-radius:10px;padding:12px"><b>Vivatrees EverJoy</b><div style="font-size:12px;color:#667085;margin-top:6px">tbliXAzgY46zjt3U</div><div style="color:#1677ff;font-size:12px;margin-top:10px">编辑映射</div></div>
+        <div style="background:white;border:1px solid #e5e7eb;border-radius:10px;padding:12px"><b>Summer Launch</b><div style="font-size:12px;color:#667085;margin-top:6px">tblAAAAAAA</div><div style="color:#1677ff;font-size:12px;margin-top:10px">编辑映射</div></div>
+      </div>
+      <button class="mock-button" style="margin-top:12px">＋ 添加项目</button>
+    </div>
+    <div class="card-body">
+      <h3>C · 项目卡片</h3>
+      <p>更醒目、触控友好，但会拉长设置页，项目多时扫描效率较低。</p>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:18px">点击一个方案进行选择，然后回到 Codex 告诉我你的意见。</p>

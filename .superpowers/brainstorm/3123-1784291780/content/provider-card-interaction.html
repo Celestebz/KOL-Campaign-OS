@@ -1,0 +1,68 @@
+<h2>分区内部：卡片 + 配置抽屉</h2>
+<p class="subtitle">示例为“平台数据源 / YouTube”。重点查看信息密度、状态层级和编辑方式。</p>
+
+<div class="mockup">
+  <div class="mockup-header">API 设置 / 平台数据源</div>
+  <div class="mockup-body" style="background:#f4f7fb;padding:16px">
+    <div style="display:grid;grid-template-columns:140px 1fr 330px;gap:14px;min-height:430px">
+      <nav style="background:#102a43;color:#cbd9e6;border-radius:9px;padding:10px;font-size:13px;line-height:2.45">
+        <div style="padding-left:9px">概览</div>
+        <div style="background:#1f6feb;color:white;border-radius:6px;padding-left:9px">平台数据源</div>
+        <div style="padding-left:9px">AI 模型</div>
+        <div style="padding-left:9px">Agent 自动化</div>
+        <div style="padding-left:9px">External API</div>
+        <div style="padding-left:9px">云端存储</div>
+        <div style="padding-left:9px">运行与备用</div>
+      </nav>
+
+      <main>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div><b style="font-size:17px">平台数据源</b><div style="font-size:12px;color:#6b7785;margin-top:3px">管理视频、评论与创作者主页的数据来源</div></div>
+          <label style="font-size:12px;color:#6b7785">○ 显示预留项</label>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:12px">
+          <span style="background:#102a43;color:white;border-radius:5px;padding:5px 12px">YouTube</span>
+          <span style="background:white;border-radius:5px;padding:5px 12px">Instagram</span>
+          <span style="background:white;border-radius:5px;padding:5px 12px">TikTok</span>
+        </div>
+        <div style="background:#e9f7ef;color:#246b45;border-radius:7px;padding:9px 11px;margin-bottom:10px;font-size:12px">主数据源 Maton Gateway 已配置。Fallback 当前关闭。</div>
+
+        <article style="background:white;border:1px solid #1f6feb;border-radius:9px;padding:12px;margin-bottom:9px">
+          <div style="display:flex;justify-content:space-between;gap:10px">
+            <div><b>Maton Gateway</b><div style="font-size:12px;color:#5f6b7a;margin-top:4px">主数据源 · API Key 与 Connection ID 已配置</div></div>
+            <div><span style="background:#e8f1ff;color:#1f6feb;padding:3px 7px;border-radius:4px;font-size:11px">当前启用</span> <button class="mock-button">配置</button></div>
+          </div>
+        </article>
+        <article style="background:white;border-radius:9px;padding:12px;margin-bottom:9px">
+          <div style="display:flex;justify-content:space-between;gap:10px">
+            <div><b>Google Official</b><div style="font-size:12px;color:#ad6800;margin-top:4px">可用 · API Key 尚未配置</div></div>
+            <button class="mock-button">配置</button>
+          </div>
+        </article>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:13px;font-size:12px;color:#687786"><span>备用数据源</span><span style="background:white;padding:5px 9px;border-radius:5px">未启用 ▾</span></div>
+      </main>
+
+      <aside style="background:white;border-left:1px solid #d8e0e8;border-radius:9px;padding:14px;box-shadow:-5px 0 14px rgba(20,50,80,.07)">
+        <div style="display:flex;justify-content:space-between"><b>配置 Maton Gateway</b><span>×</span></div>
+        <p style="font-size:12px;color:#687786">YouTube 数据 Provider</p>
+        <label class="label">API Key</label>
+        <input class="mock-input" value="••••••••••••" style="width:100%;box-sizing:border-box;margin:5px 0 12px">
+        <label class="label">Base URL</label>
+        <input class="mock-input" placeholder="使用默认地址" style="width:100%;box-sizing:border-box;margin:5px 0 12px">
+        <label class="label">Connection ID</label>
+        <input class="mock-input" value="e80ca53e-…" style="width:100%;box-sizing:border-box;margin:5px 0 12px">
+        <div style="background:#f5f7fa;padding:9px;border-radius:6px;font-size:11px;color:#687786">密钥留空表示保留原值；只有输入新值才会更新。</div>
+        <div style="display:flex;justify-content:flex-end;gap:7px;margin-top:18px"><button class="mock-button">取消</button><button class="mock-button" style="background:#1f6feb;color:white">保存此配置</button></div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve-card-drawer" onclick="toggleSelect(this)">
+    <div class="letter">✓</div><div class="content"><h3>采用这个交互</h3><p>卡片只呈现状态和用途，点“配置”后从右侧打开抽屉。</p></div>
+  </div>
+  <div class="option" data-choice="prefer-inline-expand" onclick="toggleSelect(this)">
+    <div class="letter">↕</div><div class="content"><h3>改成卡片内展开</h3><p>点击后在当前卡片下方展开字段，不使用右侧抽屉。</p></div>
+  </div>
+</div>

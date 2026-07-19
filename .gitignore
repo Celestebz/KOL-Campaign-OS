@@ -109,3 +109,6 @@ Desktop.ini
 *.temp
 server/scratch_*.js
 server/submit_candidates.js
+
+# Local brainstorming session credential
+.superpowers/brainstorm/.last-token

@@ -1,0 +1,78 @@
+<h2>API 设置页：哪种结构最顺手？</h2>
+<p class="subtitle">三种方案都保留现有配置和保存语义，只改变信息组织。点击你最喜欢的一种。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f4f7fb;min-height:310px">
+      <div style="font-weight:700;margin-bottom:10px">API 设置</div>
+      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="background:#1677ff;color:white;padding:5px 10px;border-radius:5px">平台数据源</span>
+        <span style="background:white;padding:5px 10px;border-radius:5px">AI 模型</span>
+        <span style="background:white;padding:5px 10px;border-radius:5px">Agent</span>
+        <span style="background:white;padding:5px 10px;border-radius:5px">存储与高级</span>
+      </div>
+      <div style="background:white;padding:12px;border-radius:8px;margin-bottom:8px">
+        <b>YouTube</b><span style="float:right;color:#159957">已配置 1/2</span>
+        <div style="height:8px;background:#edf1f5;margin-top:9px;border-radius:4px"></div>
+        <div style="height:8px;background:#edf1f5;margin-top:6px;width:65%;border-radius:4px"></div>
+      </div>
+      <div style="background:white;padding:12px;border-radius:8px;margin-bottom:8px"><b>Instagram</b><span style="float:right">配置 ›</span></div>
+      <div style="background:white;padding:12px;border-radius:8px"><b>TikTok</b><span style="float:right">配置 ›</span></div>
+    </div>
+    <div class="card-body">
+      <h3>A · 顶部分类标签</h3>
+      <p>最容易实现，当前分类一目了然；但进入平台后仍需要二级切换。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f4f7fb;min-height:310px">
+      <div style="font-weight:700;margin-bottom:10px">API 设置</div>
+      <div style="display:grid;grid-template-columns:120px 1fr;gap:10px">
+        <div style="background:#102a43;color:#dce8f2;border-radius:8px;padding:8px;font-size:12px;line-height:2.35">
+          <div style="background:#1f6feb;color:white;border-radius:5px;padding-left:7px">概览</div>
+          <div style="padding-left:7px">平台数据源</div>
+          <div style="padding-left:7px">AI 模型</div>
+          <div style="padding-left:7px">Agent</div>
+          <div style="padding-left:7px">外部 API</div>
+          <div style="padding-left:7px">云端存储</div>
+          <div style="padding-left:7px">备用策略</div>
+        </div>
+        <div>
+          <div style="background:white;padding:12px;border-radius:8px;margin-bottom:8px"><b>配置概览</b><div style="color:#5f6b7a;margin-top:6px">3 个已启用 · 2 项待配置 · 8 个预留项已隐藏</div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div style="background:white;padding:11px;border-radius:8px"><b>平台数据源</b><div style="color:#159957;margin-top:7px">运行正常</div></div>
+            <div style="background:white;padding:11px;border-radius:8px"><b>AI 模型</b><div style="color:#159957;margin-top:7px">DeepSeek</div></div>
+            <div style="background:white;padding:11px;border-radius:8px"><b>Agent</b><div style="color:#ad6800;margin-top:7px">需检查</div></div>
+            <div style="background:white;padding:11px;border-radius:8px"><b>飞书存储</b><div style="color:#5f6b7a;margin-top:7px">未完成</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · 左侧分区导航（推荐）</h3>
+      <p>适合 6–8 个稳定分类；概览承担状态检查，每次只显示一个分区，页面长度最可控。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f4f7fb;min-height:310px">
+      <div style="font-weight:700;margin-bottom:10px">API 设置</div>
+      <div style="background:white;border-radius:8px;padding:12px;margin-bottom:9px">
+        <b>Provider 总览</b><div style="margin-top:8px;display:flex;gap:6px"><span style="background:#e9f7ef;padding:4px 8px">已配置 4</span><span style="background:#fff4e5;padding:4px 8px">待检查 2</span></div>
+      </div>
+      <div style="background:white;border-radius:8px;padding:10px;margin-bottom:7px;display:flex;justify-content:space-between"><span><b>Google Official</b><br><small>YouTube · 主数据源</small></span><button class="mock-button">编辑</button></div>
+      <div style="background:white;border-radius:8px;padding:10px;margin-bottom:7px;display:flex;justify-content:space-between"><span><b>Maton Gateway</b><br><small>Agent · 已配置</small></span><button class="mock-button">编辑</button></div>
+      <div style="background:#eaf1f8;border:1px solid #c7d6e5;border-radius:8px;padding:10px"><b>右侧抽屉</b><div style="color:#5f6b7a;margin-top:6px">点“编辑”后配置单个 Provider，不离开总览。</div></div>
+    </div>
+    <div class="card-body">
+      <h3>C · Provider 总览 + 抽屉</h3>
+      <p>最紧凑、管理感最强；但把配置拆到抽屉后，跨 Provider 对照会稍弱。</p>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros"><h4>我的建议</h4><ul><li>以 B 为主结构</li><li>在每个分区内采用 C 的 Provider 卡片与单项展开</li><li>“预留”默认隐藏，通过开关查看</li></ul></div>
+  <div class="cons"><h4>不建议传统翻页</h4><ul><li>设置项不是线性流程</li><li>用户常需跳到指定类别</li><li>页码 1/2/3 不表达内容含义</li></ul></div>
+</div>

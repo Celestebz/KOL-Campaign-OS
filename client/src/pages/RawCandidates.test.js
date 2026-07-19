@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import axios from 'axios';
 import { message } from 'antd';
@@ -93,5 +93,22 @@ describe('RawCandidates product-scoped UI', () => {
     const row = screen.getByText('Test Creator').closest('tr');
     const approveButton = row.querySelector('button');
     expect(approveButton).not.toBeDisabled();
+  });
+});
+
+test('handles initial campaign and strategy network failures without unhandled runtime errors', async () => {
+  const networkError = new Error('Network Error');
+  axios.get.mockImplementation((url) => {
+    if (url === '/api/campaigns' || url === '/api/kol-strategies') {
+      return Promise.reject(networkError);
+    }
+    return Promise.resolve({ data: { data: [] } });
+  });
+
+  render(<RawCandidates />);
+
+  await waitFor(() => {
+    expect(message.error).toHaveBeenCalledWith('获取产品/活动失败，请确认后端服务已启动');
+    expect(message.error).toHaveBeenCalledWith('获取策略失败，请确认后端服务已启动');
   });
 });

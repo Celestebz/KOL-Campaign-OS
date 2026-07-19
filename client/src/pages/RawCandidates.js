@@ -247,8 +247,13 @@ const RawCandidates = () => {
   }, [displayedFinderTask?.id]);
 
   const fetchCampaigns = async () => {
-    const res = await axios.get('/api/campaigns');
-    setCampaigns(res.data.data || []);
+    try {
+      const res = await axios.get('/api/campaigns');
+      setCampaigns(res.data.data || []);
+    } catch (error) {
+      setCampaigns([]);
+      message.error(error.response?.data?.error || '获取产品/活动失败，请确认后端服务已启动');
+    }
   };
 
   const fetchCampaignProducts = async (campaignId) => {
@@ -265,8 +270,13 @@ const RawCandidates = () => {
   };
 
   const fetchStrategies = async () => {
-    const res = await axios.get('/api/kol-strategies', { params: { status: 'ready' } });
-    setStrategies(res.data.data || []);
+    try {
+      const res = await axios.get('/api/kol-strategies', { params: { status: 'ready' } });
+      setStrategies(res.data.data || []);
+    } catch (error) {
+      setStrategies([]);
+      message.error(error.response?.data?.error || '获取策略失败，请确认后端服务已启动');
+    }
   };
 
   const fetchCandidates = async () => {

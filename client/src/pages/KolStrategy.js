@@ -139,8 +139,13 @@ const KolStrategy = () => {
   }, []);
 
   const fetchCampaigns = async () => {
-    const res = await axios.get('/api/campaigns');
-    setCampaigns(res.data.data || []);
+    try {
+      const res = await axios.get('/api/campaigns');
+      setCampaigns(res.data.data || []);
+    } catch (error) {
+      setCampaigns([]);
+      message.error(error.response?.data?.error || '获取产品/活动失败，请确认后端服务已启动');
+    }
   };
 
   const fetchCampaignProducts = async (campaignId) => {

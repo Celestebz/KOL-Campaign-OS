@@ -1088,6 +1088,54 @@ test('video evidence finder reads only canonical YouTube Maton Gateway configura
   }
 });
 
+test('video evidence finder default task saves single target-platform request fields', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+
+  await strategy.update({
+    search_strategy: JSON.stringify([
+      { cycle: 'C1', name: 'Competitor Reviews', keywords: 'competitor battery review', target_count: 10 },
+      { cycle: 'C2', name: 'Category Search', keywords: 'lifepo4 battery review', target_count: 10 },
+      { cycle: 'C3', name: 'Use-case Search', keywords: 'campervan battery upgrade', target_count: 10 },
+      { cycle: 'C4', name: 'Feature Search', keywords: 'bluetooth lifepo4 battery', target_count: 10 },
+      { cycle: 'C5', name: 'Community Search', keywords: 'motorhome leisure battery advice', target_count: 10 },
+      { cycle: 'C6', name: 'Platform Native Search', keywords: 'youtube lifepo4 campervan', target_count: 10 },
+      { cycle: 'C7', name: 'Spider-web Expansion', keywords: 'related channels', target_count: 10 }
+    ])
+  });
+
+  await models.ApiSetting.create({
+    provider: 'system.provider_selection',
+    extra_config: JSON.stringify({
+      platforms: {
+        youtube: { primary: 'maton_gateway', fallbacks: [] }
+      }
+    })
+  });
+
+  const res = await request
+    .post('/api/finder-tasks')
+    .send({
+      strategy_id: strategy.id,
+      target_platform: 'youtube',
+      limit: 5
+    });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.platform, 'youtube');
+  assert.deepEqual(JSON.parse(res.body.data.search_sources), ['maton_agent']);
+  assert.deepEqual(JSON.parse(res.body.data.discovery_routes), ['target_platform_first']);
+  const rawRequest = JSON.parse(res.body.data.raw_request);
+  assert.equal(rawRequest.target_platform, 'youtube');
+  assert.equal(rawRequest.limit, 5);
+  assert.equal(Object.prototype.hasOwnProperty.call(rawRequest, 'cycles'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(res.body.data, 'search_cycles'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(res.body.data, 'total_cycles'), false);
+});
+
 test('finder task -> video evidence -> video_sources reuse', async () => {
   await resetTestDatabase();
   await initDatabase();

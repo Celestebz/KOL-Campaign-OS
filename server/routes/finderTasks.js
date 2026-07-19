@@ -2668,7 +2668,7 @@ router.post('/', async (req, res) => {
           strategy.campaign_id,
           strategy.campaign_product_id,
           strategy.id,
-          strategy.name + ' Finder ' + new Date().toLocaleString(),
+          `${strategy.name} Finder ${new Date().toLocaleString()}`,
           targetPlatform,
           keywords,
           'draft',
