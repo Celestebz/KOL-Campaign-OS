@@ -507,19 +507,36 @@ async function approveCandidate(id, body = {}) {
 
 router.get('/', async (req, res) => {
   try {
-    const { campaign_id, strategy_id, platform, status, min_score, search } = req.query;
+    const { campaign_id, strategy_id, platform, status, min_score, search, identity_status, campaign_product_id } = req.query;
     let sql = `
       SELECT rc.*, c.name as campaign_name, ft.name as finder_task_name,
         ks.name as strategy_name, ks.status as strategy_status,
+        ks.campaign_product_id as strategy_campaign_product_id,
         mk.id as matched_customer_id,
         mk.cooperation_status as global_cooperation_status,
         mk.cooperation_risk_category as global_cooperation_risk_category,
         mk.cooperation_risk_reason as global_cooperation_risk_reason,
-        mk.cooperation_status_updated_at as global_cooperation_status_updated_at
+        mk.cooperation_status_updated_at as global_cooperation_status_updated_at,
+        rcpf.id as product_fit_id,
+        rcpf.campaign_product_id as fit_campaign_product_id,
+        rcpf.identity_status as fit_identity_status,
+        rcpf.fit_score,
+        rcpf.matched_persona as fit_matched_persona,
+        rcpf.decision_status as fit_decision_status,
+        cp.role as campaign_product_role,
+        cp.priority as campaign_product_priority,
+        p.id as product_id,
+        p.brand as product_brand,
+        p.name as product_name,
+        p.category as product_category,
+        p.product_url as product_url
       FROM raw_candidates rc
       LEFT JOIN campaigns c ON c.id = rc.campaign_id
       LEFT JOIN finder_tasks ft ON ft.id = rc.finder_task_id
       LEFT JOIN kol_strategies ks ON ks.id = rc.strategy_id
+      LEFT JOIN raw_candidate_product_fits rcpf ON rcpf.latest_raw_candidate_id = rc.id
+      LEFT JOIN campaign_products cp ON cp.id = rcpf.campaign_product_id
+      LEFT JOIN products p ON p.id = cp.product_id
       LEFT JOIN customers mk ON (
         (rc.profile_url IS NOT NULL AND rc.profile_url != '' AND (
           mk.profile_url = rc.profile_url OR mk.youtube_url = rc.profile_url OR mk.instagram_url = rc.profile_url OR mk.tiktok_url = rc.profile_url
@@ -539,6 +556,10 @@ router.get('/', async (req, res) => {
       sql += ' AND rc.strategy_id = ?';
       params.push(strategy_id);
     }
+    if (campaign_product_id) {
+      sql += ' AND rcpf.campaign_product_id = ?';
+      params.push(campaign_product_id);
+    }
     if (platform) {
       sql += ' AND rc.platform = ?';
       params.push(platform);
@@ -552,6 +573,10 @@ router.get('/', async (req, res) => {
         params.push(status);
       }
     }
+    if (identity_status) {
+      sql += ' AND rcpf.identity_status = ?';
+      params.push(identity_status);
+    }
     if (min_score) {
       sql += ' AND COALESCE(rc.ai_score, 0) >= ?';
       params.push(Number(min_score));
@@ -561,9 +586,10 @@ router.get('/', async (req, res) => {
         rc.kol_name LIKE ? OR rc.contact_name LIKE ? OR rc.profile_url LIKE ?
         OR rc.video_url LIKE ? OR rc.email LIKE ? OR rc.country_region LIKE ?
         OR rc.matched_keywords LIKE ? OR rc.ai_match_reason LIKE ?
+        OR p.name LIKE ? OR p.brand LIKE ?
       )`;
       const term = `%${search}%`;
-      params.push(term, term, term, term, term, term, term, term);
+      params.push(term, term, term, term, term, term, term, term, term, term);
     }
 
     sql += ' ORDER BY rc.created_at DESC, rc.id DESC';

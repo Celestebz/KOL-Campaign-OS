@@ -64,6 +64,13 @@ const riskLevelLabel = (value) => ({
   low: '低'
 }[value] || '-');
 
+const identityStatusLabel = (value) => ({
+  new_kol: '新 KOL',
+  known_kol_new_product_fit: '已有 KOL · 新产品匹配',
+  existing_product_fit_updated: '已有 KOL · 产品匹配更新',
+  unresolved: '待识别'
+}[value] || value || '-');
+
 const safeParseJson = (value) => {
   if (!value) return null;
   if (typeof value === 'object') return value;
@@ -165,6 +172,7 @@ const renderClue = (record = {}) => {
 const RawCandidates = () => {
   const [candidates, setCandidates] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
+  const [campaignProducts, setCampaignProducts] = useState([]);
   const [strategies, setStrategies] = useState([]);
   const [finderTasks, setFinderTasks] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -214,6 +222,11 @@ const RawCandidates = () => {
   }, [filters.strategy_id]);
 
   useEffect(() => {
+    fetchCampaignProducts(filters.campaign_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.campaign_id]);
+
+  useEffect(() => {
     const hasRunning = finderTasks.some((task) => ['draft', 'running'].includes(task.status));
     if (!hasRunning) return undefined;
     const timer = setInterval(() => {
@@ -236,6 +249,19 @@ const RawCandidates = () => {
   const fetchCampaigns = async () => {
     const res = await axios.get('/api/campaigns');
     setCampaigns(res.data.data || []);
+  };
+
+  const fetchCampaignProducts = async (campaignId) => {
+    if (!campaignId) {
+      setCampaignProducts([]);
+      return;
+    }
+    try {
+      const res = await axios.get(`/api/campaigns/${campaignId}/products`);
+      setCampaignProducts(res.data.data || []);
+    } catch (error) {
+      setCampaignProducts([]);
+    }
   };
 
   const fetchStrategies = async () => {
@@ -330,6 +356,10 @@ const RawCandidates = () => {
       message.warning('请先选择一个已发布策略');
       return;
     }
+    if (!selectedStrategy.campaign_product_id) {
+      message.warning('所选策略未绑定项目产品，请先编辑策略并选择产品');
+      return;
+    }
     const targetPlatform = selectedStrategy.primary_platform
       || selectedStrategy.finder_handoff?.required_platforms?.[0]
       || selectedStrategy.secondary_platforms?.[0]
@@ -371,7 +401,8 @@ const RawCandidates = () => {
     try {
       await axios.post(`/api/raw-candidates/${record.id}/approve`, {
         strategy_id: strategyId,
-        campaign_id: record.campaign_id || selectedStrategy?.campaign_id || filters.campaign_id || 1
+        campaign_id: record.campaign_id || selectedStrategy?.campaign_id || filters.campaign_id || 1,
+        campaign_product_id: record.fit_campaign_product_id || selectedStrategy?.campaign_product_id || undefined
       });
       message.success('已加入 KOL 管理和当前项目子表');
       fetchCandidates();
@@ -456,6 +487,29 @@ const RawCandidates = () => {
     },
     { title: '项目', dataIndex: 'campaign_name', key: 'campaign_name', width: 150, render: (v) => v || '-' },
     {
+      title: '项目产品',
+      key: 'product',
+      width: 180,
+      render: (_, r) => (
+        <Space direction="vertical" size={2}>
+          <span>{r.product_name || '-'}</span>
+          {r.product_brand ? <Tag>{r.product_brand}</Tag> : null}
+          {r.fit_score ? <Tag color="blue">产品匹配 {r.fit_score}</Tag> : null}
+        </Space>
+      )
+    },
+    {
+      title: '身份识别',
+      key: 'identity',
+      width: 180,
+      render: (_, r) => (
+        <Space direction="vertical" size={2}>
+          {r.fit_identity_status ? <Tag color={r.fit_identity_status === 'new_kol' ? 'green' : 'orange'}>{identityStatusLabel(r.fit_identity_status)}</Tag> : null}
+          {r.matched_customer_id ? <Tag>已存在 KOL Master</Tag> : null}
+        </Space>
+      )
+    },
+    {
       title: '策略',
       key: 'strategy',
       width: 190,
@@ -534,7 +588,13 @@ const RawCandidates = () => {
         <Space wrap>
           <Select allowClear placeholder="选择已发布策略" value={filters.strategy_id} onChange={updateStrategyFilter} options={strategyOptions} style={{ width: 300 }} />
           <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 180 }} />
+          <Select allowClear placeholder="项目产品" value={filters.campaign_product_id} onChange={(v) => updateFilter('campaign_product_id', v)} options={campaignProducts.map((item) => ({ value: item.id, label: `${item.product?.name || item.product_name || ''} (${item.role || 'hero'})`.trim() }))} style={{ width: 200 }} />
           <Select allowClear placeholder="平台" value={filters.platform} onChange={(v) => updateFilter('platform', v)} options={platformOptions} style={{ width: 140 }} />
+          <Select allowClear placeholder="身份识别" value={filters.identity_status} onChange={(v) => updateFilter('identity_status', v)} options={[
+            { value: 'new_kol', label: '新 KOL' },
+            { value: 'known_kol_new_product_fit', label: '已有 KOL · 新产品匹配' },
+            { value: 'existing_product_fit_updated', label: '已有 KOL · 产品匹配更新' }
+          ]} style={{ width: 200 }} />
           <Select allowClear placeholder="状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={statusOptions} style={{ width: 140 }} />
           <InputNumber placeholder="最低评分" min={0} max={100} value={filters.min_score} onChange={(v) => updateFilter('min_score', v)} style={{ width: 120 }} />
           <Input.Search allowClear placeholder="搜索 KOL、链接、关键词、国家" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchCandidates} style={{ width: 300 }} />
@@ -644,6 +704,12 @@ const RawCandidates = () => {
 
       <Modal title="创建视频证据寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText="开始找视频" width={520}>
         <Form form={taskForm} layout="vertical">
+          <Form.Item label="项目">
+            <Input value={selectedStrategy?.campaign_name || campaigns.find((c) => c.id === selectedStrategy?.campaign_id)?.name || ''} disabled />
+          </Form.Item>
+          <Form.Item label="项目产品">
+            <Input value={selectedStrategy?.product_name || ''} disabled />
+          </Form.Item>
           <Form.Item label="策略">
             <Input value={selectedStrategy?.name || ''} disabled />
           </Form.Item>
@@ -662,6 +728,9 @@ const RawCandidates = () => {
           <Space direction="vertical" style={{ width: '100%' }}>
             <div><strong>KOL：</strong>{detail.kol_name}</div>
             <div><strong>项目：</strong>{detail.campaign_name || '-'}</div>
+            <div><strong>项目产品：</strong>{detail.product_name || '-'}</div>
+            <div><strong>身份识别：</strong>{identityStatusLabel(detail.fit_identity_status)}</div>
+            <div><strong>产品匹配分：</strong>{detail.fit_score ?? '-'}</div>
             <div><strong>策略：</strong>{detail.strategy_name || '未绑定策略'}</div>
             <div><strong>匹配 KOL画像：</strong>{detail.matched_persona || '未生成'}</div>
             <div><strong>平台：</strong>{detail.platform || '-'}</div>
