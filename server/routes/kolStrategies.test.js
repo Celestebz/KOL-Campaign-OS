@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const test = require('node:test');
 const supertest = require('supertest');
 const path = require('path');
@@ -35,12 +36,26 @@ async function resetTestDatabase() {
   await admin.close();
 }
 
-async function createCampaign() {
+async function createCampaign(name = 'Strategy Test Campaign') {
   const result = await dbOperations.run(
     'INSERT INTO campaigns (name, brand, product) VALUES (?, ?, ?)',
-    ['Strategy Test Campaign', 'TestBrand', 'TestProduct']
+    [name, 'TestBrand', 'TestProduct']
   );
   return result.id;
+}
+
+async function createCampaignProduct(campaignId, { name = 'Strategy Test Product', status = 'active' } = {}) {
+  const productResult = await dbOperations.run(
+    'INSERT INTO products (brand, name, status, catalog_key_hash) VALUES (?, ?, ?, ?)',
+    ['TestBrand', name, 'active', crypto.createHash('sha256').update(`${campaignId}:${name}`).digest('hex')]
+  );
+  const campaignProductResult = await dbOperations.run(
+    `INSERT INTO campaign_products
+     (campaign_id, product_id, role, priority, status)
+     VALUES (?, ?, 'hero', 0, ?)`,
+    [campaignId, productResult.id, status]
+  );
+  return { id: campaignProductResult.id, productId: productResult.id, name, status };
 }
 
 function readyStrategyPayload(campaignId) {
@@ -68,15 +83,20 @@ test('POST /api/kol-strategies creates strategy without search_strategy and mark
   await initDatabase();
   const app = await buildApp();
   const campaignId = await createCampaign();
+  const campaignProduct = await createCampaignProduct(campaignId);
 
   const createRes = await supertest(app)
     .post('/api/kol-strategies')
-    .send(readyStrategyPayload(campaignId))
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: campaignProduct.id })
     .expect(200);
 
   assert.strictEqual(createRes.body.success, true);
   assert.ok(createRes.body.data.id, 'strategy id should be returned');
   assert.strictEqual(createRes.body.data.search_strategy, undefined, 'response should not expose search_strategy');
+  assert.strictEqual(createRes.body.data.campaign_product_id, campaignProduct.id);
+  assert.strictEqual(createRes.body.data.campaign_product_status, 'active');
+  assert.strictEqual(createRes.body.data.product_id, campaignProduct.productId);
+  assert.strictEqual(createRes.body.data.product_name, campaignProduct.name);
 
   const strategyId = createRes.body.data.id;
 
@@ -88,6 +108,120 @@ test('POST /api/kol-strategies creates strategy without search_strategy and mark
   assert.strictEqual(readyRes.body.success, true);
   assert.strictEqual(readyRes.body.data.status, 'ready');
   assert.strictEqual(readyRes.body.data.search_strategy, undefined, 'ready response should not expose search_strategy');
+});
+
+test('POST /api/kol-strategies requires an active Campaign Product owned by the Campaign', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const campaignId = await createCampaign();
+  const otherCampaignId = await createCampaign('Other Strategy Campaign');
+  const activeProduct = await createCampaignProduct(campaignId, { name: 'Active Product' });
+  const archivedProduct = await createCampaignProduct(campaignId, { name: 'Archived Product', status: 'archived' });
+  const otherCampaignProduct = await createCampaignProduct(otherCampaignId, { name: 'Other Product' });
+
+  await supertest(app)
+    .post('/api/kol-strategies')
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: activeProduct.id })
+    .expect(200);
+
+  const missing = await supertest(app)
+    .post('/api/kol-strategies')
+    .send(readyStrategyPayload(campaignId))
+    .expect(400);
+  assert.match(missing.body.error, /campaign_product_id/);
+
+  const wrongCampaign = await supertest(app)
+    .post('/api/kol-strategies')
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: otherCampaignProduct.id })
+    .expect(400);
+  assert.match(wrongCampaign.body.error, /不属于当前项目/);
+
+  const archived = await supertest(app)
+    .post('/api/kol-strategies')
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: archivedProduct.id })
+    .expect(400);
+  assert.match(archived.body.error, /active/);
+});
+
+test('PUT /api/kol-strategies/:id validates and preserves the effective Campaign Product binding', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const campaignId = await createCampaign();
+  const otherCampaignId = await createCampaign('Other Strategy Campaign');
+  const campaignProduct = await createCampaignProduct(campaignId);
+  const otherCampaignProduct = await createCampaignProduct(otherCampaignId, { name: 'Other Product' });
+
+  const createRes = await supertest(app)
+    .post('/api/kol-strategies')
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: campaignProduct.id })
+    .expect(200);
+
+  const updateRes = await supertest(app)
+    .put(`/api/kol-strategies/${createRes.body.data.id}`)
+    .send({ ...readyStrategyPayload(campaignId), name: 'Updated Strategy' })
+    .expect(200);
+  assert.strictEqual(updateRes.body.data.campaign_product_id, campaignProduct.id);
+
+  const wrongCampaign = await supertest(app)
+    .put(`/api/kol-strategies/${createRes.body.data.id}`)
+    .send({
+      ...readyStrategyPayload(campaignId),
+      campaign_product_id: otherCampaignProduct.id
+    })
+    .expect(400);
+  assert.match(wrongCampaign.body.error, /不属于当前项目/);
+});
+
+test('legacy unassigned strategies remain listable but cannot be marked ready until assigned', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const campaignId = await createCampaign();
+  const campaignProduct = await createCampaignProduct(campaignId);
+  const legacyResult = await dbOperations.run(
+    `INSERT INTO kol_strategies
+     (campaign_id, campaign_product_id, name, target_market, primary_platform, campaign_goal,
+      status, product_context, persona_config, finder_handoff)
+     VALUES (?, NULL, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
+    [
+      campaignId,
+      'Legacy Strategy',
+      'Musicians',
+      'youtube',
+      'Drive awareness',
+      JSON.stringify({ key_selling_points: ['great sound'] }),
+      JSON.stringify({ primary_persona: 'musician' }),
+      JSON.stringify({ required_platforms: ['youtube'] })
+    ]
+  );
+
+  const listRes = await supertest(app).get('/api/kol-strategies').expect(200);
+  const legacy = listRes.body.data.find((strategy) => strategy.id === legacyResult.id);
+  assert.ok(legacy, 'legacy strategy should remain listable');
+  assert.strictEqual(legacy.product_binding_status, 'legacy_unassigned');
+  assert.strictEqual(legacy.campaign_product_id, null);
+  assert.strictEqual(legacy.campaign_product_status, null);
+  assert.strictEqual(legacy.product_id, null);
+  assert.strictEqual(legacy.product_name, null);
+
+  const blocked = await supertest(app)
+    .post(`/api/kol-strategies/${legacyResult.id}/mark-ready`)
+    .send({})
+    .expect(400);
+  assert.match(blocked.body.error, /campaign_product_id/);
+
+  const assigned = await supertest(app)
+    .put(`/api/kol-strategies/${legacyResult.id}`)
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: campaignProduct.id })
+    .expect(200);
+  assert.strictEqual(assigned.body.data.campaign_product_id, campaignProduct.id);
+
+  await supertest(app)
+    .post(`/api/kol-strategies/${legacyResult.id}/mark-ready`)
+    .send({})
+    .expect(200);
 });
 
 test('POST /api/kol-strategies rejects legacy cycle fields', async () => {
@@ -116,10 +250,11 @@ test('PUT /api/kol-strategies/:id rejects legacy cycle fields', async () => {
   await initDatabase();
   const app = await buildApp();
   const campaignId = await createCampaign();
+  const campaignProduct = await createCampaignProduct(campaignId);
 
   const createRes = await supertest(app)
     .post('/api/kol-strategies')
-    .send(readyStrategyPayload(campaignId))
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: campaignProduct.id })
     .expect(200);
 
   const strategyId = createRes.body.data.id;
@@ -144,10 +279,11 @@ test('POST /api/kol-strategies/:id/mark-ready rejects legacy cycle fields', asyn
   await initDatabase();
   const app = await buildApp();
   const campaignId = await createCampaign();
+  const campaignProduct = await createCampaignProduct(campaignId);
 
   const createRes = await supertest(app)
     .post('/api/kol-strategies')
-    .send(readyStrategyPayload(campaignId))
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: campaignProduct.id })
     .expect(200);
 
   const strategyId = createRes.body.data.id;
@@ -172,10 +308,11 @@ test('GET /api/kol-strategies does not expose search_strategy', async () => {
   await initDatabase();
   const app = await buildApp();
   const campaignId = await createCampaign();
+  const campaignProduct = await createCampaignProduct(campaignId);
 
   const createRes = await supertest(app)
     .post('/api/kol-strategies')
-    .send(readyStrategyPayload(campaignId))
+    .send({ ...readyStrategyPayload(campaignId), campaign_product_id: campaignProduct.id })
     .expect(200);
 
   const strategyId = createRes.body.data.id;

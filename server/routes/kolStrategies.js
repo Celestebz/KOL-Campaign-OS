@@ -69,6 +69,10 @@ function asJson(value, fallback) {
   return JSON.stringify(value);
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
 function rejectLegacyCycleFields(body = {}) {
   const legacy = ['search_strategy', 'cycles', 'search_cycles', 'search_intensity']
     .filter((key) => Object.prototype.hasOwnProperty.call(body, key));
@@ -83,6 +87,7 @@ function normalizeStrategy(row) {
   if (!row) return row;
   return {
     ...row,
+    product_binding_status: row.campaign_product_id == null ? 'legacy_unassigned' : 'assigned',
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
@@ -91,6 +96,38 @@ function normalizeStrategy(row) {
     source_material_meta: parseJson(row.source_material_meta, {}),
     research_sources: parseJson(row.research_sources, [])
   };
+}
+
+async function getCampaignProductForStrategy(campaignId, campaignProductId, { requireActive = false } = {}) {
+  if (!Number.isInteger(Number(campaignProductId)) || Number(campaignProductId) <= 0) {
+    const error = new Error('campaign_product_id is required and must be a positive integer');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const campaignProduct = await dbOperations.get(
+    `SELECT cp.id, cp.campaign_id, cp.product_id, cp.status, p.name AS product_name
+     FROM campaign_products cp
+     JOIN products p ON p.id = cp.product_id
+     WHERE cp.id = ?`,
+    [Number(campaignProductId)]
+  );
+  if (!campaignProduct) {
+    const error = new Error('Campaign Product not found');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (Number(campaignProduct.campaign_id) !== Number(campaignId)) {
+    const error = new Error('Campaign Product 不属于当前项目');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (requireActive && campaignProduct.status !== 'active') {
+    const error = new Error('Campaign Product must be active');
+    error.statusCode = 400;
+    throw error;
+  }
+  return campaignProduct;
 }
 
 function extractJson(content) {
@@ -368,9 +405,12 @@ async function generateDraft(strategy, materialContext = null) {
 
 async function getStrategy(id) {
   const row = await dbOperations.get(`
-    SELECT ks.*, c.name as campaign_name
+    SELECT ks.*, c.name as campaign_name, cp.status AS campaign_product_status,
+      cp.product_id, p.name AS product_name
     FROM kol_strategies ks
     LEFT JOIN campaigns c ON c.id = ks.campaign_id
+    LEFT JOIN campaign_products cp ON cp.id = ks.campaign_product_id
+    LEFT JOIN products p ON p.id = cp.product_id
     WHERE ks.id = ?
   `, [id]);
   return normalizeStrategy(row);
@@ -394,9 +434,12 @@ router.get('/', async (req, res) => {
   try {
     const { campaign_id, status, search } = req.query;
     let sql = `
-      SELECT ks.*, c.name as campaign_name
+      SELECT ks.*, c.name as campaign_name, cp.status AS campaign_product_status,
+        cp.product_id, p.name AS product_name
       FROM kol_strategies ks
       LEFT JOIN campaigns c ON c.id = ks.campaign_id
+      LEFT JOIN campaign_products cp ON cp.id = ks.campaign_product_id
+      LEFT JOIN products p ON p.id = cp.product_id
       WHERE 1=1
     `;
     const params = [];
@@ -426,16 +469,22 @@ router.post('/', async (req, res) => {
     const body = req.body || {};
     rejectLegacyCycleFields(body);
     const campaignId = Number(body.campaign_id || 1);
+    const campaignProduct = await getCampaignProductForStrategy(
+      campaignId,
+      body.campaign_product_id,
+      { requireActive: true }
+    );
     const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [campaignId]);
     const name = clean(body.name || `${campaign?.name || 'Campaign'} Strategy`);
     const result = await dbOperations.run(
       `INSERT INTO kol_strategies
-       (campaign_id, name, brand, product, category, target_market, language, primary_platform,
+       (campaign_id, campaign_product_id, name, brand, product, category, target_market, language, primary_platform,
         secondary_platforms, campaign_goal, status, product_context, persona_config,
         scoring_weights, finder_handoff)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         campaignId,
+        campaignProduct.id,
         name,
         body.brand ?? campaign?.brand ?? '',
         body.product ?? campaign?.product ?? campaign?.name ?? '',
@@ -462,15 +511,27 @@ router.put('/:id', async (req, res) => {
   try {
     const body = req.body || {};
     rejectLegacyCycleFields(body);
+    const existing = await getStrategy(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, error: 'Strategy not found' });
+    const campaignId = hasOwn(body, 'campaign_id') ? Number(body.campaign_id) : existing.campaign_id;
+    const campaignProductId = hasOwn(body, 'campaign_product_id')
+      ? body.campaign_product_id
+      : existing.campaign_product_id;
+    if (campaignProductId != null) {
+      await getCampaignProductForStrategy(campaignId, campaignProductId, { requireActive: true });
+    } else if (hasOwn(body, 'campaign_product_id')) {
+      await getCampaignProductForStrategy(campaignId, campaignProductId, { requireActive: true });
+    }
     await dbOperations.run(
       `UPDATE kol_strategies SET
-       campaign_id = ?, name = ?, brand = ?, product = ?, category = ?, target_market = ?,
+       campaign_id = ?, campaign_product_id = ?, name = ?, brand = ?, product = ?, category = ?, target_market = ?,
        language = ?, primary_platform = ?, secondary_platforms = ?, campaign_goal = ?,
        product_context = ?, persona_config = ?, scoring_weights = ?,
        finder_handoff = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
-        Number(body.campaign_id || 1),
+        campaignId,
+        campaignProductId,
         clean(body.name),
         clean(body.brand),
         clean(body.product),
@@ -584,6 +645,11 @@ router.post('/:id/mark-ready', async (req, res) => {
     rejectLegacyCycleFields(body);
     const strategy = await getStrategy(req.params.id);
     if (!strategy) return res.status(404).json({ success: false, error: 'Strategy not found' });
+    await getCampaignProductForStrategy(
+      strategy.campaign_id,
+      strategy.campaign_product_id,
+      { requireActive: true }
+    );
     validateReady(strategy);
     await dbOperations.run(
       'UPDATE kol_strategies SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
