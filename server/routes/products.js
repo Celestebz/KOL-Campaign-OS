@@ -1,5 +1,5 @@
 const express = require('express');
-const { dbOperations } = require('../database');
+const { dbOperations, sequelize, models } = require('../database');
 const { catalogKeyHash } = require('../migrations/20260719000001-add-multi-product-campaign-relations');
 
 const router = express.Router();
@@ -19,6 +19,11 @@ function isString(value) {
 
 function validateStatus(status) {
   return status === undefined || PRODUCT_STATUSES.has(status);
+}
+
+function isUniqueConstraintError(error) {
+  const code = error?.original?.code || error?.parent?.code || error?.code;
+  return error?.name === 'SequelizeUniqueConstraintError' || code === 'ER_DUP_ENTRY';
 }
 
 function parsePathId(value) {
@@ -90,7 +95,7 @@ router.post('/', async (req, res) => {
     const created = await getProduct(result.id);
     res.json({ success: true, data: created, message: 'Product created' });
   } catch (error) {
-    if (error.name === 'SequelizeUniqueConstraintError') {
+    if (isUniqueConstraintError(error)) {
       const existing = await dbOperations.get(
         `SELECT ${PRODUCT_COLUMNS} FROM products WHERE catalog_key_hash = ?`,
         [catalogKeyHash(req.body.brand, req.body.name)]
@@ -120,43 +125,57 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Product brand must be a string' });
     }
 
-    const product = await getProduct(id);
-    if (!product) {
-      return res.status(404).json({ success: false, error: 'Product not found' });
-    }
-
-    const assignments = [];
-    const values = [];
     const mutableFields = ['brand', 'name', 'sku', 'category', 'product_url', 'description', 'selling_points'];
+    const updates = {};
 
     for (const field of mutableFields) {
       if (!hasOwn(req.body, field)) continue;
-      assignments.push(`${field} = ?`);
-      values.push(field === 'brand' || field === 'name' ? req.body[field].trim() : req.body[field]);
+      updates[field] = field === 'brand' || field === 'name' ? req.body[field].trim() : req.body[field];
     }
 
     if (hasOwn(req.body, 'brand') || hasOwn(req.body, 'name')) {
-      const brand = hasOwn(req.body, 'brand') ? req.body.brand.trim() : product.brand;
-      const name = hasOwn(req.body, 'name') ? req.body.name.trim() : product.name;
-      const catalogHash = catalogKeyHash(brand, name);
-      const duplicate = await dbOperations.get(
-        'SELECT id FROM products WHERE catalog_key_hash = ? AND id != ?',
-        [catalogHash, id]
-      );
-      if (duplicate) {
+      const outcome = await sequelize.transaction(async transaction => {
+        const lockedProduct = await models.Product.findByPk(id, {
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        if (!lockedProduct) return 'not_found';
+
+        const brand = hasOwn(updates, 'brand') ? updates.brand : lockedProduct.brand;
+        const name = hasOwn(updates, 'name') ? updates.name : lockedProduct.name;
+        const catalogHash = catalogKeyHash(brand, name);
+        const duplicate = await models.Product.findOne({
+          attributes: ['id'],
+          where: { catalog_key_hash: catalogHash },
+          transaction
+        });
+        if (duplicate && duplicate.id !== id) return 'duplicate';
+
+        await lockedProduct.update({ ...updates, catalog_key_hash: catalogHash }, { transaction });
+        return 'updated';
+      });
+
+      if (outcome === 'not_found') {
+        return res.status(404).json({ success: false, error: 'Product not found' });
+      }
+      if (outcome === 'duplicate') {
         return res.status(409).json({ success: false, error: 'A matching Product already exists' });
       }
-      assignments.push('catalog_key_hash = ?');
-      values.push(catalogHash);
-    }
+    } else {
+      const product = await getProduct(id);
+      if (!product) {
+        return res.status(404).json({ success: false, error: 'Product not found' });
+      }
 
-    if (assignments.length > 0) {
-      await dbOperations.run(
-        `UPDATE products SET
-         ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [...values, id]
-      );
+      const assignments = Object.keys(updates).map(field => `${field} = ?`);
+      if (assignments.length > 0) {
+        await dbOperations.run(
+          `UPDATE products SET
+           ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [...Object.values(updates), id]
+        );
+      }
     }
     const updated = await getProduct(id);
     if (!updated) {
@@ -164,7 +183,7 @@ router.put('/:id', async (req, res) => {
     }
     res.json({ success: true, data: updated, message: 'Product updated' });
   } catch (error) {
-    if (error.name === 'SequelizeUniqueConstraintError') {
+    if (isUniqueConstraintError(error)) {
       return res.status(409).json({ success: false, error: 'A matching Product already exists' });
     }
     res.status(500).json({ success: false, error: error.message });

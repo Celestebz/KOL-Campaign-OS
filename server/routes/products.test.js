@@ -13,6 +13,7 @@ const express = require('express');
 const supertest = require('supertest');
 const { Sequelize: SequelizeClient } = require('sequelize');
 const { initDatabase, sequelize, models, dbOperations } = require('../database');
+const { catalogKeyHash } = require('../migrations/20260719000001-add-multi-product-campaign-relations');
 const campaignRoutes = require('./campaigns');
 
 let productRoutes;
@@ -55,6 +56,58 @@ async function createCampaign(label) {
     name: `Product API ${label}`,
     brand: '',
     product: ''
+  });
+}
+
+async function verifyConcurrentCatalogKeyUpdates({ label, firstUpdate, secondUpdate }) {
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: `${label} Initial Brand`, name: `${label} Initial Name` })
+    .expect(200);
+  const productId = product.body.data.id;
+  const blocker = await sequelize.transaction();
+
+  try {
+    await models.Product.findByPk(productId, {
+      transaction: blocker,
+      lock: blocker.LOCK.UPDATE
+    });
+
+    const pendingUpdates = Promise.all([
+      supertest(app).put(`/api/products/${productId}`).send(firstUpdate),
+      supertest(app).put(`/api/products/${productId}`).send(secondUpdate)
+    ]);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    await blocker.commit();
+
+    const responses = await pendingUpdates;
+    for (const response of responses) {
+      assert.equal(response.status, 200, response.text);
+    }
+  } finally {
+    if (!blocker.finished) {
+      await blocker.rollback();
+    }
+  }
+
+  const finalProduct = await dbOperations.get(
+    'SELECT id, brand, name, catalog_key_hash FROM products WHERE id = ?',
+    [productId]
+  );
+  const reused = await supertest(app)
+    .post('/api/products')
+    .send({ brand: finalProduct.brand, name: finalProduct.name })
+    .expect(200);
+
+  assert.deepEqual({
+    catalogHashMatchesFinalValues: finalProduct.catalog_key_hash === catalogKeyHash(
+      finalProduct.brand,
+      finalProduct.name
+    ),
+    reusedProductId: reused.body.data.id
+  }, {
+    catalogHashMatchesFinalValues: true,
+    reusedProductId: productId
   });
 }
 
@@ -242,6 +295,48 @@ test('Product partial update preserves a disjoint field changed after its initia
   } finally {
     dbOperations.run = originalRun;
   }
+});
+
+test('Product brand-only update serializes with a concurrent name-only update', async () => {
+  await verifyConcurrentCatalogKeyUpdates({
+    label: 'Brand First Concurrency',
+    firstUpdate: { brand: 'Final Brand A' },
+    secondUpdate: { name: 'Final Name A' }
+  });
+});
+
+test('Product name-only update serializes with a concurrent brand-only update', async () => {
+  await verifyConcurrentCatalogKeyUpdates({
+    label: 'Name First Concurrency',
+    firstUpdate: { name: 'Final Name B' },
+    secondUpdate: { brand: 'Final Brand B' }
+  });
+});
+
+test('Product catalog-key conflicts return 409 without changing the conflicting Product', async () => {
+  const existing = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Conflict Brand', name: 'Conflict Name' })
+    .expect(200);
+  const conflicting = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Other Brand', name: 'Other Name' })
+    .expect(200);
+
+  await supertest(app)
+    .put(`/api/products/${conflicting.body.data.id}`)
+    .send({ brand: existing.body.data.brand, name: existing.body.data.name })
+    .expect(409);
+
+  const unchanged = await dbOperations.get(
+    'SELECT brand, name, catalog_key_hash FROM products WHERE id = ?',
+    [conflicting.body.data.id]
+  );
+  assert.deepEqual(unchanged, {
+    brand: 'Other Brand',
+    name: 'Other Name',
+    catalog_key_hash: catalogKeyHash('Other Brand', 'Other Name')
+  });
 });
 
 test('Product update validates required name and rejects all direct status changes', async () => {
