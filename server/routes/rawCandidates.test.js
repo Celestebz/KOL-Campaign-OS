@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const test = require('node:test');
 const supertest = require('supertest');
 const path = require('path');
@@ -49,7 +50,21 @@ async function setupCampaignAndStrategy() {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [campaign.id, 'Approve Test Strategy', 'ready', 'goal', 'context', '{}', '{}', '{}']
   );
-  return { campaignId: campaign.id, strategyId: strategy.id };
+  const product = await dbOperations.run(
+    `INSERT INTO products (brand, name, status, catalog_key_hash)
+     VALUES (?, ?, 'active', ?)`,
+    ['TestBrand', 'Approve Test Product', crypto.createHash('sha256').update(`approve-product:${campaign.id}`).digest('hex')]
+  );
+  const campaignProduct = await dbOperations.run(
+    `INSERT INTO campaign_products (campaign_id, product_id, role, priority, status)
+     VALUES (?, ?, 'hero', 0, 'active')`,
+    [campaign.id, product.id]
+  );
+  await dbOperations.run(
+    'UPDATE kol_strategies SET campaign_product_id = ? WHERE id = ?',
+    [campaignProduct.id, strategy.id]
+  );
+  return { campaignId: campaign.id, strategyId: strategy.id, campaignProductId: campaignProduct.id };
 }
 
 async function createRawCandidate(strategyId, campaignId) {
@@ -71,16 +86,35 @@ async function createRawCandidate(strategyId, campaignId) {
   return result.id;
 }
 
+async function createRawCandidateProductFit(candidateId, campaignProductId, strategyId) {
+  const identityKey = 'profile:youtube:https://www.youtube.com/channel/UCtest123';
+  const result = await dbOperations.run(
+    `INSERT INTO raw_candidate_product_fits
+     (latest_raw_candidate_id, campaign_product_id, platform, identity_key_hash, strategy_id,
+      identity_status, fit_score, matched_persona, evidence_summary, decision_status, analysis_version)
+     VALUES (?, ?, 'youtube', ?, ?, 'new_kol', 85, 'Reviewer', ?, 'pending', 1)`,
+    [
+      candidateId,
+      campaignProductId,
+      crypto.createHash('sha256').update(identityKey).digest('hex'),
+      strategyId,
+      JSON.stringify({ recommendation: 'High match for test brand' })
+    ]
+  );
+  return result.id;
+}
+
 test('approve raw candidate creates customer, platform account, and campaign kol', async () => {
   await resetTestDatabase();
   await initDatabase();
   const app = await buildApp();
-  const { campaignId, strategyId } = await setupCampaignAndStrategy();
+  const { campaignId, strategyId, campaignProductId } = await setupCampaignAndStrategy();
   const candidateId = await createRawCandidate(strategyId, campaignId);
+  await createRawCandidateProductFit(candidateId, campaignProductId, strategyId);
 
   const res = await supertest(app)
     .post(`/api/raw-candidates/${candidateId}/approve`)
-    .send({ strategy_id: strategyId, campaign_id: campaignId })
+    .send({ strategy_id: strategyId, campaign_id: campaignId, campaign_product_id: campaignProductId })
     .expect(200);
 
   assert.strictEqual(res.body.success, true);
@@ -88,6 +122,8 @@ test('approve raw candidate creates customer, platform account, and campaign kol
   assert.ok(res.body.data.customer?.id, 'Customer should be created');
   assert.ok(res.body.data.platformAccount?.id, 'Platform account should be created');
   assert.ok(res.body.data.campaignKol?.id, 'Campaign KOL should be created');
+  assert.ok(res.body.data.campaignKolProduct?.id, 'Campaign KOL Product should be created');
+  assert.strictEqual(res.body.data.campaignKolProduct.campaign_product_id, campaignProductId);
 
   const customer = await dbOperations.get('SELECT * FROM customers WHERE id = ?', [res.body.data.customer.id]);
   assert.strictEqual(customer.name, 'Test Creator');
@@ -113,33 +149,130 @@ test('approve duplicate raw candidate links existing customer and campaign kol',
   await resetTestDatabase();
   await initDatabase();
   const app = await buildApp();
-  const { campaignId, strategyId } = await setupCampaignAndStrategy();
+  const { campaignId, strategyId, campaignProductId } = await setupCampaignAndStrategy();
   const candidateId1 = await createRawCandidate(strategyId, campaignId);
   const candidateId2 = await createRawCandidate(strategyId, campaignId);
+  await createRawCandidateProductFit(candidateId2, campaignProductId, strategyId);
 
   await supertest(app)
     .post(`/api/raw-candidates/${candidateId1}/approve`)
-    .send({ strategy_id: strategyId, campaign_id: campaignId });
+    .send({ strategy_id: strategyId, campaign_id: campaignId, campaign_product_id: campaignProductId });
 
   const res = await supertest(app)
     .post(`/api/raw-candidates/${candidateId2}/approve`)
-    .send({ strategy_id: strategyId, campaign_id: campaignId })
+    .send({ strategy_id: strategyId, campaign_id: campaignId, campaign_product_id: campaignProductId })
     .expect(200);
 
   assert.strictEqual(res.body.data.candidateStatus, 'duplicate');
   assert.ok(res.body.data.campaignKol?.id, 'Campaign KOL should be linked');
+  assert.ok(res.body.data.campaignKolProduct?.id, 'Campaign KOL Product should be linked');
+});
+
+test('approve same KOL into multiple Campaign Products reuses identities', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const { campaignId, strategyId, campaignProductId } = await setupCampaignAndStrategy();
+
+  const secondProduct = await dbOperations.run(
+    `INSERT INTO products (brand, name, status, catalog_key_hash)
+     VALUES (?, ?, 'active', ?)`,
+    ['TestBrand', 'Evercrest', crypto.createHash('sha256').update('evercrest').digest('hex')]
+  );
+  const secondCampaignProduct = await dbOperations.run(
+    `INSERT INTO campaign_products (campaign_id, product_id, role, priority, status)
+     VALUES (?, ?, 'secondary', 1, 'active')`,
+    [campaignId, secondProduct.id]
+  );
+  const secondStrategy = await dbOperations.run(
+    `INSERT INTO kol_strategies (campaign_id, name, status, campaign_goal, product_context, persona_config, scoring_weights, finder_handoff, campaign_product_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [campaignId, 'Second Strategy', 'ready', 'goal', 'context', '{}', '{}', '{}', secondCampaignProduct.id]
+  );
+
+  const candidateId1 = await createRawCandidate(strategyId, campaignId);
+  const candidateId2 = await createRawCandidate(secondStrategy.id, campaignId);
+  await createRawCandidateProductFit(candidateId1, campaignProductId, strategyId);
+  await createRawCandidateProductFit(candidateId2, secondCampaignProduct.id, secondStrategy.id);
+
+  const first = await supertest(app)
+    .post(`/api/raw-candidates/${candidateId1}/approve`)
+    .send({ strategy_id: strategyId, campaign_id: campaignId, campaign_product_id: campaignProductId })
+    .expect(200);
+  const second = await supertest(app)
+    .post(`/api/raw-candidates/${candidateId2}/approve`)
+    .send({ strategy_id: secondStrategy.id, campaign_id: campaignId, campaign_product_id: secondCampaignProduct.id })
+    .expect(200);
+
+  assert.strictEqual(first.body.data.customer.id, second.body.data.customer.id);
+  assert.strictEqual(first.body.data.campaignKol.id, second.body.data.campaignKol.id);
+
+  const assignments = await dbOperations.query(
+    'SELECT * FROM campaign_kol_products WHERE campaign_kol_id = ?',
+    [first.body.data.campaignKol.id]
+  );
+  assert.strictEqual(assignments.length, 2);
+
+  const productsRes = await supertest(app)
+    .get(`/api/campaign-kols/${first.body.data.campaignKol.id}/products`)
+    .expect(200);
+  assert.strictEqual(productsRes.body.data.length, 2);
+  assert.ok(productsRes.body.data.find((row) => row.product_name === 'Approve Test Product'));
+  assert.ok(productsRes.body.data.find((row) => row.product_name === 'Evercrest'));
+
+  const evercrestAssignment = productsRes.body.data.find((row) => row.product_name === 'Evercrest');
+  const updateRes = await supertest(app)
+    .put(`/api/campaign-kols/${first.body.data.campaignKol.id}/products/${evercrestAssignment.campaign_product_id}`)
+    .send({ assignment_status: 'paused', sample_status: 'sent', content_status: 'draft' })
+    .expect(200);
+  assert.strictEqual(updateRes.body.data.assignment_status, 'paused');
+  assert.strictEqual(updateRes.body.data.sample_status, 'sent');
+  assert.strictEqual(updateRes.body.data.content_status, 'draft');
+});
+
+test('approve rejects Campaign Product from another Campaign', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const { campaignId, strategyId, campaignProductId } = await setupCampaignAndStrategy();
+
+  const otherCampaign = await dbOperations.run(
+    'INSERT INTO campaigns (name, brand, product) VALUES (?, ?, ?)',
+    ['Other Campaign', 'OtherBrand', 'OtherProduct']
+  );
+  const otherProduct = await dbOperations.run(
+    `INSERT INTO products (brand, name, status, catalog_key_hash)
+     VALUES (?, ?, 'active', ?)`,
+    ['OtherBrand', 'OtherProduct', crypto.createHash('sha256').update('other').digest('hex')]
+  );
+  const otherCampaignProduct = await dbOperations.run(
+    `INSERT INTO campaign_products (campaign_id, product_id, role, priority, status)
+     VALUES (?, ?, 'hero', 0, 'active')`,
+    [otherCampaign.id, otherProduct.id]
+  );
+
+  const candidateId = await createRawCandidate(strategyId, campaignId);
+  await createRawCandidateProductFit(candidateId, campaignProductId, strategyId);
+
+  const res = await supertest(app)
+    .post(`/api/raw-candidates/${candidateId}/approve`)
+    .send({ strategy_id: strategyId, campaign_id: campaignId, campaign_product_id: otherCampaignProduct.id })
+    .expect(400);
+
+  assert.match(res.body.error, /does not match Strategy|不属于当前项目/);
 });
 
 test('GET /api/campaigns/:id/kols returns approved campaign kols', async () => {
   await resetTestDatabase();
   await initDatabase();
   const app = await buildApp();
-  const { campaignId, strategyId } = await setupCampaignAndStrategy();
+  const { campaignId, strategyId, campaignProductId } = await setupCampaignAndStrategy();
   const candidateId = await createRawCandidate(strategyId, campaignId);
+  await createRawCandidateProductFit(candidateId, campaignProductId, strategyId);
 
   await supertest(app)
     .post(`/api/raw-candidates/${candidateId}/approve`)
-    .send({ strategy_id: strategyId, campaign_id: campaignId });
+    .send({ strategy_id: strategyId, campaign_id: campaignId, campaign_product_id: campaignProductId });
 
   const res = await supertest(app)
     .get(`/api/campaigns/${campaignId}/kols`)

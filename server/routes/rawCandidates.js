@@ -1,7 +1,10 @@
 const express = require('express');
-const { dbOperations } = require('../database');
+const crypto = require('crypto');
+const { dbOperations, sequelize, Sequelize } = require('../database');
+const { buildCandidateIdentity } = require('./finderTasks');
 
 const router = express.Router();
+const MYSQL_SIGNED_INT_MAX = 2147483647;
 
 const GLOBAL_RISK_CATEGORIES = new Set([
   'historical_refusal',
@@ -23,12 +26,62 @@ function normalizeNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-async function getReadyStrategy(strategyId) {
-  const id = Number(strategyId);
-  if (!id) throw new Error('Please select a Ready Strategy first');
-  const strategy = await dbOperations.get('SELECT * FROM kol_strategies WHERE id = ?', [id]);
-  if (!strategy) throw new Error('Strategy not found');
-  if (strategy.status !== 'ready') throw new Error('Only Ready Strategy can be used in KOL Finder');
+function parseBodyId(value) {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value > 0
+    && value <= MYSQL_SIGNED_INT_MAX
+    ? value
+    : null;
+}
+
+async function transactionGet(sql, params, transaction) {
+  const rows = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.SELECT,
+    transaction,
+    logging: false
+  });
+  return rows[0] || null;
+}
+
+async function transactionRun(sql, params, transaction) {
+  const [result, metadata] = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.RAW,
+    transaction,
+    logging: false
+  });
+  return {
+    id: /^\s*INSERT\b/i.test(sql) ? (Number(result) || 0) : 0,
+    changes: Number(metadata !== undefined ? metadata : result) || 0
+  };
+}
+
+async function scopedGet(sql, params, transaction = null) {
+  return transaction ? transactionGet(sql, params, transaction) : dbOperations.get(sql, params);
+}
+
+async function scopedRun(sql, params, transaction = null) {
+  return transaction ? transactionRun(sql, params, transaction) : dbOperations.run(sql, params);
+}
+
+function approvalError(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+async function getReadyStrategy(strategyId, transaction = null) {
+  const id = parseBodyId(strategyId);
+  if (!id) throw approvalError('strategy_id is required and must be a positive integer');
+  const strategy = await scopedGet(
+    `SELECT * FROM kol_strategies WHERE id = ?${transaction ? ' FOR UPDATE' : ''}`,
+    [id],
+    transaction
+  );
+  if (!strategy) throw approvalError('Strategy not found');
+  if (strategy.status !== 'ready') throw approvalError('Only Ready Strategy can approve Raw Candidates');
   return strategy;
 }
 
@@ -81,7 +134,7 @@ function customerDataFromCandidate(candidate) {
   return data;
 }
 
-async function findExistingCustomer(candidate) {
+async function findExistingCustomer(candidate, transaction = null) {
   const checks = [];
   const email = clean(candidate.email);
   const profileUrl = clean(candidate.profile_url);
@@ -97,7 +150,11 @@ async function findExistingCustomer(candidate) {
   if (name) checks.push({ sql: 'SELECT * FROM customers WHERE name = ? LIMIT 1', params: [name] });
 
   for (const check of checks) {
-    const existing = await dbOperations.get(check.sql, check.params);
+    const existing = await scopedGet(
+      `${check.sql.replace(/ LIMIT 1$/, '')}${transaction ? ' FOR UPDATE' : ' LIMIT 1'}`,
+      check.params,
+      transaction
+    );
     if (existing) return existing;
   }
   return null;
@@ -108,7 +165,7 @@ function normalizeRiskCategory(value) {
   return GLOBAL_RISK_CATEGORIES.has(category) ? category : 'other';
 }
 
-async function createCustomerFromCandidate(candidate) {
+async function createCustomerFromCandidate(candidate, transaction = null) {
   const data = customerDataFromCandidate(candidate);
   if (!data.name) throw new Error('KOL name is required');
 
@@ -120,14 +177,15 @@ async function createCustomerFromCandidate(candidate) {
   ];
   const values = fields.map((field) => data[field] || null);
   const placeholders = fields.map(() => '?').join(', ');
-  const result = await dbOperations.run(
+  const result = await scopedRun(
     `INSERT INTO customers (${fields.join(', ')}) VALUES (${placeholders})`,
-    values
+    values,
+    transaction
   );
-  return dbOperations.get('SELECT * FROM customers WHERE id = ?', [result.id]);
+  return scopedGet('SELECT * FROM customers WHERE id = ?', [result.id], transaction);
 }
 
-async function updateCustomerMissingFields(customer, candidate) {
+async function updateCustomerMissingFields(customer, candidate, transaction = null) {
   const data = customerDataFromCandidate(candidate);
   const fields = [
     'contact_name', 'email', 'phone', 'country_region', 'notes', 'rating',
@@ -139,28 +197,30 @@ async function updateCustomerMissingFields(customer, candidate) {
     `${field} = CASE WHEN ${field} IS NULL OR ${field} = '' THEN ? ELSE ${field} END`
   )).join(', ');
   const values = fields.map((field) => data[field] || null);
-  await dbOperations.run(
+  await scopedRun(
     `UPDATE customers SET ${assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [...values, customer.id]
+    [...values, customer.id],
+    transaction
   );
-  return dbOperations.get('SELECT * FROM customers WHERE id = ?', [customer.id]);
+  return scopedGet('SELECT * FROM customers WHERE id = ?', [customer.id], transaction);
 }
 
 const { computeUrlHash } = require('../utils/videoUrlNormalizer');
 
-async function findOrCreatePlatformAccount(customer, candidate) {
+async function findOrCreatePlatformAccount(customer, candidate, transaction = null) {
   const platform = clean(candidate.platform || candidate.target_platform);
   const profileUrl = clean(candidate.profile_url);
   if (!platform || !profileUrl) return null;
 
   const profileUrlHash = computeUrlHash(profileUrl);
-  const existing = await dbOperations.get(
-    'SELECT * FROM kol_platform_accounts WHERE customer_id = ? AND platform = ? AND profile_url_hash = ? LIMIT 1',
-    [customer.id, platform, profileUrlHash]
+  const existing = await scopedGet(
+    `SELECT * FROM kol_platform_accounts WHERE customer_id = ? AND platform = ? AND profile_url_hash = ?${transaction ? ' FOR UPDATE' : ' LIMIT 1'}`,
+    [customer.id, platform, profileUrlHash],
+    transaction
   );
   if (existing) return existing;
 
-  const result = await dbOperations.run(
+  const result = await scopedRun(
     `INSERT INTO kol_platform_accounts
      (customer_id, platform, username, profile_url, profile_url_hash, followers_text, raw_data)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -172,9 +232,10 @@ async function findOrCreatePlatformAccount(customer, candidate) {
       profileUrlHash,
       clean(candidate.followers),
       JSON.stringify({ source: 'raw_candidate', candidate_id: candidate.id })
-    ]
+    ],
+    transaction
   );
-  return dbOperations.get('SELECT * FROM kol_platform_accounts WHERE id = ?', [result.id]);
+  return scopedGet('SELECT * FROM kol_platform_accounts WHERE id = ?', [result.id], transaction);
 }
 
 function buildMasterSnapshot(customer, platformAccount, candidate) {
@@ -209,13 +270,21 @@ function buildEvidenceSummary(candidate) {
   });
 }
 
-async function upsertCampaignKol(campaignId, customer, platformAccount, candidate, strategy, finderTask, overrides = {}) {
+async function upsertCampaignKol(campaignId, customer, platformAccount, candidate, strategy, finderTask, overrides = {}, transaction = null) {
   const platformAccountId = platformAccount?.id || null;
   const targetPlatform = clean(candidate.platform || candidate.target_platform);
 
   const existing = platformAccountId
-    ? await dbOperations.get('SELECT * FROM campaign_kols WHERE campaign_id = ? AND platform_account_id = ?', [campaignId, platformAccountId])
-    : await dbOperations.get('SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?', [campaignId, customer.id]);
+    ? await scopedGet(
+      `SELECT * FROM campaign_kols WHERE campaign_id = ? AND platform_account_id = ?${transaction ? ' FOR UPDATE' : ''}`,
+      [campaignId, platformAccountId],
+      transaction
+    )
+    : await scopedGet(
+      `SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?${transaction ? ' FOR UPDATE' : ''}`,
+      [campaignId, customer.id],
+      transaction
+    );
 
   const masterSnapshot = buildMasterSnapshot(customer, platformAccount, candidate);
   const evidenceSummary = buildEvidenceSummary(candidate);
@@ -257,7 +326,7 @@ async function upsertCampaignKol(campaignId, customer, platformAccount, candidat
   };
 
   if (existing) {
-    await dbOperations.run(
+    await scopedRun(
       `UPDATE campaign_kols SET
        raw_candidate_id = COALESCE(raw_candidate_id, ?),
        strategy_id = COALESCE(strategy_id, ?),
@@ -310,44 +379,130 @@ async function upsertCampaignKol(campaignId, customer, platformAccount, candidat
         snapshot.instagram_followers_snapshot,
         snapshot.tiktok_followers_snapshot,
         existing.id
-      ]
+      ],
+      transaction
     );
-    return dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [existing.id]);
+    return scopedGet('SELECT * FROM campaign_kols WHERE id = ?', [existing.id], transaction);
   }
 
   const fields = Object.keys(snapshot);
   const placeholders = fields.map(() => '?').join(', ');
-  const result = await dbOperations.run(
+  const result = await scopedRun(
     `INSERT INTO campaign_kols (campaign_id, ${fields.join(', ')}) VALUES (?, ${placeholders})`,
-    [campaignId, ...Object.values(snapshot)]
+    [campaignId, ...Object.values(snapshot)],
+    transaction
   );
-  return dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [result.id]);
+  return scopedGet('SELECT * FROM campaign_kols WHERE id = ?', [result.id], transaction);
+}
+
+async function findProductFitForCandidate(candidate, campaignProductId, transaction) {
+  let fit = await scopedGet(
+    'SELECT * FROM raw_candidate_product_fits WHERE latest_raw_candidate_id = ? LIMIT 1',
+    [candidate.id],
+    transaction
+  );
+  if (fit) return fit;
+
+  const platform = clean(candidate.platform || candidate.target_platform);
+  const identity = buildCandidateIdentity(platform, candidate.profile_url, candidate.kol_name);
+  fit = await scopedGet(
+    'SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ? AND identity_key_hash = ?',
+    [campaignProductId, identity.identityKeyHash],
+    transaction
+  );
+  return fit;
+}
+
+async function upsertCampaignKolProduct(campaignKolId, campaignProductId, fit, transaction) {
+  const existing = await scopedGet(
+    `SELECT * FROM campaign_kol_products WHERE campaign_kol_id = ? AND campaign_product_id = ?${transaction ? ' FOR UPDATE' : ''}`,
+    [campaignKolId, campaignProductId],
+    transaction
+  );
+
+  const evidenceSummary = typeof fit.evidence_summary === 'string'
+    ? fit.evidence_summary
+    : JSON.stringify(fit.evidence_summary || {});
+  const fitStatus = fit.decision_status === 'approved' ? 'approved' : 'pending';
+
+  if (existing) {
+    await scopedRun(
+      `UPDATE campaign_kol_products SET
+       source_raw_candidate_product_fit_id = COALESCE(source_raw_candidate_product_fit_id, ?),
+       fit_score = COALESCE(fit_score, ?),
+       fit_status = COALESCE(NULLIF(fit_status, ''), ?),
+       evidence_summary = COALESCE(NULLIF(evidence_summary, ''), ?),
+       updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [fit.id, fit.fit_score, fitStatus, evidenceSummary, existing.id],
+      transaction
+    );
+    return scopedGet('SELECT * FROM campaign_kol_products WHERE id = ?', [existing.id], transaction);
+  }
+
+  const result = await scopedRun(
+    `INSERT INTO campaign_kol_products
+     (campaign_kol_id, campaign_product_id, source_raw_candidate_product_fit_id, fit_score, fit_status,
+      evidence_summary, assignment_status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [campaignKolId, campaignProductId, fit.id, fit.fit_score, fitStatus, evidenceSummary],
+    transaction
+  );
+  return scopedGet('SELECT * FROM campaign_kol_products WHERE id = ?', [result.id], transaction);
 }
 
 async function approveCandidate(id, body = {}) {
-  const candidate = await dbOperations.get('SELECT * FROM raw_candidates WHERE id = ?', [id]);
-  if (!candidate) throw new Error('Raw candidate not found');
-  if (candidate.status === 'ignored') throw new Error('Ignored candidate cannot be approved');
-  const strategy = await getReadyStrategy(body.strategy_id || candidate.strategy_id);
-  const finderTask = candidate.finder_task_id
-    ? await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [candidate.finder_task_id])
-    : null;
+  return sequelize.transaction(async (transaction) => {
+    const candidate = await scopedGet('SELECT * FROM raw_candidates WHERE id = ?', [id], transaction);
+    if (!candidate) throw approvalError('Raw candidate not found');
+    if (candidate.status === 'ignored') throw approvalError('Ignored candidate cannot be approved');
 
-  const campaignId = Number(body.campaign_id || candidate.campaign_id || strategy.campaign_id || 1);
-  const existing = await findExistingCustomer(candidate);
-  const customer = existing
-    ? await updateCustomerMissingFields(existing, candidate)
-    : await createCustomerFromCandidate(candidate);
-  const platformAccount = await findOrCreatePlatformAccount(customer, candidate);
-  const campaignKol = await upsertCampaignKol(campaignId, customer, platformAccount, candidate, strategy, finderTask, body);
+    const strategy = await getReadyStrategy(body.strategy_id || candidate.strategy_id, transaction);
+    const finderTask = candidate.finder_task_id
+      ? await scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [candidate.finder_task_id], transaction)
+      : null;
 
-  await dbOperations.run(
-    `UPDATE raw_candidates SET status = ?, campaign_id = ?, strategy_id = ?, approved_customer_id = ?,
-     approved_campaign_kol_id = ?, error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [existing ? 'duplicate' : 'approved', campaignId, strategy.id, customer.id, campaignKol.id, id]
-  );
+    const campaignId = Number(body.campaign_id || candidate.campaign_id || strategy.campaign_id || 1);
+    const campaignProductId = parseBodyId(body.campaign_product_id || candidate.campaign_product_id || strategy.campaign_product_id);
 
-  return { customer, platformAccount, campaignKol, candidateStatus: existing ? 'duplicate' : 'approved' };
+    if (campaignProductId && Number(strategy.campaign_product_id) !== campaignProductId) {
+      throw approvalError('Campaign Product does not match Strategy');
+    }
+    if (finderTask && campaignProductId && Number(finderTask.campaign_product_id) !== campaignProductId) {
+      throw approvalError('Campaign Product does not match Finder Task');
+    }
+
+    const fit = campaignProductId
+      ? await findProductFitForCandidate(candidate, campaignProductId, transaction)
+      : null;
+
+    const existing = await findExistingCustomer(candidate, transaction);
+    const customer = existing
+      ? await updateCustomerMissingFields(existing, candidate, transaction)
+      : await createCustomerFromCandidate(candidate, transaction);
+    const platformAccount = await findOrCreatePlatformAccount(customer, candidate, transaction);
+    const campaignKol = await upsertCampaignKol(campaignId, customer, platformAccount, candidate, strategy, finderTask, body, transaction);
+
+    let campaignKolProduct = null;
+    if (fit) {
+      campaignKolProduct = await upsertCampaignKolProduct(campaignKol.id, campaignProductId, fit, transaction);
+    }
+
+    await scopedRun(
+      `UPDATE raw_candidates SET status = ?, campaign_id = ?, strategy_id = ?, approved_customer_id = ?,
+       approved_campaign_kol_id = ?, error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [existing ? 'duplicate' : 'approved', campaignId, strategy.id, customer.id, campaignKol.id, id],
+      transaction
+    );
+
+    return {
+      customer,
+      platformAccount,
+      campaignKol,
+      campaignKolProduct,
+      candidateStatus: existing ? 'duplicate' : 'approved'
+    };
+  });
 }
 
 router.get('/', async (req, res) => {
