@@ -840,7 +840,12 @@ function taskBindingError(message) {
 
 async function getReadyStrategyForTask(task, { transaction = null } = {}) {
   if (!task?.campaign_product_id) throw taskBindingError('Finder task requires a Campaign Product binding');
-  const strategy = await getReadyStrategy(task.strategy_id, { requireActiveProduct: true, transaction });
+  let strategy;
+  try {
+    strategy = await getReadyStrategy(task.strategy_id, { requireActiveProduct: true, transaction });
+  } catch (error) {
+    throw taskBindingError(error.message);
+  }
   if (Number(strategy.campaign_id) !== Number(task.campaign_id)) {
     throw taskBindingError('Finder task campaign does not match its Strategy');
   }
@@ -848,6 +853,15 @@ async function getReadyStrategyForTask(task, { transaction = null } = {}) {
     throw taskBindingError('Finder task Campaign Product does not match its Strategy');
   }
   return strategy;
+}
+
+async function withActiveTaskBindingForWrite(taskId, callback) {
+  return sequelize.transaction(async (transaction) => {
+    const task = await scopedGet('SELECT * FROM finder_tasks WHERE id = ? FOR UPDATE', [taskId], transaction);
+    if (!task) throw Object.assign(new Error('Finder task not found'), { status: 404 });
+    const strategy = await getReadyStrategyForTask(task, { transaction });
+    return callback({ task, strategy, transaction });
+  });
 }
 
 function usernameFromProfileUrl(platform, profileUrl) {
@@ -1892,7 +1906,7 @@ async function ensureVideoSnapshot(video) {
   }
 }
 
-async function upsertVideoSourceForEvidence(task, evidence) {
+async function upsertVideoSourceForEvidence(task, evidence, transaction = null) {
   const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
   const sourceUrl = evidence.video_url;
   const normalized = normalizeVideoUrl(sourceUrl);
@@ -1901,21 +1915,21 @@ async function upsertVideoSourceForEvidence(task, evidence) {
 
   let video = null;
   if (normalized.platform === 'tiktok' && platformVideoId) {
-    video = await dbOperations.get(
+    video = await scopedGet(
       'SELECT * FROM video_sources WHERE platform = ? AND platform_video_id = ? ORDER BY id ASC LIMIT 1',
-      [normalized.platform, platformVideoId]
+      [normalized.platform, platformVideoId], transaction
     );
     reusedByTikTokId = Boolean(video);
   }
   if (!video) {
-    video = await dbOperations.get(
+    video = await scopedGet(
       'SELECT * FROM video_sources WHERE canonical_url_hash = ?',
-      [normalized.canonicalUrlHash]
+      [normalized.canonicalUrlHash], transaction
     );
   }
 
   if (video) {
-    await dbOperations.run(
+    await scopedRun(
       `UPDATE video_sources SET
         platform = COALESCE(NULLIF(?, ''), platform),
         platform_video_id = COALESCE(NULLIF(?, ''), platform_video_id),
@@ -1939,11 +1953,11 @@ async function upsertVideoSourceForEvidence(task, evidence) {
         evidence.author_profile_url || '',
         `Finder video evidence task ${task.id}`,
         video.id
-      ]
+      ], transaction
     );
-    video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [video.id]);
+    video = await scopedGet('SELECT * FROM video_sources WHERE id = ?', [video.id], transaction);
   } else {
-    const result = await dbOperations.run(
+    const result = await scopedRun(
       `INSERT INTO video_sources
        (platform, platform_video_id, source_url, canonical_url, canonical_url_hash,
         title, kol_name, author_name, author_profile_url, notes, status, crawl_status, analysis_status)
@@ -1962,19 +1976,19 @@ async function upsertVideoSourceForEvidence(task, evidence) {
         'pending',
         'pending',
         'not_analyzed'
-      ]
+      ], transaction
     );
-    video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [result.id]);
+    video = await scopedGet('SELECT * FROM video_sources WHERE id = ?', [result.id], transaction);
   }
 
   // Link video to the task's campaign.
   const campaignId = task.campaign_id || evidence.campaign_id || null;
   if (campaignId) {
-    await dbOperations.run(
+    await scopedRun(
       `INSERT INTO campaign_videos (campaign_id, video_source_id, added_reason, added_by_finder_task_id)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
-      [campaignId, video.id, 'finder', task.id]
+      [campaignId, video.id, 'finder', task.id], transaction
     );
   }
 
@@ -2005,7 +2019,7 @@ function normalizeEvidenceInput(input = {}, task = {}, defaults = {}) {
   };
 }
 
-async function saveVideoEvidence(task, input, defaults = {}) {
+async function saveVideoEvidence(task, input, defaults = {}, transaction = null) {
   const evidence = normalizeEvidenceInput(input, task, defaults);
   if (!evidence.video_url) throw new Error('video_url is required');
   if (!isVideoEvidenceUrl(evidence.video_url)) throw new Error(`Not a supported video evidence URL: ${evidence.video_url}`);
@@ -2014,14 +2028,13 @@ async function saveVideoEvidence(task, input, defaults = {}) {
     throw new Error('MVP requires evidence_platform to equal target_platform');
   }
 
-  const video = await upsertVideoSourceForEvidence(task, evidence);
-  await ensureVideoSnapshot(video);
-  const existing = await dbOperations.get(
+  const video = await upsertVideoSourceForEvidence(task, evidence, transaction);
+  const existing = await scopedGet(
     'SELECT * FROM finder_video_evidence WHERE finder_task_id = ? AND video_source_id = ? LIMIT 1',
-    [task.id, video.id]
+    [task.id, video.id], transaction
   );
   if (existing) {
-    await dbOperations.run(
+    await scopedRun(
       `UPDATE finder_video_evidence SET
        video_source_id = ?, target_platform = ?, evidence_platform = ?, discovery_scope = ?, discovery_route = ?,
        source_signal = COALESCE(NULLIF(?, ''), source_signal),
@@ -2040,11 +2053,11 @@ async function saveVideoEvidence(task, input, defaults = {}) {
         evidence.evidence_reason,
         JSON.stringify(evidence.raw_data || {}),
         existing.id
-      ]
+      ], transaction
     );
-    return { row: await dbOperations.get('SELECT * FROM finder_video_evidence WHERE id = ?', [existing.id]), inserted: false };
+    return { row: await scopedGet('SELECT * FROM finder_video_evidence WHERE id = ?', [existing.id], transaction), inserted: false, video };
   }
-  const result = await dbOperations.run(
+  const result = await scopedRun(
     `INSERT INTO finder_video_evidence
      (finder_task_id, strategy_id, campaign_id, video_source_id, target_platform, evidence_platform,
       discovery_scope, discovery_route, source_signal, source_query, evidence_reason, status, raw_data)
@@ -2063,9 +2076,9 @@ async function saveVideoEvidence(task, input, defaults = {}) {
       evidence.evidence_reason,
       'discovered',
       JSON.stringify(evidence.raw_data || {})
-    ]
+    ], transaction
   );
-  return { row: await dbOperations.get('SELECT * FROM finder_video_evidence WHERE id = ?', [result.id]), inserted: true };
+  return { row: await scopedGet('SELECT * FROM finder_video_evidence WHERE id = ?', [result.id], transaction), inserted: true, video };
 }
 
 function failedQueryAudit(attempts = []) {
@@ -2086,6 +2099,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   try {
     strategy = await getReadyStrategyForTask(task);
   } catch (error) {
+    await updateTask(taskId, { status: 'failed', error_message: `Finder task binding failed: ${error.message}`, finished_at: new Date().toISOString() });
     return;
   }
   const rawRequest = parseJson(task.raw_request, {});
@@ -2124,7 +2138,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
         skipped += 1;
         continue;
       }
-      const saved = await saveVideoEvidence(task, {
+      const saved = await withActiveTaskBindingForWrite(taskId, ({ task: activeTask, transaction }) => saveVideoEvidence(activeTask, {
         ...normalized,
         video_url: videoUrl,
         title: normalized.video_title || normalized.evidence_title,
@@ -2139,7 +2153,8 @@ async function processVideoEvidenceTask(taskId, options = {}) {
         source_query: normalized.source_query || keywords,
         discovery_scope: 'target_platform_only',
         discovery_route: 'target_platform_first'
-      });
+      }, transaction));
+      await ensureVideoSnapshot(saved.video);
       if (saved.inserted) insertedCount += 1;
       else skipped += 1;
     }
@@ -2217,11 +2232,10 @@ router.get('/', async (req, res) => {
 
 router.post('/:id/video-evidence/import', async (req, res) => {
   try {
-    const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
-    if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
-    await getReadyStrategyForTask(task);
-    const rawRequest = parseJson(task.raw_request, {});
-    const defaultTarget = clean(req.body?.target_platform || req.body?.targetPlatform || rawRequest.target_platform || task.platform).split(',')[0] || 'youtube';
+    const existingTask = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
+    if (!existingTask) return res.status(404).json({ success: false, error: 'Finder task not found' });
+    const rawRequest = parseJson(existingTask.raw_request, {});
+    const defaultTarget = clean(req.body?.target_platform || req.body?.targetPlatform || rawRequest.target_platform || existingTask.platform).split(',')[0] || 'youtube';
     const rows = Array.isArray(req.body?.video_evidence)
       ? req.body.video_evidence
       : Array.isArray(req.body?.videos)
@@ -2236,29 +2250,32 @@ router.post('/:id/video-evidence/import', async (req, res) => {
       try {
         const videoUrl = clean(row.video_url || row.source_url || row.url);
         const targetPlatform = clean(row.target_platform || defaultTarget || detectPlatformFromUrl(videoUrl));
-        const saved = await saveVideoEvidence(task, row, {
+        const saved = await withActiveTaskBindingForWrite(existingTask.id, ({ task, transaction }) => saveVideoEvidence(task, row, {
           target_platform: targetPlatform,
           evidence_platform: targetPlatform,
           source_signal: clean(row.source_signal || 'unclassified'),
           source_query: clean(row.source_query || req.body?.source_query || ''),
           discovery_scope: 'target_platform_only',
           discovery_route: 'target_platform_first'
-        });
+        }, transaction));
+        await ensureVideoSnapshot(saved.video);
         results.push({ success: true, inserted: saved.inserted, data: saved.row });
       } catch (error) {
+        if (error.status) throw error;
         results.push({ success: false, error: error.message, input: row });
       }
     }
 
     const inserted = results.filter((item) => item.success && item.inserted).length;
     const updated = results.filter((item) => item.success && !item.inserted).length;
-    await updateTask(task.id, {
-      success_count: Number(task.success_count || 0) + inserted,
-      result_count: Number(task.result_count || 0) + inserted,
+    await updateTask(existingTask.id, {
+      success_count: Number(existingTask.success_count || 0) + inserted,
+      result_count: Number(existingTask.result_count || 0) + inserted,
       raw_response_summary: JSON.stringify({ stage: 'manual_video_evidence_import', inserted, updated, failed: results.filter((item) => !item.success).length })
     });
     res.json({ success: true, data: { inserted, updated, failed: results.filter((item) => !item.success).length, results } });
   } catch (error) {
+    if (error.status) await updateTask(req.params.id, { status: 'failed', error_message: `Finder task binding failed: ${error.message}`, finished_at: new Date().toISOString() });
     res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });
@@ -2341,13 +2358,6 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     const results = [];
     for (const evidence of evidenceRows) {
       try {
-        await dbOperations.run(
-          `INSERT INTO video_ai_analysis_results
-           (video_source_id, analysis_type, analysis_scope_id, status)
-           VALUES (?, 'finder_evidence', ?, ?)
-           ON DUPLICATE KEY UPDATE status = VALUES(status), error_message = NULL, updated_at = CURRENT_TIMESTAMP`,
-          [evidence.video_source_id, evidence.id, 'running']
-        );
         const video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [evidence.video_source_id]);
         const snapshot = await dbOperations.get('SELECT * FROM video_snapshots WHERE video_source_id = ? ORDER BY snapshot_at DESC LIMIT 1', [evidence.video_source_id]);
         const ai = await runFinderEvidenceAnalysis(video || {}, snapshot, evidence, strategy);
@@ -2357,7 +2367,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
           finder_task_id: task.id,
           ...normalized
         });
-        await dbOperations.run(
+        await withActiveTaskBindingForWrite(task.id, ({ transaction }) => scopedRun(
           `INSERT INTO video_ai_analysis_results
            (video_source_id, analysis_type, analysis_scope_id, status, model_name, score, summary,
             raw_result, extra_data, evidence_signals, final_prompt)
@@ -2377,12 +2387,12 @@ router.post('/:id/evidence-analysis', async (req, res) => {
             extraData,
             JSON.stringify(normalized.evidence_signals),
             ai.finalPrompt
-          ]
-        );
-        await dbOperations.run('UPDATE finder_video_evidence SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['analyzed', evidence.id]);
+          ], transaction
+        ).then(() => scopedRun('UPDATE finder_video_evidence SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['analyzed', evidence.id], transaction)));
         successCount += 1;
         results.push({ evidence_id: evidence.id, success: true });
       } catch (error) {
+        if (error.status) throw error;
         failedCount += 1;
         await dbOperations.run(
           `INSERT INTO video_ai_analysis_results
@@ -2396,6 +2406,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     }
     res.json({ success: true, data: { success_count: successCount, failed_count: failedCount, results } });
   } catch (error) {
+    if (error.status) await updateTask(req.params.id, { status: 'failed', error_message: `Finder task binding failed: ${error.message}`, finished_at: new Date().toISOString() });
     res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });

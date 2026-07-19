@@ -480,7 +480,7 @@ test('multi-product migration upgrades legacy raw candidate product fits safely'
   assert.equal(upgradedFit.next_analysis_version, 2);
 });
 
-async function startMockAiServer() {
+async function startMockAiServer({ delayMs = 0 } = {}) {
   const requests = [];
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
@@ -534,8 +534,10 @@ async function startMockAiServer() {
               reason: '该创作者发布过与品类和使用场景高度相关的视频，主页调性匹配，建议进入候选池。'
             }
           });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+          setTimeout(() => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+          }, delayMs);
         });
       } else {
         res.writeHead(404);
@@ -726,6 +728,35 @@ test('campaign product context and matched creator history are included in the e
     assert.match(finalPrompt, /"cooperation_status": "available"/);
     assert.doesNotMatch(finalPrompt, /"customer_id"|"customer_name"|"profile_url"|"cooperation_risk_reason"|"cooperation_history"/);
     assert.doesNotMatch(finalPrompt, /Matched Master Creator \(private name\)|Private free-text risk reason|https:\/\/www\.youtube\.com\/@known\.creator/);
+  } finally {
+    mockServer.close();
+  }
+});
+
+test('AI binding race archives the campaign product without persisting analysis', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { campaignProduct, strategy } = await seedBaseData();
+  const { server: mockServer, port } = await startMockAiServer({ delayMs: 120 });
+  await seedMockAiSettings(port);
+  try {
+    const taskRes = await request.post('/api/finder-tasks').send({ strategy_id: strategy.id, target_platform: 'youtube' });
+    const taskId = taskRes.body.data.id;
+    const imported = await request.post(`/api/finder-tasks/${taskId}/video-evidence/import`).send({ evidence: [{
+      video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', author_name: 'Race Creator', author_profile_url: 'https://youtube.com/@race.creator'
+    }] });
+    assert.equal(imported.status, 200, JSON.stringify(imported.body));
+    const analysis = request.post(`/api/finder-tasks/${taskId}/evidence-analysis`).send({ evidence_ids: [imported.body.data.results[0].data.id] });
+    await sleep(30);
+    await campaignProduct.update({ status: 'archived' });
+    const response = await analysis;
+    assert.equal(response.status, 409, JSON.stringify(response.body));
+    assert.equal(await models.VideoAiAnalysisResult.count(), 0);
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'failed');
+    assert.match(task.error_message, /binding failed/i);
   } finally {
     mockServer.close();
   }
