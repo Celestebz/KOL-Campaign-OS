@@ -190,6 +190,31 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+router.get('/:id/campaigns', async (req, res) => {
+  try {
+    const id = parsePathId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
+    }
+    const product = await getProduct(id);
+    if (!product) {
+      return res.status(404).json({ success: false, error: 'Product not found' });
+    }
+    const rows = await dbOperations.query(
+      `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
+         c.name AS campaign_name, c.brand AS campaign_brand
+       FROM campaign_products cp
+       JOIN campaigns c ON c.id = cp.campaign_id
+       WHERE cp.product_id = ?
+       ORDER BY cp.created_at DESC, cp.id DESC`,
+      [id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post('/:id/archive', async (req, res) => {
   try {
     const id = parsePathId(req.params.id);
