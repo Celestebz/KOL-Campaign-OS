@@ -15,6 +15,7 @@ module.exports = (sequelize, DataTypes) => {
 
   Campaign.associate = models => {
     Campaign.hasMany(models.KolStrategy, { foreignKey: 'campaign_id', onDelete: 'CASCADE' });
+    Campaign.hasMany(models.CampaignProduct, { foreignKey: 'campaign_id' });
     Campaign.hasMany(models.CampaignKol, { foreignKey: 'campaign_id', onDelete: 'CASCADE' });
     Campaign.hasMany(models.CampaignVideo, { foreignKey: 'campaign_id', onDelete: 'CASCADE' });
   };

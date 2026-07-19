@@ -15,6 +15,7 @@ const finderTaskRoutes = require('./finderTasks');
 const finderSubtaskRoutes = require('./finderSubtasks');
 const baselineMigration = require('../migrations/20260707000001-create-v2-core-tables');
 const replaceCyclesMigration = require('../migrations/20260709000001-replace-cycles-with-evidence-signals');
+const multiProductMigration = require('../migrations/20260719000001-add-multi-product-campaign-relations');
 
 async function buildApp() {
   const app = express();
@@ -150,6 +151,42 @@ test('migration replaces cycle schema without clearing business data', async () 
     { type: sequelize.QueryTypes.SELECT }
   );
   assert.equal(evidenceRows.length, 1, 'video_ai_analysis_results.evidence_signals should exist');
+});
+
+test('multi-product migration preserves legacy campaign data', async () => {
+  await resetTestDatabase();
+  await baselineMigration.up(sequelize.getQueryInterface(), Sequelize);
+
+  const campaign = await models.Campaign.create({
+    name: 'Multi-product Migration Campaign',
+    brand: 'Test',
+    product: 'Test'
+  });
+  await models.KolStrategy.create({
+    campaign_id: campaign.id,
+    name: 'Multi-product Migration Strategy',
+    brand: 'Test',
+    product: 'Test',
+    primary_platform: 'youtube',
+    status: 'ready'
+  });
+
+  await multiProductMigration.up(sequelize.getQueryInterface(), Sequelize);
+
+  const product = await dbOperations.get(
+    'SELECT * FROM products WHERE brand = ? AND name = ?',
+    ['Test', 'Test']
+  );
+  assert.ok(product?.id);
+
+  const campaignProduct = await dbOperations.get(
+    'SELECT * FROM campaign_products WHERE campaign_id = ? AND product_id = ?',
+    [campaign.id, product.id]
+  );
+  assert.equal(campaignProduct.status, 'active');
+
+  const preserved = await models.Campaign.findByPk(campaign.id);
+  assert.equal(preserved.product, 'Test');
 });
 
 async function startMockAiServer() {

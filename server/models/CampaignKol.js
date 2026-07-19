@@ -79,6 +79,7 @@ module.exports = (sequelize, DataTypes) => {
     CampaignKol.belongsTo(models.KolPlatformAccount, { foreignKey: 'platform_account_id', onDelete: 'SET NULL' });
     CampaignKol.belongsTo(models.RawCandidate, { foreignKey: 'raw_candidate_id', onDelete: 'SET NULL' });
     CampaignKol.belongsTo(models.VideoSource, { foreignKey: 'best_evidence_video_id', onDelete: 'SET NULL' });
+    CampaignKol.hasMany(models.CampaignKolProduct, { foreignKey: 'campaign_kol_id' });
   };
 
   return CampaignKol;

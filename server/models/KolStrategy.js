@@ -2,6 +2,7 @@ module.exports = (sequelize, DataTypes) => {
   const KolStrategy = sequelize.define('KolStrategy', {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     campaign_id: { type: DataTypes.INTEGER, allowNull: false },
+    campaign_product_id: DataTypes.INTEGER,
     name: { type: DataTypes.STRING(255), allowNull: false },
     brand: DataTypes.STRING(255),
     product: DataTypes.STRING(255),
@@ -29,6 +30,7 @@ module.exports = (sequelize, DataTypes) => {
 
   KolStrategy.associate = models => {
     KolStrategy.belongsTo(models.Campaign, { foreignKey: 'campaign_id', onDelete: 'CASCADE' });
+    KolStrategy.belongsTo(models.CampaignProduct, { foreignKey: 'campaign_product_id', onDelete: 'SET NULL' });
     KolStrategy.hasMany(models.FinderTask, { foreignKey: 'strategy_id', onDelete: 'SET NULL' });
     KolStrategy.hasMany(models.FinderVideoEvidence, { foreignKey: 'strategy_id', onDelete: 'SET NULL' });
   };
