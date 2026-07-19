@@ -48,7 +48,7 @@ module.exports = (sequelize, DataTypes) => {
     RawCandidate.belongsTo(models.Campaign, { foreignKey: 'campaign_id', onDelete: 'SET NULL' });
     RawCandidate.belongsTo(models.KolStrategy, { foreignKey: 'strategy_id', onDelete: 'SET NULL' });
     RawCandidate.belongsTo(models.Customer, { foreignKey: 'approved_customer_id', onDelete: 'SET NULL' });
-    RawCandidate.hasMany(models.RawCandidateProductFit, { foreignKey: 'raw_candidate_id' });
+    RawCandidate.hasMany(models.RawCandidateProductFit, { foreignKey: 'latest_raw_candidate_id' });
   };
 
   return RawCandidate;

@@ -170,8 +170,128 @@ test('multi-product migration preserves legacy campaign data', async () => {
     primary_platform: 'youtube',
     status: 'ready'
   });
+  const duplicateCampaign = await models.Campaign.create({
+    name: 'Normalized Duplicate Campaign',
+    brand: ' test ',
+    product: ' TEST '
+  });
+  const accentedCampaign = await models.Campaign.create({
+    name: 'Accented Brand Campaign',
+    brand: 'Tést',
+    product: 'Test'
+  });
+  const blankCampaign = await models.Campaign.create({
+    name: 'Blank Product Campaign',
+    brand: 'Test',
+    product: '   '
+  });
 
   await multiProductMigration.up(sequelize.getQueryInterface(), Sequelize);
+  await multiProductMigration.up(sequelize.getQueryInterface(), Sequelize);
+
+  const queryInterface = sequelize.getQueryInterface();
+  const tableNames = (await queryInterface.showAllTables()).map(table => (
+    typeof table === 'string' ? table : table.tableName
+  ));
+  for (const table of [
+    'products',
+    'campaign_products',
+    'raw_candidate_product_fits',
+    'campaign_kol_products'
+  ]) {
+    assert.ok(tableNames.includes(table), `${table} should exist`);
+  }
+
+  const requiredColumns = {
+    products: [
+      'id', 'brand', 'name', 'sku', 'category', 'product_url', 'price', 'currency',
+      'description', 'selling_points', 'status', 'catalog_key_hash', 'created_at', 'updated_at'
+    ],
+    campaign_products: [
+      'id', 'campaign_id', 'product_id', 'role', 'priority', 'campaign_brief', 'status',
+      'created_at', 'updated_at'
+    ],
+    raw_candidate_product_fits: [
+      'id', 'latest_raw_candidate_id', 'existing_customer_id', 'campaign_product_id',
+      'platform', 'identity_key_hash', 'strategy_id', 'finder_task_id', 'identity_status',
+      'fit_score', 'matched_persona', 'evidence_summary', 'decision_status',
+      'analysis_version', 'created_at', 'updated_at'
+    ],
+    campaign_kol_products: [
+      'id', 'campaign_kol_id', 'campaign_product_id', 'source_raw_candidate_product_fit_id',
+      'fit_score', 'fit_status', 'evidence_summary', 'assignment_status', 'quoted_fee',
+      'sample_status', 'deliverables', 'content_status', 'result_summary',
+      'created_at', 'updated_at'
+    ]
+  };
+  for (const [table, columns] of Object.entries(requiredColumns)) {
+    const description = await queryInterface.describeTable(table);
+    for (const column of columns) {
+      assert.ok(description[column], `${table}.${column} should exist`);
+    }
+  }
+  const rawFitColumns = await queryInterface.describeTable('raw_candidate_product_fits');
+  assert.equal(rawFitColumns.raw_candidate_id, undefined, 'legacy raw_candidate_id should not be created');
+
+  const strategyColumns = await queryInterface.describeTable('kol_strategies');
+  const finderTaskColumns = await queryInterface.describeTable('finder_tasks');
+  assert.ok(strategyColumns.campaign_product_id, 'kol_strategies.campaign_product_id should exist');
+  assert.ok(finderTaskColumns.campaign_product_id, 'finder_tasks.campaign_product_id should exist');
+
+  async function assertIndex(table, name, fields, unique = false) {
+    const indexes = await queryInterface.showIndex(table);
+    const index = indexes.find(candidate => candidate.name === name);
+    assert.ok(index, `${table}.${name} should exist`);
+    assert.deepEqual(index.fields.map(field => field.attribute), fields);
+    assert.equal(Boolean(index.unique), unique);
+  }
+
+  async function assertForeignKey(table, column, referencedTable) {
+    const foreignKeys = await queryInterface.getForeignKeyReferencesForTable(table);
+    assert.ok(
+      foreignKeys.some(key => key.columnName === column && key.referencedTableName === referencedTable),
+      `${table}.${column} should reference ${referencedTable}`
+    );
+  }
+
+  await assertIndex('products', 'uq_products_catalog_key_hash', ['catalog_key_hash'], true);
+  await assertIndex(
+    'campaign_products',
+    'uq_campaign_products_campaign_product',
+    ['campaign_id', 'product_id'],
+    true
+  );
+  await assertIndex(
+    'raw_candidate_product_fits',
+    'uq_raw_candidate_product_fits_identity',
+    ['campaign_product_id', 'identity_key_hash'],
+    true
+  );
+  await assertIndex(
+    'campaign_kol_products',
+    'uq_campaign_kol_products_campaign_kol_product',
+    ['campaign_kol_id', 'campaign_product_id'],
+    true
+  );
+  await assertIndex('kol_strategies', 'idx_kol_strategies_campaign_product', ['campaign_product_id']);
+  await assertIndex('finder_tasks', 'idx_finder_tasks_campaign_product', ['campaign_product_id']);
+
+  await assertForeignKey('campaign_products', 'campaign_id', 'campaigns');
+  await assertForeignKey('campaign_products', 'product_id', 'products');
+  await assertForeignKey('raw_candidate_product_fits', 'latest_raw_candidate_id', 'raw_candidates');
+  await assertForeignKey('raw_candidate_product_fits', 'existing_customer_id', 'customers');
+  await assertForeignKey('raw_candidate_product_fits', 'campaign_product_id', 'campaign_products');
+  await assertForeignKey('raw_candidate_product_fits', 'strategy_id', 'kol_strategies');
+  await assertForeignKey('raw_candidate_product_fits', 'finder_task_id', 'finder_tasks');
+  await assertForeignKey('campaign_kol_products', 'campaign_kol_id', 'campaign_kols');
+  await assertForeignKey('campaign_kol_products', 'campaign_product_id', 'campaign_products');
+  await assertForeignKey(
+    'campaign_kol_products',
+    'source_raw_candidate_product_fit_id',
+    'raw_candidate_product_fits'
+  );
+  await assertForeignKey('kol_strategies', 'campaign_product_id', 'campaign_products');
+  await assertForeignKey('finder_tasks', 'campaign_product_id', 'campaign_products');
 
   const product = await dbOperations.get(
     'SELECT * FROM products WHERE brand = ? AND name = ?',
@@ -184,6 +304,30 @@ test('multi-product migration preserves legacy campaign data', async () => {
     [campaign.id, product.id]
   );
   assert.equal(campaignProduct.status, 'active');
+
+  const duplicateCampaignProduct = await dbOperations.get(
+    'SELECT * FROM campaign_products WHERE campaign_id = ?',
+    [duplicateCampaign.id]
+  );
+  assert.equal(duplicateCampaignProduct.product_id, product.id);
+
+  const accentedCampaignProduct = await dbOperations.get(
+    'SELECT * FROM campaign_products WHERE campaign_id = ?',
+    [accentedCampaign.id]
+  );
+  assert.notEqual(accentedCampaignProduct.product_id, product.id);
+  assert.equal(await models.Product.count(), 2, 'normalized duplicates should reuse one product');
+
+  const blankCampaignProduct = await dbOperations.get(
+    'SELECT * FROM campaign_products WHERE campaign_id = ?',
+    [blankCampaign.id]
+  );
+  assert.equal(blankCampaignProduct, null, 'blank legacy products should not be backfilled');
+
+  const preservedStrategy = await models.KolStrategy.findOne({
+    where: { campaign_id: campaign.id }
+  });
+  assert.equal(preservedStrategy.campaign_product_id, campaignProduct.id);
 
   const preserved = await models.Campaign.findByPk(campaign.id);
   assert.equal(preserved.product, 'Test');
