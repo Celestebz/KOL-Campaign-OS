@@ -6,6 +6,30 @@ const router = express.Router();
 const CAMPAIGN_PRODUCT_ROLES = new Set(['hero', 'secondary', 'test']);
 const CAMPAIGN_PRODUCT_STATUSES = new Set(['planned', 'active', 'paused', 'completed', 'archived']);
 
+function parsePathId(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function parseBodyId(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  return parsePathId(value);
+}
+
+function isNonNegativeIntegerNumber(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isForeignKeyConstraintError(error) {
+  const code = error?.original?.code || error?.parent?.code || error?.code;
+  return error?.name === 'SequelizeForeignKeyConstraintError'
+    || code === 'ER_NO_REFERENCED_ROW_2'
+    || code === 'ER_ROW_IS_REFERENCED_2';
+}
+
 function toCampaignProduct(row) {
   if (!row) return null;
   return {
@@ -68,7 +92,10 @@ router.get('/', async (req, res) => {
 
 router.get('/:id/products', async (req, res) => {
   try {
-    const campaignId = Number(req.params.id);
+    const campaignId = parsePathId(req.params.id);
+    if (campaignId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
     const campaign = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
     if (!campaign) {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -92,27 +119,39 @@ router.get('/:id/products', async (req, res) => {
 });
 
 router.post('/:id/products', async (req, res) => {
+  let campaignId = null;
+  let productId = null;
   try {
-    const campaignId = Number(req.params.id);
-    const productId = Number(req.body.product_id);
+    campaignId = parsePathId(req.params.id);
+    productId = parseBodyId(req.body.product_id);
+    if (campaignId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
+    if (productId === null) {
+      return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
+    }
+
     const role = req.body.role === undefined ? 'hero' : req.body.role;
     const status = req.body.status === undefined ? 'active' : req.body.status;
-    const priority = req.body.priority === undefined ? 0 : Number(req.body.priority);
+    const priority = req.body.priority === undefined ? 0 : req.body.priority;
     const validationError = validateCampaignProductValues(role, status);
     if (validationError) {
       return res.status(400).json({ success: false, error: validationError });
     }
-    if (!Number.isInteger(priority)) {
-      return res.status(400).json({ success: false, error: 'Campaign Product priority must be an integer' });
+    if (!isNonNegativeIntegerNumber(priority)) {
+      return res.status(400).json({ success: false, error: 'Campaign Product priority must be a non-negative integer number' });
     }
 
     const campaign = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
     if (!campaign) {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
-    const product = await dbOperations.get('SELECT id FROM products WHERE id = ?', [productId]);
+    const product = await dbOperations.get('SELECT id, status FROM products WHERE id = ?', [productId]);
     if (!product) {
       return res.status(404).json({ success: false, error: 'Product not found' });
+    }
+    if (product.status === 'archived') {
+      return res.status(409).json({ success: false, error: 'Archived Product cannot be attached to a Campaign' });
     }
     const duplicate = await dbOperations.get(
       'SELECT id FROM campaign_products WHERE campaign_id = ? AND product_id = ?',
@@ -125,14 +164,45 @@ router.post('/:id/products', async (req, res) => {
     const result = await dbOperations.run(
       `INSERT INTO campaign_products
         (campaign_id, product_id, role, priority, campaign_brief, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      [campaignId, productId, role, priority, req.body.campaign_brief ?? null, status]
+       SELECT ?, p.id, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+       FROM products p
+       WHERE p.id = ? AND p.status = 'active'`,
+      [campaignId, role, priority, req.body.campaign_brief ?? null, status, productId]
     );
     const created = await getCampaignProduct(campaignId, result.id);
+    if (!created) {
+      const currentCampaign = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
+      if (!currentCampaign) {
+        return res.status(404).json({ success: false, error: 'Campaign not found' });
+      }
+      const currentProduct = await dbOperations.get('SELECT id, status FROM products WHERE id = ?', [productId]);
+      if (!currentProduct) {
+        return res.status(404).json({ success: false, error: 'Product not found' });
+      }
+      if (currentProduct.status === 'archived') {
+        return res.status(409).json({ success: false, error: 'Archived Product cannot be attached to a Campaign' });
+      }
+      return res.status(409).json({ success: false, error: 'Campaign Product creation conflicted with another update' });
+    }
     res.json({ success: true, data: toCampaignProduct(created), message: 'Product attached to Campaign' });
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError') {
       return res.status(409).json({ success: false, error: 'Product is already attached to this Campaign' });
+    }
+    if (isForeignKeyConstraintError(error)) {
+      const campaign = campaignId === null
+        ? null
+        : await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
+      if (!campaign) {
+        return res.status(404).json({ success: false, error: 'Campaign not found' });
+      }
+      const product = productId === null
+        ? null
+        : await dbOperations.get('SELECT id, status FROM products WHERE id = ?', [productId]);
+      if (!product) {
+        return res.status(404).json({ success: false, error: 'Product not found' });
+      }
+      return res.status(409).json({ success: false, error: 'Campaign Product creation conflicted with another update' });
     }
     res.status(500).json({ success: false, error: error.message });
   }
@@ -140,8 +210,11 @@ router.post('/:id/products', async (req, res) => {
 
 router.put('/:campaignId/products/:campaignProductId', async (req, res) => {
   try {
-    const campaignId = Number(req.params.campaignId);
-    const campaignProductId = Number(req.params.campaignProductId);
+    const campaignId = parsePathId(req.params.campaignId);
+    const campaignProductId = parsePathId(req.params.campaignProductId);
+    if (campaignId === null || campaignProductId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign and Campaign Product ids must be positive integers' });
+    }
     const current = await getCampaignProduct(campaignId, campaignProductId);
     if (!current) {
       return res.status(404).json({ success: false, error: 'Campaign Product not found' });
@@ -149,29 +222,52 @@ router.put('/:campaignId/products/:campaignProductId', async (req, res) => {
 
     const role = req.body.role === undefined ? current.role : req.body.role;
     const status = req.body.status === undefined ? current.status : req.body.status;
-    const priority = req.body.priority === undefined ? current.priority : Number(req.body.priority);
+    const priority = req.body.priority === undefined ? current.priority : req.body.priority;
     const validationError = validateCampaignProductValues(role, status);
     if (validationError) {
       return res.status(400).json({ success: false, error: validationError });
     }
-    if (!Number.isInteger(priority)) {
-      return res.status(400).json({ success: false, error: 'Campaign Product priority must be an integer' });
+    if (!isNonNegativeIntegerNumber(priority)) {
+      return res.status(400).json({ success: false, error: 'Campaign Product priority must be a non-negative integer number' });
+    }
+    if (current.status === 'archived' && status !== 'archived') {
+      return res.status(409).json({ success: false, error: 'Archived Campaign Product cannot be restored' });
     }
 
-    await dbOperations.run(
+    const result = await dbOperations.run(
       `UPDATE campaign_products SET
          role = ?, priority = ?, campaign_brief = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE campaign_id = ? AND id = ?`,
+       WHERE campaign_id = ? AND id = ? AND status = ?`,
       [
         role,
         priority,
         req.body.campaign_brief === undefined ? current.campaign_brief : req.body.campaign_brief,
         status,
         campaignId,
-        campaignProductId
+        campaignProductId,
+        current.status
       ]
     );
     const updated = await getCampaignProduct(campaignId, campaignProductId);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Campaign Product not found' });
+    }
+    if (updated.status === 'archived' && status !== 'archived') {
+      return res.status(409).json({ success: false, error: 'Archived Campaign Product cannot be restored' });
+    }
+    const expectedBrief = req.body.campaign_brief === undefined
+      ? current.campaign_brief
+      : req.body.campaign_brief;
+    const matchesUpdate = updated.role === role
+      && Number(updated.priority) === priority
+      && updated.campaign_brief === expectedBrief
+      && updated.status === status;
+    if (!matchesUpdate) {
+      const error = result.changes === 0
+        ? 'Campaign Product changed concurrently before update'
+        : 'Campaign Product changed concurrently after update';
+      return res.status(409).json({ success: false, error });
+    }
     res.json({ success: true, data: toCampaignProduct(updated), message: 'Campaign Product updated' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -180,21 +276,30 @@ router.put('/:campaignId/products/:campaignProductId', async (req, res) => {
 
 router.post('/:campaignId/products/:campaignProductId/archive', async (req, res) => {
   try {
-    const campaignId = Number(req.params.campaignId);
-    const campaignProductId = Number(req.params.campaignProductId);
-    const current = await getCampaignProduct(campaignId, campaignProductId);
-    if (!current) {
-      return res.status(404).json({ success: false, error: 'Campaign Product not found' });
+    const campaignId = parsePathId(req.params.campaignId);
+    const campaignProductId = parsePathId(req.params.campaignProductId);
+    if (campaignId === null || campaignProductId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign and Campaign Product ids must be positive integers' });
     }
 
-    await dbOperations.run(
+    const result = await dbOperations.run(
       `UPDATE campaign_products
        SET status = 'archived', updated_at = CURRENT_TIMESTAMP
-       WHERE campaign_id = ? AND id = ?`,
+       WHERE campaign_id = ? AND id = ? AND status <> 'archived'`,
       [campaignId, campaignProductId]
     );
     const archived = await getCampaignProduct(campaignId, campaignProductId);
-    res.json({ success: true, data: toCampaignProduct(archived), message: 'Campaign Product archived' });
+    if (!archived) {
+      return res.status(404).json({ success: false, error: 'Campaign Product not found' });
+    }
+    if (archived.status !== 'archived') {
+      return res.status(409).json({ success: false, error: 'Campaign Product archive conflicted with another update' });
+    }
+    res.json({
+      success: true,
+      data: toCampaignProduct(archived),
+      message: result.changes === 0 ? 'Campaign Product already archived' : 'Campaign Product archived'
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -274,7 +379,10 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePathId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
     if (id === 1) {
       return res.status(400).json({ success: false, error: 'Default Campaign 不能删除' });
     }
@@ -282,6 +390,17 @@ router.delete('/:id', async (req, res) => {
     const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [id]);
     if (!campaign) {
       return res.status(404).json({ success: false, error: '产品/活动不存在' });
+    }
+
+    const campaignProductUsage = await dbOperations.get(
+      'SELECT COUNT(*) as count FROM campaign_products WHERE campaign_id = ?',
+      [id]
+    );
+    if (campaignProductUsage?.count > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `该产品/活动已有 ${campaignProductUsage.count} 条 Campaign Product 历史，不能删除。请保留活动以避免物理删除关联记录。`
+      });
     }
 
     const usage = await dbOperations.get('SELECT COUNT(*) as count FROM campaign_videos WHERE campaign_id = ?', [id]);
@@ -304,8 +423,26 @@ router.delete('/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: `该产品/活动已有 ${strategyUsage.count} 条 KOL Strategy，不能删除。请先归档或删除 Strategy。` });
     }
 
-    await dbOperations.run('DELETE FROM campaigns WHERE id = ?', [id]);
-    res.json({ success: true, message: '产品/活动已删除' });
+    await dbOperations.run(
+      `DELETE FROM campaigns
+       WHERE id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM campaign_products cp WHERE cp.campaign_id = campaigns.id
+      )`,
+      [id]
+    );
+    const current = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [id]);
+    if (!current) {
+      return res.json({ success: true, message: '产品/活动已删除' });
+    }
+    const currentCampaignProductUsage = await dbOperations.get(
+      'SELECT COUNT(*) as count FROM campaign_products WHERE campaign_id = ?',
+      [id]
+    );
+    if (currentCampaignProductUsage?.count > 0) {
+      return res.status(400).json({ success: false, error: '该产品/活动已有 Campaign Product 历史，不能删除' });
+    }
+    return res.status(409).json({ success: false, error: 'Campaign deletion conflicted with another update' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

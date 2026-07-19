@@ -17,6 +17,12 @@ function validateStatus(status) {
   return status === undefined || PRODUCT_STATUSES.has(status);
 }
 
+function parsePathId(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 async function getProduct(id) {
   return dbOperations.get(`SELECT ${PRODUCT_COLUMNS} FROM products WHERE id = ?`, [id]);
 }
@@ -91,7 +97,14 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePathId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'status')) {
+      return res.status(400).json({ success: false, error: 'Product status can only be changed through archive' });
+    }
+
     const product = await getProduct(id);
     if (!product) {
       return res.status(404).json({ success: false, error: 'Product not found' });
@@ -99,12 +112,8 @@ router.put('/:id', async (req, res) => {
 
     const brand = req.body.brand === undefined ? product.brand : cleanText(req.body.brand);
     const name = req.body.name === undefined ? product.name : cleanText(req.body.name);
-    const status = req.body.status === undefined ? product.status : req.body.status;
     if (!name) {
       return res.status(400).json({ success: false, error: 'Product name is required' });
-    }
-    if (!validateStatus(status)) {
-      return res.status(400).json({ success: false, error: 'Invalid Product status' });
     }
 
     const catalogHash = catalogKeyHash(brand, name);
@@ -119,7 +128,7 @@ router.put('/:id', async (req, res) => {
     await dbOperations.run(
       `UPDATE products SET
          brand = ?, name = ?, sku = ?, category = ?, product_url = ?, description = ?,
-         selling_points = ?, status = ?, catalog_key_hash = ?, updated_at = CURRENT_TIMESTAMP
+         selling_points = ?, catalog_key_hash = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
         brand,
@@ -129,12 +138,15 @@ router.put('/:id', async (req, res) => {
         req.body.product_url === undefined ? product.product_url : req.body.product_url,
         req.body.description === undefined ? product.description : req.body.description,
         req.body.selling_points === undefined ? product.selling_points : req.body.selling_points,
-        status,
         catalogHash,
         id
       ]
     );
-    res.json({ success: true, data: await getProduct(id), message: 'Product updated' });
+    const updated = await getProduct(id);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Product not found' });
+    }
+    res.json({ success: true, data: updated, message: 'Product updated' });
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError') {
       return res.status(409).json({ success: false, error: 'A matching Product already exists' });
@@ -145,19 +157,29 @@ router.put('/:id', async (req, res) => {
 
 router.post('/:id/archive', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    const product = await getProduct(id);
-    if (!product) {
-      return res.status(404).json({ success: false, error: 'Product not found' });
+    const id = parsePathId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
     }
 
-    await dbOperations.run(
+    const result = await dbOperations.run(
       `UPDATE products
        SET status = 'archived', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
+       WHERE id = ? AND status <> 'archived'`,
       [id]
     );
-    res.json({ success: true, data: await getProduct(id), message: 'Product archived' });
+    const archived = await getProduct(id);
+    if (!archived) {
+      return res.status(404).json({ success: false, error: 'Product not found' });
+    }
+    if (archived.status !== 'archived') {
+      return res.status(409).json({ success: false, error: 'Product archive conflicted with another update' });
+    }
+    res.json({
+      success: true,
+      data: archived,
+      message: result.changes === 0 ? 'Product already archived' : 'Product archived'
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

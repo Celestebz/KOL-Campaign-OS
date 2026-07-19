@@ -12,7 +12,7 @@ process.env.DB_NAME_TEST = 'kol_campaign_os_products_test';
 const express = require('express');
 const supertest = require('supertest');
 const { Sequelize: SequelizeClient } = require('sequelize');
-const { initDatabase, sequelize, models } = require('../database');
+const { initDatabase, sequelize, models, dbOperations } = require('../database');
 const campaignRoutes = require('./campaigns');
 
 let productRoutes;
@@ -153,8 +153,7 @@ test('Product API updates fields and moves reuse to the recalculated catalog key
       brand: ' New Brand ',
       name: ' New Name ',
       sku: 'NEW-SKU',
-      description: 'Updated catalog description',
-      status: 'archived'
+      description: 'Updated catalog description'
     })
     .expect(200);
 
@@ -163,7 +162,7 @@ test('Product API updates fields and moves reuse to the recalculated catalog key
   assert.equal(updated.body.data.brand, 'New Brand');
   assert.equal(updated.body.data.name, 'New Name');
   assert.equal(updated.body.data.sku, 'NEW-SKU');
-  assert.equal(updated.body.data.status, 'archived');
+  assert.equal(updated.body.data.status, 'active');
 
   const reused = await supertest(app)
     .post('/api/products')
@@ -178,7 +177,7 @@ test('Product API updates fields and moves reuse to the recalculated catalog key
   assert.notEqual(oldKey.body.data.id, original.body.data.id);
 });
 
-test('Product update validates required name and allowed status values', async () => {
+test('Product update validates required name and rejects all direct status changes', async () => {
   const product = await supertest(app)
     .post('/api/products')
     .send({ brand: 'Vivatrees', name: 'Update Validation Product' })
@@ -189,10 +188,65 @@ test('Product update validates required name and allowed status values', async (
     .send({ name: ' ' })
     .expect(400);
 
+  for (const status of ['active', 'archived', 'paused']) {
+    await supertest(app)
+      .put(`/api/products/${product.body.data.id}`)
+      .send({ status })
+      .expect(400);
+  }
+});
+
+test('Product archive is one-way and idempotent', async () => {
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'One-way Product' })
+    .expect(200);
+
+  await supertest(app)
+    .post(`/api/products/${product.body.data.id}/archive`)
+    .send({})
+    .expect(200);
+  const archivedAgain = await supertest(app)
+    .post(`/api/products/${product.body.data.id}/archive`)
+    .send({})
+    .expect(200);
+  assert.equal(archivedAgain.body.data.status, 'archived');
+
   await supertest(app)
     .put(`/api/products/${product.body.data.id}`)
-    .send({ status: 'paused' })
+    .send({ status: 'active' })
     .expect(400);
+
+  const products = await supertest(app).get('/api/products').expect(200);
+  assert.equal(products.body.data.find((item) => item.id === product.body.data.id).status, 'archived');
+});
+
+test('Product archive does not return success with null data if the row disappears during final read', async () => {
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Product Archive Race' })
+    .expect(200);
+  const originalRun = dbOperations.run;
+  let injected = false;
+
+  dbOperations.run = async (sql, params = []) => {
+    const result = await originalRun(sql, params);
+    if (!injected && /^\s*UPDATE products\b/i.test(sql)) {
+      injected = true;
+      await originalRun('DELETE FROM products WHERE id = ?', [product.body.data.id]);
+    }
+    return result;
+  };
+
+  try {
+    const response = await supertest(app)
+      .post(`/api/products/${product.body.data.id}/archive`)
+      .send({});
+    assert.ok([404, 409].includes(response.status), `expected 404/409, got ${response.status}`);
+    assert.notEqual(response.body.data, null);
+  } finally {
+    dbOperations.run = originalRun;
+  }
 });
 
 test('Campaign Product API rejects duplicate attachments', async () => {
@@ -243,6 +297,222 @@ test('Campaign Product API validates roles and statuses when updating an associa
   assert.equal(updated.body.data.priority, 7);
   assert.equal(updated.body.data.status, 'paused');
   assert.equal(updated.body.data.campaign_brief, 'Test the niche angle');
+});
+
+test('Product and Campaign Product APIs reject malformed IDs and priorities', async () => {
+  for (const invalidPathId of ['0', '-1', '1.5', 'NaN', 'true', '%20']) {
+    await supertest(app)
+      .post(`/api/products/${invalidPathId}/archive`)
+      .send({})
+      .expect(400);
+    await supertest(app)
+      .get(`/api/campaigns/${invalidPathId}/products`)
+      .expect(400);
+  }
+
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Strict Integer Product' })
+    .expect(200);
+  const campaign = await createCampaign('Strict Integers');
+
+  for (const productId of [true, null, '', 1.5, 0, -1, 'NaN']) {
+    await supertest(app)
+      .post(`/api/campaigns/${campaign.id}/products`)
+      .send({ product_id: productId })
+      .expect(400);
+  }
+
+  for (const priority of [true, null, '', 1.5, -1, '7']) {
+    await supertest(app)
+      .post(`/api/campaigns/${campaign.id}/products`)
+      .send({ product_id: product.body.data.id, priority })
+      .expect(400);
+  }
+
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: String(product.body.data.id), priority: 0 })
+    .expect(200);
+
+  for (const priority of [true, null, '', 1.5, -1, '7']) {
+    await supertest(app)
+      .put(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}`)
+      .send({ priority })
+      .expect(400);
+  }
+
+  for (const invalidPathId of ['0', '-1', '1.5', 'NaN', 'true', '%20']) {
+    await supertest(app)
+      .put(`/api/campaigns/${invalidPathId}/products/${attachment.body.data.id}`)
+      .send({ role: 'hero' })
+      .expect(400);
+    await supertest(app)
+      .put(`/api/campaigns/${campaign.id}/products/${invalidPathId}`)
+      .send({ role: 'hero' })
+      .expect(400);
+  }
+});
+
+test('an archived Product cannot be newly attached to a Campaign', async () => {
+  const campaign = await createCampaign('Archived Product Guard');
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Archived Attachment Product' })
+    .expect(200);
+  await supertest(app)
+    .post(`/api/products/${product.body.data.id}/archive`)
+    .send({})
+    .expect(200);
+
+  await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: product.body.data.id })
+    .expect(409);
+});
+
+test('an archived Campaign Product cannot be restored through PUT', async () => {
+  const campaign = await createCampaign('Archived Association Guard');
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Archived Association Product' })
+    .expect(200);
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: product.body.data.id })
+    .expect(200);
+  await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}/archive`)
+    .send({})
+    .expect(200);
+
+  await supertest(app)
+    .put(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}`)
+    .send({ status: 'active' })
+    .expect(409);
+
+  const list = await supertest(app)
+    .get(`/api/campaigns/${campaign.id}/products`)
+    .expect(200);
+  assert.equal(list.body.data[0].status, 'archived');
+});
+
+test('Campaign deletion is rejected while any Campaign Product history exists', async () => {
+  const campaign = await createCampaign('Delete Guard');
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Delete Guard Product' })
+    .expect(200);
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: product.body.data.id })
+    .expect(200);
+
+  await supertest(app).delete(`/api/campaigns/${campaign.id}`).expect(400);
+
+  assert.ok(await models.Campaign.findByPk(campaign.id));
+  assert.ok(await models.CampaignProduct.findByPk(attachment.body.data.id));
+});
+
+test('Campaign without protected relationships remains deletable', async () => {
+  const campaign = await createCampaign('Delete Allowed');
+
+  await supertest(app).delete(`/api/campaigns/${campaign.id}`).expect(200);
+
+  assert.equal(await models.Campaign.findByPk(campaign.id), null);
+});
+
+test('Campaign Product creation maps a concurrent parent deletion to 404 or 409', async () => {
+  const campaign = await createCampaign('Create Race');
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Create Race Product' })
+    .expect(200);
+  const originalRun = dbOperations.run;
+  let injected = false;
+
+  dbOperations.run = async (sql, params = []) => {
+    if (!injected && /^\s*INSERT INTO campaign_products\b/i.test(sql)) {
+      injected = true;
+      await originalRun('DELETE FROM campaigns WHERE id = ?', [campaign.id]);
+    }
+    return originalRun(sql, params);
+  };
+
+  try {
+    const response = await supertest(app)
+      .post(`/api/campaigns/${campaign.id}/products`)
+      .send({ product_id: product.body.data.id });
+    assert.ok([404, 409].includes(response.status), `expected 404/409, got ${response.status}`);
+  } finally {
+    dbOperations.run = originalRun;
+  }
+});
+
+test('Campaign Product update does not return success with null data after concurrent parent deletion', async () => {
+  const campaign = await createCampaign('Update Race');
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Update Race Product' })
+    .expect(200);
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: product.body.data.id })
+    .expect(200);
+  const originalRun = dbOperations.run;
+  let injected = false;
+
+  dbOperations.run = async (sql, params = []) => {
+    const result = await originalRun(sql, params);
+    if (!injected && /^\s*UPDATE campaign_products SET\b/i.test(sql)) {
+      injected = true;
+      await originalRun('DELETE FROM campaigns WHERE id = ?', [campaign.id]);
+    }
+    return result;
+  };
+
+  try {
+    const response = await supertest(app)
+      .put(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}`)
+      .send({ priority: 2 });
+    assert.ok([404, 409].includes(response.status), `expected 404/409, got ${response.status}`);
+    assert.notEqual(response.body.data, null);
+  } finally {
+    dbOperations.run = originalRun;
+  }
+});
+
+test('Campaign Product archive does not return success with null data after concurrent parent deletion', async () => {
+  const campaign = await createCampaign('Archive Race');
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Archive Race Product' })
+    .expect(200);
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: product.body.data.id })
+    .expect(200);
+  const originalRun = dbOperations.run;
+  let injected = false;
+
+  dbOperations.run = async (sql, params = []) => {
+    const result = await originalRun(sql, params);
+    if (!injected && /^\s*UPDATE campaign_products\s+SET status = 'archived'/i.test(sql)) {
+      injected = true;
+      await originalRun('DELETE FROM campaigns WHERE id = ?', [campaign.id]);
+    }
+    return result;
+  };
+
+  try {
+    const response = await supertest(app)
+      .post(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}/archive`)
+      .send({});
+    assert.ok([404, 409].includes(response.status), `expected 404/409, got ${response.status}`);
+    assert.notEqual(response.body.data, null);
+  } finally {
+    dbOperations.run = originalRun;
+  }
 });
 
 test('archiving preserves Product and Campaign Product history and updates Campaign counts', async () => {
