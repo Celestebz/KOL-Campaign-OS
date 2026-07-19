@@ -1,5 +1,7 @@
 const express = require('express');
-const { dbOperations } = require('../database');
+const crypto = require('crypto');
+const { dbOperations, sequelize, Sequelize } = require('../database');
+const { computeUrlHash } = require('../utils/videoUrlNormalizer');
 const {
   buildInstagramReelSearchUrl,
   extractInstagramReels,
@@ -45,6 +47,55 @@ const cancelledTasks = new Set();
 function clean(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
+}
+
+function normalizedPlatform(value, profileUrl = '') {
+  const platform = clean(value).toLowerCase();
+  return TARGET_PLATFORMS.includes(platform) ? platform : detectPlatformFromUrl(profileUrl);
+}
+
+function normalizeProfileIdentity(platform, profileUrl) {
+  let value = clean(profileUrl);
+  if (!value) return '';
+  if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+  try {
+    const parsed = new URL(value);
+    const detectedPlatform = normalizedPlatform(platform, value);
+    let hostname = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    if (detectedPlatform === 'youtube' && (hostname === 'youtube.com' || hostname.endsWith('.youtube.com'))) {
+      hostname = 'www.youtube.com';
+    } else if (detectedPlatform === 'instagram' && (hostname === 'instagram.com' || hostname.endsWith('.instagram.com'))) {
+      hostname = 'www.instagram.com';
+    } else if (detectedPlatform === 'tiktok' && (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com'))) {
+      hostname = 'www.tiktok.com';
+    }
+
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts.length) {
+      const accountPath = parts[0].startsWith('@') || ['user', 'c'].includes(parts[0].toLowerCase());
+      if (detectedPlatform === 'instagram' || detectedPlatform === 'tiktok' || accountPath) {
+        for (let index = 0; index < parts.length; index += 1) parts[index] = parts[index].toLowerCase();
+      }
+    }
+    const pathname = parts.length ? `/${parts.join('/')}` : '';
+    const platformTrailingSlash = detectedPlatform === 'instagram' && pathname ? '/' : '';
+    return `https://${hostname}${pathname}${platformTrailingSlash}`;
+  } catch (error) {
+    return value.toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '');
+  }
+}
+
+function buildCandidateIdentity(platform, profileUrl, authorName) {
+  const normalized = normalizedPlatform(platform, profileUrl) || 'unknown';
+  const normalizedProfileUrl = normalizeProfileIdentity(normalized, profileUrl);
+  const normalizedAuthor = clean(authorName).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
+  const identityKey = normalizedProfileUrl
+    ? `profile:${normalized}:${normalizedProfileUrl}`
+    : `author:${normalized}:${normalizedAuthor || 'unknown'}`;
+  return {
+    identityKey,
+    identityKeyHash: crypto.createHash('sha256').update(identityKey).digest('hex')
+  };
 }
 
 function redactKnownSecrets(value, secrets = []) {
@@ -556,6 +607,11 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
     throw new Error(`${PROVIDER_LABELS[provider] || provider} is not available for Finder evidence analysis`);
   }
   const setting = await getSetting(providerKey('ai', provider), legacyKeysFor('ai', provider));
+  const creatorContext = await resolveExistingCreatorContext(
+    evidence.target_platform || video.platform,
+    evidence.author_profile_url || video.author_profile_url,
+    evidence.author_name || evidence.video_author_name || video.author_name || video.kol_name
+  );
   const systemPrompt = [
     'You are a KOL Finder evidence analyst.',
     'Return valid JSON only. Do not include Markdown, explanations, or chain-of-thought.',
@@ -563,6 +619,7 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
     'Evaluate in two layers: (1) video evidence fit and multi-label evidence_signals, and (2) creator profile / account quality.',
     'Assign zero or more evidence_signals from competitor, category, use_case, feature, community. A video may match multiple signals.',
     'Do not analyze cooperation performance. Do not assume comments are available.',
+    'Existing creator history is advisory context only. It must not auto-approve, auto-reject, or replace current video evidence.',
     'AI score is for ranking only; do not use it as a hard filter to reject candidates.',
     `Enter raw candidates when: (1) hard_filter passes, (2) at least one signal score >= ${MIN_RELEVANT_SIGNAL_SCORE} (competitor, category, use_case, feature, or community), and (3) risk is not high.`,
     'If the above conditions are met, set enter_raw_candidates = true and recommended_status = manual_review (or new if strong).',
@@ -581,9 +638,29 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
         language: strategy.language || '',
         goal: strategy.campaign_goal || ''
       },
+      global_product: {
+        id: strategy.product_id,
+        brand: strategy.product_brand || '',
+        name: strategy.product_name || '',
+        sku: strategy.product_sku || '',
+        category: strategy.product_category || '',
+        product_url: strategy.product_url || '',
+        price: strategy.product_price,
+        currency: strategy.product_currency || '',
+        description: strategy.product_description || '',
+        selling_points: parseJson(strategy.product_selling_points, strategy.product_selling_points || [])
+      },
+      campaign_product: {
+        id: strategy.campaign_product_id,
+        role: strategy.role || '',
+        priority: strategy.priority,
+        campaign_brief: strategy.campaign_brief || '',
+        status: strategy.campaign_product_status || ''
+      },
       product_context: strategy.product_context || {},
       persona_config: strategy.persona_config || {},
-      finder_handoff: strategy.finder_handoff || {}
+      finder_handoff: strategy.finder_handoff || {},
+      existing_creator_context: creatorContext?.ai_summary || { known_creator: false }
     }, null, 2),
     '',
     'Video evidence:',
@@ -679,22 +756,236 @@ function buildUrl(baseUrl, path, params = {}) {
   return `${normalizedBase}${normalizedPath}${queryString ? `?${queryString}` : ''}`;
 }
 
-async function getReadyStrategy(strategyId) {
-  const row = await dbOperations.get(`
+async function scopedGet(sql, params, transaction = null) {
+  if (!transaction) return dbOperations.get(sql, params);
+  const rows = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.SELECT,
+    transaction,
+    logging: false
+  });
+  return rows[0] || null;
+}
+
+async function scopedRun(sql, params, transaction = null) {
+  if (!transaction) return dbOperations.run(sql, params);
+  const [result, metadata] = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.RAW,
+    transaction,
+    logging: false
+  });
+  return {
+    id: /^\s*INSERT\b/i.test(sql) ? (Number(result) || 0) : 0,
+    changes: Number(metadata !== undefined ? metadata : result) || 0
+  };
+}
+
+async function scopedQuery(sql, params, transaction = null) {
+  if (!transaction) return dbOperations.query(sql, params);
+  return sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.SELECT,
+    transaction,
+    logging: false
+  });
+}
+
+async function getReadyStrategy(strategyId, { requireActiveProduct = false, transaction = null } = {}) {
+  const row = await scopedGet(`
     SELECT ks.*, c.name as campaign_name, c.brand as campaign_brand, c.product as campaign_product
     FROM kol_strategies ks
     LEFT JOIN campaigns c ON c.id = ks.campaign_id
-    WHERE ks.id = ?
-  `, [strategyId]);
+    WHERE ks.id = ?${transaction ? ' FOR UPDATE' : ''}
+  `, [strategyId], transaction);
   if (!row) throw new Error('Strategy not found');
   if (row.status !== 'ready') throw new Error('Only published Strategy can start Finder');
+  let campaignProduct = null;
+  if (row.campaign_product_id) {
+    campaignProduct = await scopedGet(`
+      SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority,
+        cp.campaign_brief, cp.status AS campaign_product_status,
+        p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
+        p.category AS product_category, p.product_url, p.price AS product_price,
+        p.currency AS product_currency, p.description AS product_description,
+        p.selling_points AS product_selling_points, p.status AS product_status
+      FROM campaign_products cp
+      JOIN products p ON p.id = cp.product_id
+      WHERE cp.id = ? AND cp.campaign_id = ?${transaction ? ' FOR UPDATE' : ''}
+    `, [row.campaign_product_id, row.campaign_id], transaction);
+  }
+  if (requireActiveProduct && !campaignProduct) {
+    throw new Error('Ready Strategy requires a valid Campaign Product binding');
+  }
+  if (requireActiveProduct && campaignProduct.campaign_product_status !== 'active') {
+    throw new Error('Campaign Product must be active before starting Finder');
+  }
+  if (requireActiveProduct && campaignProduct.product_status !== 'active') {
+    throw new Error('Product must be active before starting Finder');
+  }
   return {
     ...row,
+    ...(campaignProduct || {}),
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
     scoring_weights: parseJson(row.scoring_weights, {}),
     finder_handoff: parseJson(row.finder_handoff, {})
+  };
+}
+
+function taskBindingError(message) {
+  return Object.assign(new Error(message), { status: 409 });
+}
+
+async function getReadyStrategyForTask(task, { transaction = null } = {}) {
+  if (!task?.campaign_product_id) throw taskBindingError('Finder task requires a Campaign Product binding');
+  let strategy;
+  try {
+    strategy = await getReadyStrategy(task.strategy_id, { requireActiveProduct: true, transaction });
+  } catch (error) {
+    throw taskBindingError(error.message);
+  }
+  if (Number(strategy.campaign_id) !== Number(task.campaign_id)) {
+    throw taskBindingError('Finder task campaign does not match its Strategy');
+  }
+  if (Number(strategy.campaign_product_id) !== Number(task.campaign_product_id)) {
+    throw taskBindingError('Finder task Campaign Product does not match its Strategy');
+  }
+  return strategy;
+}
+
+async function withActiveTaskBindingForWrite(taskId, callback) {
+  return sequelize.transaction(async (transaction) => {
+    const task = await scopedGet('SELECT * FROM finder_tasks WHERE id = ? FOR UPDATE', [taskId], transaction);
+    if (!task) throw Object.assign(new Error('Finder task not found'), { status: 404 });
+    const strategy = await getReadyStrategyForTask(task, { transaction });
+    return callback({ task, strategy, transaction });
+  });
+}
+
+function usernameFromProfileUrl(platform, profileUrl) {
+  const normalized = normalizeProfileIdentity(platform, profileUrl);
+  if (!normalized) return '';
+  try {
+    const parts = new URL(normalized).pathname.split('/').filter(Boolean);
+    const first = clean(parts[0]);
+    if (!first) return '';
+    if (normalizedPlatform(platform, normalized) === 'youtube' && first.startsWith('@')) return first.slice(1).toLowerCase();
+    if (['instagram', 'tiktok'].includes(normalizedPlatform(platform, normalized))) return first.replace(/^@/, '').toLowerCase();
+    return first.replace(/^@/, '').toLowerCase();
+  } catch (error) {
+    return '';
+  }
+}
+
+function creatorContextSummary(matched, cooperationHistory) {
+  const history = Array.isArray(cooperationHistory) ? cooperationHistory : [];
+  const completed = history.filter((item) => ['completed', 'complete', 'done'].includes(clean(item.status || item.content_status).toLowerCase())).length;
+  const issues = history.filter((item) => ['cancelled', 'failed', 'disputed', 'issue'].includes(clean(item.status || item.project_status).toLowerCase())).length;
+  return {
+    known_creator: true,
+    campaign_count: history.length,
+    cooperation_status: clean(matched.cooperation_status) || 'unknown',
+    do_not_contact: clean(matched.cooperation_status).toLowerCase() === 'do_not_contact',
+    risk_category: clean(matched.cooperation_risk_category) || 'none',
+    completed_count: completed,
+    issue_count: issues
+  };
+}
+
+async function resolveExistingCreatorContext(platform, profileUrl, authorName) {
+  const normalized = normalizedPlatform(platform, profileUrl) || 'unknown';
+  const normalizedProfileUrl = normalizeProfileIdentity(normalized, profileUrl);
+  const normalizedAuthor = clean(authorName).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
+  const customerFields = `c.id AS customer_id, c.name AS customer_name,
+    c.cooperation_status, c.cooperation_risk_category, c.cooperation_risk_reason,
+    c.country_region AS customer_country_region`;
+  let matched = null;
+
+  if (normalizedProfileUrl) {
+    const profileUrlHash = computeUrlHash(normalizedProfileUrl);
+    matched = await dbOperations.get(`
+      SELECT ${customerFields}, kpa.id AS platform_account_id,
+        kpa.platform AS account_platform, kpa.username AS account_username,
+        kpa.profile_url AS account_profile_url, kpa.followers_text AS account_followers
+      FROM kol_platform_accounts kpa
+      JOIN customers c ON c.id = kpa.customer_id
+      WHERE LOWER(kpa.platform) = ?
+        AND (kpa.profile_url_hash = ? OR kpa.profile_url = ?)
+      ORDER BY kpa.id ASC
+      LIMIT 1
+    `, [normalized, profileUrlHash, normalizedProfileUrl]);
+
+    if (!matched) {
+      const platformColumn = normalized === 'youtube'
+        ? 'youtube_url'
+        : normalized === 'instagram'
+          ? 'instagram_url'
+          : normalized === 'tiktok'
+            ? 'tiktok_url'
+            : 'profile_url';
+      matched = await dbOperations.get(`
+        SELECT ${customerFields}, NULL AS platform_account_id,
+          ? AS account_platform, NULL AS account_username,
+          ${platformColumn} AS account_profile_url, NULL AS account_followers
+        FROM customers c
+        WHERE c.profile_url = ? OR c.${platformColumn} = ?
+        ORDER BY c.id ASC
+        LIMIT 1
+      `, [normalized, normalizedProfileUrl, normalizedProfileUrl]);
+    }
+    if (!matched) {
+      const username = usernameFromProfileUrl(normalized, normalizedProfileUrl);
+      if (username) {
+        matched = await dbOperations.get(`
+          SELECT ${customerFields}, kpa.id AS platform_account_id,
+            kpa.platform AS account_platform, kpa.username AS account_username,
+            kpa.profile_url AS account_profile_url, kpa.followers_text AS account_followers
+          FROM kol_platform_accounts kpa
+          JOIN customers c ON c.id = kpa.customer_id
+          WHERE LOWER(kpa.platform) = ? AND REPLACE(LOWER(kpa.username), '@', '') = ?
+          ORDER BY kpa.id ASC
+          LIMIT 1
+        `, [normalized, username]);
+      }
+    }
+  } else if (normalizedAuthor) {
+    matched = await dbOperations.get(`
+      SELECT ${customerFields}, kpa.id AS platform_account_id,
+        kpa.platform AS account_platform, kpa.username AS account_username,
+        kpa.profile_url AS account_profile_url, kpa.followers_text AS account_followers
+      FROM kol_platform_accounts kpa
+      JOIN customers c ON c.id = kpa.customer_id
+      WHERE LOWER(kpa.platform) = ? AND LOWER(kpa.username) = ?
+      ORDER BY kpa.id ASC
+      LIMIT 1
+    `, [normalized, normalizedAuthor]);
+  }
+
+  if (!matched) return null;
+  const cooperationHistory = await dbOperations.query(`
+    SELECT campaign_id, target_platform, project_status, priority_level,
+      candidate_priority_score, outreach_status, negotiation_status,
+      contract_status, payment_status, content_status, status, updated_at
+    FROM campaign_kols
+    WHERE customer_id = ?
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 20
+  `, [matched.customer_id]);
+  return {
+    customer_id: matched.customer_id,
+    cooperation_status: matched.cooperation_status,
+    cooperation_risk_category: matched.cooperation_risk_category,
+    platform_account: matched.platform_account_id ? {
+      id: matched.platform_account_id,
+      platform: matched.account_platform,
+      username: matched.account_username,
+      profile_url: matched.account_profile_url,
+      followers: matched.account_followers
+    } : null,
+    cooperation_history: cooperationHistory,
+    ai_summary: creatorContextSummary(matched, cooperationHistory)
   };
 }
 
@@ -897,6 +1188,20 @@ function buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetP
       persona_config: strategy.persona_config,
       scoring_weights: strategy.scoring_weights,
       finder_handoff: strategy.finder_handoff
+    },
+    product: {
+      id: strategy.product_id,
+      name: strategy.product_name || '',
+      brand: strategy.product_brand || '',
+      sku: strategy.product_sku || '',
+      description: strategy.product_description || '',
+      selling_points: parseJson(strategy.product_selling_points, strategy.product_selling_points || [])
+    },
+    campaign_product: {
+      id: strategy.campaign_product_id,
+      role: strategy.role || '',
+      priority: strategy.priority,
+      campaign_brief: strategy.campaign_brief || ''
     },
     discovery: {
       keywords,
@@ -1243,45 +1548,21 @@ function profileKey(candidate) {
   return `name:${candidate.platform}:${candidate.kol_name.toLowerCase()}`;
 }
 
-async function rawCandidateExists(candidate, strategyId) {
+async function rawCandidateExists(candidate, strategyId, transaction = null) {
   if (candidate.profile_url) {
-    const row = await dbOperations.get('SELECT * FROM raw_candidates WHERE strategy_id = ? AND profile_url = ? LIMIT 1', [strategyId, candidate.profile_url]);
-    if (row) return row;
+    return scopedGet('SELECT * FROM raw_candidates WHERE strategy_id = ? AND profile_url = ? LIMIT 1', [strategyId, candidate.profile_url], transaction);
   }
-  if (candidate.email) {
-    const row = await dbOperations.get('SELECT * FROM raw_candidates WHERE strategy_id = ? AND email = ? LIMIT 1', [strategyId, candidate.email]);
-    if (row) return row;
-  }
-  return dbOperations.get('SELECT * FROM raw_candidates WHERE strategy_id = ? AND platform = ? AND kol_name = ? LIMIT 1', [strategyId, candidate.platform, candidate.kol_name]);
+  return scopedGet('SELECT * FROM raw_candidates WHERE strategy_id = ? AND platform = ? AND kol_name = ? LIMIT 1', [strategyId, candidate.platform, candidate.kol_name], transaction);
 }
 
-async function masterExists(candidate) {
-  if (candidate.profile_url) {
-    const row = await dbOperations.get(
-      'SELECT * FROM customers WHERE profile_url = ? OR youtube_url = ? OR instagram_url = ? OR tiktok_url = ? LIMIT 1',
-      [candidate.profile_url, candidate.profile_url, candidate.profile_url, candidate.profile_url]
-    );
-    if (row) return row;
-  }
-  if (candidate.email) {
-    const row = await dbOperations.get('SELECT * FROM customers WHERE email = ? LIMIT 1', [candidate.email]);
-    if (row) return row;
-  }
-  if (candidate.kol_name) {
-    return dbOperations.get('SELECT * FROM customers WHERE name = ? LIMIT 1', [candidate.kol_name]);
-  }
-  return null;
-}
-
-async function upsertRawCandidate(candidate, task, provider) {
+async function upsertRawCandidate(candidate, task, provider, creatorContext = null, transaction = null) {
   if (!candidate.kol_name && !candidate.profile_url) {
     return { inserted: false, skipped: true, reason: 'Missing kol_name/profile_url' };
   }
-  const existing = await rawCandidateExists(candidate, task.strategy_id);
-  const desiredStatus = ['ignored', 'error', 'manual_review', 'risk_review'].includes(candidate.status) ? candidate.status : '';
-  const master = await masterExists(candidate);
-  const globalRisk = master?.cooperation_status === 'do_not_contact';
-  const status = desiredStatus || (globalRisk ? 'risk_review' : (master ? 'duplicate' : 'new'));
+  const existing = await rawCandidateExists(candidate, task.strategy_id, transaction);
+  const desiredStatus = ['new', 'ignored', 'error', 'manual_review', 'risk_review'].includes(candidate.status) ? candidate.status : '';
+  const globalRisk = creatorContext?.cooperation_status === 'do_not_contact';
+  const status = desiredStatus || 'new';
   const rawData = JSON.stringify({
     provider,
     finder_task_id: task.id,
@@ -1289,15 +1570,16 @@ async function upsertRawCandidate(candidate, task, provider) {
     source_platform: candidate.source_platform,
     target_platform: candidate.target_platform,
     global_cooperation_risk: globalRisk ? {
-      customer_id: master.id,
-      cooperation_status: master.cooperation_status,
-      category: master.cooperation_risk_category || '',
-      reason: master.cooperation_risk_reason || ''
+      customer_id: creatorContext.customer_id,
+      cooperation_status: creatorContext.cooperation_status,
+      category: creatorContext.cooperation_risk_category || '',
+      reason: creatorContext.cooperation_risk_reason || ''
     } : undefined,
+    existing_creator_context: creatorContext || undefined,
     data: candidate.raw_data
   });
   if (existing) {
-    await dbOperations.run(
+    await scopedRun(
       `UPDATE raw_candidates SET
        profile_url = COALESCE(NULLIF(profile_url, ''), ?),
        followers = COALESCE(NULLIF(followers, ''), ?),
@@ -1347,20 +1629,20 @@ async function upsertRawCandidate(candidate, task, provider) {
         status,
         status,
         status,
-        master?.cooperation_risk_category || '',
+        creatorContext?.cooperation_risk_category || '',
         status,
-        master?.cooperation_risk_reason || '',
+        creatorContext?.cooperation_risk_reason || '',
         candidate.error_message,
         candidate.ai_score,
         candidate.ai_match_reason,
         candidate.matched_persona,
         rawData,
         existing.id
-      ]
+      ], transaction
     );
-    return { inserted: false, duplicate: true, status: existing.status || status };
+    return { inserted: false, duplicate: true, id: existing.id, status: existing.status || status };
   }
-  const result = await dbOperations.run(
+  const result = await scopedRun(
     `INSERT INTO raw_candidates
      (finder_task_id, campaign_id, strategy_id, platform, kol_name, profile_url, video_url, video_title,
       followers, avg_views, email, country_region, matched_keywords, ai_score, ai_match_reason,
@@ -1399,11 +1681,90 @@ async function upsertRawCandidate(candidate, task, provider) {
       candidate.evidence_type,
       candidate.source_query,
       status === 'ignored' ? 'project' : status === 'risk_review' ? 'global' : '',
-      status === 'risk_review' ? master?.cooperation_risk_category || '' : '',
-      status === 'risk_review' ? master?.cooperation_risk_reason || '' : ''
-    ]
+      status === 'risk_review' ? creatorContext?.cooperation_risk_category || '' : '',
+      status === 'risk_review' ? creatorContext?.cooperation_risk_reason || '' : ''
+    ], transaction
   );
   return { inserted: true, id: result.id, status };
+}
+
+function uniqueEvidence(values = []) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = clean(value?.video_source_id || value?.evidence_id || value?.video_url || value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function upsertRawCandidateProductFit(candidate, task, identity, creatorContext, rawCandidateId, transaction = null) {
+  if (!task.campaign_product_id) {
+    throw new Error('Finder task is missing its Campaign Product binding');
+  }
+  const existingFit = await scopedGet(
+    `SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ? AND identity_key_hash = ?${transaction ? ' FOR UPDATE' : ''}`,
+    [task.campaign_product_id, identity.identityKeyHash], transaction
+  );
+  const previousSummary = parseJson(existingFit?.evidence_summary, {}) || {};
+  const evidence = uniqueEvidence([...(Array.isArray(previousSummary.evidence) ? previousSummary.evidence : []), ...(Array.isArray(candidate.raw_data?.evidence) ? candidate.raw_data.evidence : [])]);
+  const evidenceIds = [...new Set([...(previousSummary.evidence_ids || []), ...(candidate.raw_data?.evidence_ids || [])])];
+  const analysisIds = [...new Set([...(previousSummary.analysis_ids || []), ...(candidate.raw_data?.analysis_ids || [])])];
+  const videoSourceIds = [...new Set([...(previousSummary.video_source_ids || []), ...(candidate.raw_data?.video_source_ids || [])])];
+  const evidenceSummary = JSON.stringify({
+    identity_key: identity.identityKey,
+    evidence_count: evidence.length,
+    evidence_ids: evidenceIds,
+    analysis_ids: analysisIds,
+    video_source_ids: videoSourceIds,
+    evidence,
+    best_score: candidate.scoring_breakdown?.best_score ?? candidate.ai_score,
+    average_score: candidate.scoring_breakdown?.average_score ?? candidate.ai_score,
+    matched_persona: candidate.matched_persona,
+    recommendation: candidate.ai_match_reason,
+    existing_creator_context: creatorContext || null
+  });
+  const identityStatus = creatorContext ? 'known_kol_new_product_fit' : 'new_kol';
+  await scopedRun(
+    `INSERT INTO raw_candidate_product_fits
+     (latest_raw_candidate_id, existing_customer_id, campaign_product_id, platform,
+      identity_key_hash, strategy_id, finder_task_id, identity_status, fit_score,
+      matched_persona, evidence_summary, decision_status, analysis_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1)
+     ON DUPLICATE KEY UPDATE
+      latest_raw_candidate_id = VALUES(latest_raw_candidate_id),
+      existing_customer_id = COALESCE(VALUES(existing_customer_id), existing_customer_id),
+      platform = VALUES(platform),
+      strategy_id = VALUES(strategy_id),
+      finder_task_id = VALUES(finder_task_id),
+      identity_status = 'existing_product_fit_updated',
+      fit_score = VALUES(fit_score),
+      matched_persona = VALUES(matched_persona),
+      evidence_summary = VALUES(evidence_summary),
+      analysis_version = analysis_version + 1,
+      decision_status = CASE
+        WHEN decision_status IN ('approved', 'rejected') THEN decision_status
+        ELSE VALUES(decision_status)
+      END,
+      updated_at = CURRENT_TIMESTAMP`,
+    [
+      rawCandidateId,
+      creatorContext?.customer_id || null,
+      task.campaign_product_id,
+      candidate.platform,
+      identity.identityKeyHash,
+      task.strategy_id,
+      task.id,
+      identityStatus,
+      candidate.ai_score,
+      candidate.matched_persona,
+      evidenceSummary
+    ], transaction
+  );
+  return scopedGet(
+    'SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ? AND identity_key_hash = ?',
+    [task.campaign_product_id, identity.identityKeyHash], transaction
+  );
 }
 
 function appendProviderErrorAttempts(attempts, error, fallback) {
@@ -1494,7 +1855,7 @@ function toMysqlDatetime(value) {
   return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-async function updateTask(id, patch) {
+async function updateTask(id, patch, transaction = null) {
   const fields = Object.keys(patch);
   if (!fields.length) return;
   const assignments = fields.map((field) => `${field} = ?`).join(', ');
@@ -1504,9 +1865,9 @@ async function updateTask(id, patch) {
     }
     return patch[field];
   });
-  await dbOperations.run(
+  await scopedRun(
     `UPDATE finder_tasks SET ${assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [...values, id]
+    [...values, id], transaction
   );
 }
 
@@ -1545,7 +1906,7 @@ async function ensureVideoSnapshot(video) {
   }
 }
 
-async function upsertVideoSourceForEvidence(task, evidence) {
+async function upsertVideoSourceForEvidence(task, evidence, transaction = null) {
   const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
   const sourceUrl = evidence.video_url;
   const normalized = normalizeVideoUrl(sourceUrl);
@@ -1554,21 +1915,21 @@ async function upsertVideoSourceForEvidence(task, evidence) {
 
   let video = null;
   if (normalized.platform === 'tiktok' && platformVideoId) {
-    video = await dbOperations.get(
+    video = await scopedGet(
       'SELECT * FROM video_sources WHERE platform = ? AND platform_video_id = ? ORDER BY id ASC LIMIT 1',
-      [normalized.platform, platformVideoId]
+      [normalized.platform, platformVideoId], transaction
     );
     reusedByTikTokId = Boolean(video);
   }
   if (!video) {
-    video = await dbOperations.get(
+    video = await scopedGet(
       'SELECT * FROM video_sources WHERE canonical_url_hash = ?',
-      [normalized.canonicalUrlHash]
+      [normalized.canonicalUrlHash], transaction
     );
   }
 
   if (video) {
-    await dbOperations.run(
+    await scopedRun(
       `UPDATE video_sources SET
         platform = COALESCE(NULLIF(?, ''), platform),
         platform_video_id = COALESCE(NULLIF(?, ''), platform_video_id),
@@ -1592,11 +1953,11 @@ async function upsertVideoSourceForEvidence(task, evidence) {
         evidence.author_profile_url || '',
         `Finder video evidence task ${task.id}`,
         video.id
-      ]
+      ], transaction
     );
-    video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [video.id]);
+    video = await scopedGet('SELECT * FROM video_sources WHERE id = ?', [video.id], transaction);
   } else {
-    const result = await dbOperations.run(
+    const result = await scopedRun(
       `INSERT INTO video_sources
        (platform, platform_video_id, source_url, canonical_url, canonical_url_hash,
         title, kol_name, author_name, author_profile_url, notes, status, crawl_status, analysis_status)
@@ -1615,19 +1976,19 @@ async function upsertVideoSourceForEvidence(task, evidence) {
         'pending',
         'pending',
         'not_analyzed'
-      ]
+      ], transaction
     );
-    video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [result.id]);
+    video = await scopedGet('SELECT * FROM video_sources WHERE id = ?', [result.id], transaction);
   }
 
   // Link video to the task's campaign.
   const campaignId = task.campaign_id || evidence.campaign_id || null;
   if (campaignId) {
-    await dbOperations.run(
+    await scopedRun(
       `INSERT INTO campaign_videos (campaign_id, video_source_id, added_reason, added_by_finder_task_id)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
-      [campaignId, video.id, 'finder', task.id]
+      [campaignId, video.id, 'finder', task.id], transaction
     );
   }
 
@@ -1658,7 +2019,7 @@ function normalizeEvidenceInput(input = {}, task = {}, defaults = {}) {
   };
 }
 
-async function saveVideoEvidence(task, input, defaults = {}) {
+async function saveVideoEvidence(task, input, defaults = {}, transaction = null) {
   const evidence = normalizeEvidenceInput(input, task, defaults);
   if (!evidence.video_url) throw new Error('video_url is required');
   if (!isVideoEvidenceUrl(evidence.video_url)) throw new Error(`Not a supported video evidence URL: ${evidence.video_url}`);
@@ -1667,14 +2028,13 @@ async function saveVideoEvidence(task, input, defaults = {}) {
     throw new Error('MVP requires evidence_platform to equal target_platform');
   }
 
-  const video = await upsertVideoSourceForEvidence(task, evidence);
-  await ensureVideoSnapshot(video);
-  const existing = await dbOperations.get(
+  const video = await upsertVideoSourceForEvidence(task, evidence, transaction);
+  const existing = await scopedGet(
     'SELECT * FROM finder_video_evidence WHERE finder_task_id = ? AND video_source_id = ? LIMIT 1',
-    [task.id, video.id]
+    [task.id, video.id], transaction
   );
   if (existing) {
-    await dbOperations.run(
+    await scopedRun(
       `UPDATE finder_video_evidence SET
        video_source_id = ?, target_platform = ?, evidence_platform = ?, discovery_scope = ?, discovery_route = ?,
        source_signal = COALESCE(NULLIF(?, ''), source_signal),
@@ -1693,11 +2053,11 @@ async function saveVideoEvidence(task, input, defaults = {}) {
         evidence.evidence_reason,
         JSON.stringify(evidence.raw_data || {}),
         existing.id
-      ]
+      ], transaction
     );
-    return { row: await dbOperations.get('SELECT * FROM finder_video_evidence WHERE id = ?', [existing.id]), inserted: false };
+    return { row: await scopedGet('SELECT * FROM finder_video_evidence WHERE id = ?', [existing.id], transaction), inserted: false, video };
   }
-  const result = await dbOperations.run(
+  const result = await scopedRun(
     `INSERT INTO finder_video_evidence
      (finder_task_id, strategy_id, campaign_id, video_source_id, target_platform, evidence_platform,
       discovery_scope, discovery_route, source_signal, source_query, evidence_reason, status, raw_data)
@@ -1716,9 +2076,9 @@ async function saveVideoEvidence(task, input, defaults = {}) {
       evidence.evidence_reason,
       'discovered',
       JSON.stringify(evidence.raw_data || {})
-    ]
+    ], transaction
   );
-  return { row: await dbOperations.get('SELECT * FROM finder_video_evidence WHERE id = ?', [result.id]), inserted: true };
+  return { row: await scopedGet('SELECT * FROM finder_video_evidence WHERE id = ?', [result.id], transaction), inserted: true, video };
 }
 
 function failedQueryAudit(attempts = []) {
@@ -1735,7 +2095,13 @@ function failedQueryAudit(attempts = []) {
 async function processVideoEvidenceTask(taskId, options = {}) {
   const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
   if (!task) return;
-  const strategy = await getReadyStrategy(task.strategy_id);
+  let strategy;
+  try {
+    strategy = await getReadyStrategyForTask(task);
+  } catch (error) {
+    await updateTask(taskId, { status: 'failed', error_message: `Finder task binding failed: ${error.message}`, finished_at: new Date().toISOString() });
+    return;
+  }
   const rawRequest = parseJson(task.raw_request, {});
   const targetPlatform = clean(rawRequest.target_platform || options.targetPlatform || task.platform);
   const limit = Math.max(1, Math.min(Number(rawRequest.limit || options.limit || 10), 50));
@@ -1772,7 +2138,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
         skipped += 1;
         continue;
       }
-      const saved = await saveVideoEvidence(task, {
+      const saved = await withActiveTaskBindingForWrite(taskId, ({ task: activeTask, transaction }) => saveVideoEvidence(activeTask, {
         ...normalized,
         video_url: videoUrl,
         title: normalized.video_title || normalized.evidence_title,
@@ -1787,7 +2153,8 @@ async function processVideoEvidenceTask(taskId, options = {}) {
         source_query: normalized.source_query || keywords,
         discovery_scope: 'target_platform_only',
         discovery_route: 'target_platform_first'
-      });
+      }, transaction));
+      await ensureVideoSnapshot(saved.video);
       if (saved.inserted) insertedCount += 1;
       else skipped += 1;
     }
@@ -1865,10 +2232,10 @@ router.get('/', async (req, res) => {
 
 router.post('/:id/video-evidence/import', async (req, res) => {
   try {
-    const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
-    if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
-    const rawRequest = parseJson(task.raw_request, {});
-    const defaultTarget = clean(req.body?.target_platform || req.body?.targetPlatform || rawRequest.target_platform || task.platform).split(',')[0] || 'youtube';
+    const existingTask = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
+    if (!existingTask) return res.status(404).json({ success: false, error: 'Finder task not found' });
+    const rawRequest = parseJson(existingTask.raw_request, {});
+    const defaultTarget = clean(req.body?.target_platform || req.body?.targetPlatform || rawRequest.target_platform || existingTask.platform).split(',')[0] || 'youtube';
     const rows = Array.isArray(req.body?.video_evidence)
       ? req.body.video_evidence
       : Array.isArray(req.body?.videos)
@@ -1883,30 +2250,33 @@ router.post('/:id/video-evidence/import', async (req, res) => {
       try {
         const videoUrl = clean(row.video_url || row.source_url || row.url);
         const targetPlatform = clean(row.target_platform || defaultTarget || detectPlatformFromUrl(videoUrl));
-        const saved = await saveVideoEvidence(task, row, {
+        const saved = await withActiveTaskBindingForWrite(existingTask.id, ({ task, transaction }) => saveVideoEvidence(task, row, {
           target_platform: targetPlatform,
           evidence_platform: targetPlatform,
           source_signal: clean(row.source_signal || 'unclassified'),
           source_query: clean(row.source_query || req.body?.source_query || ''),
           discovery_scope: 'target_platform_only',
           discovery_route: 'target_platform_first'
-        });
+        }, transaction));
+        await ensureVideoSnapshot(saved.video);
         results.push({ success: true, inserted: saved.inserted, data: saved.row });
       } catch (error) {
+        if (error.status) throw error;
         results.push({ success: false, error: error.message, input: row });
       }
     }
 
     const inserted = results.filter((item) => item.success && item.inserted).length;
     const updated = results.filter((item) => item.success && !item.inserted).length;
-    await updateTask(task.id, {
-      success_count: Number(task.success_count || 0) + inserted,
-      result_count: Number(task.result_count || 0) + inserted,
+    await updateTask(existingTask.id, {
+      success_count: Number(existingTask.success_count || 0) + inserted,
+      result_count: Number(existingTask.result_count || 0) + inserted,
       raw_response_summary: JSON.stringify({ stage: 'manual_video_evidence_import', inserted, updated, failed: results.filter((item) => !item.success).length })
     });
     res.json({ success: true, data: { inserted, updated, failed: results.filter((item) => !item.success).length, results } });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    if (error.status) await updateTask(req.params.id, { status: 'failed', error_message: `Finder task binding failed: ${error.message}`, finished_at: new Date().toISOString() });
+    res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });
 
@@ -1965,7 +2335,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
-    const strategy = await getReadyStrategy(task.strategy_id);
+    const strategy = await getReadyStrategyForTask(task);
     const ids = (req.body?.evidence_ids || req.body?.evidenceIds || []).map(Number).filter(Boolean);
     let sql = `
       SELECT fve.*, vs.source_url as video_url, vs.title as video_title, vs.author_name as video_author_name,
@@ -1988,13 +2358,6 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     const results = [];
     for (const evidence of evidenceRows) {
       try {
-        await dbOperations.run(
-          `INSERT INTO video_ai_analysis_results
-           (video_source_id, analysis_type, analysis_scope_id, status)
-           VALUES (?, 'finder_evidence', ?, ?)
-           ON DUPLICATE KEY UPDATE status = VALUES(status), error_message = NULL, updated_at = CURRENT_TIMESTAMP`,
-          [evidence.video_source_id, evidence.id, 'running']
-        );
         const video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [evidence.video_source_id]);
         const snapshot = await dbOperations.get('SELECT * FROM video_snapshots WHERE video_source_id = ? ORDER BY snapshot_at DESC LIMIT 1', [evidence.video_source_id]);
         const ai = await runFinderEvidenceAnalysis(video || {}, snapshot, evidence, strategy);
@@ -2004,7 +2367,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
           finder_task_id: task.id,
           ...normalized
         });
-        await dbOperations.run(
+        await withActiveTaskBindingForWrite(task.id, ({ transaction }) => scopedRun(
           `INSERT INTO video_ai_analysis_results
            (video_source_id, analysis_type, analysis_scope_id, status, model_name, score, summary,
             raw_result, extra_data, evidence_signals, final_prompt)
@@ -2024,12 +2387,12 @@ router.post('/:id/evidence-analysis', async (req, res) => {
             extraData,
             JSON.stringify(normalized.evidence_signals),
             ai.finalPrompt
-          ]
-        );
-        await dbOperations.run('UPDATE finder_video_evidence SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['analyzed', evidence.id]);
+          ], transaction
+        ).then(() => scopedRun('UPDATE finder_video_evidence SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['analyzed', evidence.id], transaction)));
         successCount += 1;
         results.push({ evidence_id: evidence.id, success: true });
       } catch (error) {
+        if (error.status) throw error;
         failedCount += 1;
         await dbOperations.run(
           `INSERT INTO video_ai_analysis_results
@@ -2043,7 +2406,8 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     }
     res.json({ success: true, data: { success_count: successCount, failed_count: failedCount, results } });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    if (error.status) await updateTask(req.params.id, { status: 'failed', error_message: `Finder task binding failed: ${error.message}`, finished_at: new Date().toISOString() });
+    res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });
 
@@ -2051,7 +2415,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
-    const strategy = await getReadyStrategy(task.strategy_id);
+    const strategy = await getReadyStrategyForTask(task);
     const rows = await dbOperations.query(`
       SELECT fve.*, vai.id as analysis_id,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.content_relevance_score')) as content_relevance_score,
@@ -2099,23 +2463,37 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
     const groups = new Map();
     for (const row of rows) {
       const authorName = clean(row.author_name || row.video_author_name || row.kol_name);
-      if (!authorName) continue;
-      if (!clean(row.author_profile_url) && !clean(row.video_url)) continue;
-      const key = clean(row.author_profile_url)
-        ? `profile:${clean(row.author_profile_url).toLowerCase().replace(/\/$/, '')}`
-        : `author:${row.evidence_platform}:${authorName.toLowerCase()}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(row);
+      const profileUrl = clean(row.author_profile_url);
+      if (!authorName && !profileUrl) continue;
+      if (!profileUrl && !clean(row.video_url)) continue;
+      const identity = buildCandidateIdentity(row.target_platform || row.evidence_platform, profileUrl, authorName);
+      if (!groups.has(identity.identityKeyHash)) {
+        groups.set(identity.identityKeyHash, {
+          identity,
+          normalizedProfileUrl: normalizeProfileIdentity(row.target_platform || row.evidence_platform, profileUrl),
+          rows: []
+        });
+      }
+      groups.get(identity.identityKeyHash).rows.push(row);
     }
 
-    const inserted = [];
-    const skipped = [];
+    const generated = await sequelize.transaction(async (transaction) => {
+      const lockedStrategy = await getReadyStrategyForTask(task, { transaction });
+      await scopedGet('SELECT id FROM campaign_products WHERE id = ? FOR UPDATE', [task.campaign_product_id], transaction);
+      const inserted = [];
+      const skipped = [];
+      const productFits = [];
     for (const evidenceGroup of groups.values()) {
-      const sorted = evidenceGroup.sort((a, b) => Number(b.candidate_priority_score || 0) - Number(a.candidate_priority_score || 0));
+      const sorted = evidenceGroup.rows.sort((a, b) => Number(b.candidate_priority_score || 0) - Number(a.candidate_priority_score || 0));
       const best = sorted[0];
       const averageScore = Math.round(sorted.reduce((sum, item) => sum + Number(item.candidate_priority_score || 0), 0) / sorted.length);
       const recommendedStatus = clean(best.recommended_status) || 'manual_review';
-      const matchedPersona = inferPersonaFromEvidence(best, strategy);
+      const matchedPersona = inferPersonaFromEvidence(best, lockedStrategy);
+      const creatorContext = await resolveExistingCreatorContext(
+        best.target_platform || best.evidence_platform,
+        evidenceGroup.normalizedProfileUrl,
+        best.author_name || best.video_author_name || best.kol_name
+      );
       const candidate = {
         platform: best.target_platform,
         target_platform: best.target_platform,
@@ -2123,7 +2501,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
         discovery_route: 'target_platform_first',
         source_agent: 'video_evidence_finder',
         kol_name: clean(best.author_name || best.video_author_name || best.kol_name),
-        profile_url: clean(best.author_profile_url),
+        profile_url: evidenceGroup.normalizedProfileUrl,
         video_url: clean(best.video_url),
         video_title: clean(best.title || best.video_title),
         evidence_url: clean(best.video_url),
@@ -2169,17 +2547,44 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
           }))
         }
       };
-      const saved = await upsertRawCandidate(candidate, task, 'video_evidence_finder');
+      const saved = await upsertRawCandidate(candidate, task, 'video_evidence_finder', creatorContext, transaction);
+      if (saved.id) {
+        productFits.push(await upsertRawCandidateProductFit(
+          candidate,
+          task,
+          evidenceGroup.identity,
+          creatorContext,
+          saved.id,
+          transaction
+        ));
+      }
       if (saved.inserted) inserted.push(saved);
       else skipped.push(saved);
     }
     await updateTask(task.id, {
       result_count: Number(task.result_count || 0) + inserted.length,
-      raw_response_summary: JSON.stringify({ stage: 'generate_candidates_from_evidence', inserted: inserted.length, skipped: skipped.length })
+      raw_response_summary: JSON.stringify({
+        stage: 'generate_candidates_from_evidence',
+        inserted: inserted.length,
+        skipped: skipped.length,
+        product_fits: productFits.length
+      })
+    }, transaction);
+      return { inserted, skipped, productFits };
     });
-    res.json({ success: true, data: { inserted_count: inserted.length, skipped_count: skipped.length, inserted, skipped } });
+    const { inserted, skipped, productFits } = generated;
+    res.json({
+      success: true,
+      data: {
+        inserted_count: inserted.length,
+        skipped_count: skipped.length,
+        product_fit_count: productFits.length,
+        inserted,
+        skipped
+      }
+    });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });
 
@@ -2233,7 +2638,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const strategy = await getReadyStrategy(body.strategy_id);
     const targetPlatform = clean(body.target_platform);
     if (!TARGET_PLATFORMS.includes(targetPlatform)) {
       return res.status(400).json({
@@ -2243,32 +2647,45 @@ router.post('/', async (req, res) => {
     }
     const limit = Math.max(1, Math.min(Number(body.limit || 10), 50));
     const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
-    const keywords = discoveryKeywords(strategy);
-    const rawRequest = { strategy_id: strategy.id, target_platform: targetPlatform, limit };
-    const result = await dbOperations.run(
-      'INSERT INTO finder_tasks ' +
-      '(campaign_id, strategy_id, name, platform, keywords, status, search_sources, ' +
-      'discovery_routes, raw_request, notes, source_agent) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        strategy.campaign_id,
-        strategy.id,
-        strategy.name + ' Finder ' + new Date().toLocaleString(),
-        targetPlatform,
-        keywords,
-        'draft',
-        JSON.stringify([searchSource]),
-        JSON.stringify(['target_platform_first']),
-        JSON.stringify(rawRequest),
-        clean(body.notes),
-        'video_evidence_finder'
-      ]
-    );
-    const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [result.id]);
+    const task = await sequelize.transaction(async (transaction) => {
+      const strategy = await getReadyStrategy(body.strategy_id, {
+        requireActiveProduct: true,
+        transaction
+      });
+      const keywords = discoveryKeywords(strategy);
+      const rawRequest = {
+        strategy_id: strategy.id,
+        campaign_product_id: strategy.campaign_product_id,
+        target_platform: targetPlatform,
+        limit
+      };
+      const result = await scopedRun(
+        'INSERT INTO finder_tasks ' +
+        '(campaign_id, campaign_product_id, strategy_id, name, platform, keywords, status, search_sources, ' +
+        'discovery_routes, raw_request, notes, source_agent) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          strategy.campaign_id,
+          strategy.campaign_product_id,
+          strategy.id,
+          strategy.name + ' Finder ' + new Date().toLocaleString(),
+          targetPlatform,
+          keywords,
+          'draft',
+          JSON.stringify([searchSource]),
+          JSON.stringify(['target_platform_first']),
+          JSON.stringify(rawRequest),
+          clean(body.notes),
+          'video_evidence_finder'
+        ],
+        transaction
+      );
+      return scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [result.id], transaction);
+    });
     if (process.env.NODE_ENV !== 'test') {
       setImmediate(() => {
-        processVideoEvidenceTask(result.id, { targetPlatform, limit }).catch((error) => {
-          updateTask(result.id, {
+        processVideoEvidenceTask(task.id, { targetPlatform, limit }).catch((error) => {
+          updateTask(task.id, {
             status: 'failed',
             error_message: error.message,
             finished_at: new Date().toISOString()
@@ -2294,3 +2711,4 @@ router.post('/:id/cancel', async (req, res) => {
 
 module.exports = router;
 module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
+module.exports.buildCandidateIdentity = buildCandidateIdentity;

@@ -6,7 +6,9 @@ import {
   DashboardOutlined,
   FileTextOutlined,
   PlayCircleOutlined,
+  ProductOutlined,
   ProfileOutlined,
+  ProjectOutlined,
   SearchOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -22,6 +24,8 @@ import Settings from './pages/Settings';
 import RawCandidates from './pages/RawCandidates';
 import CampaignKols from './pages/CampaignKols';
 import KolStrategy from './pages/KolStrategy';
+import Products from './pages/Products';
+import Campaigns from './pages/Campaigns';
 
 const { Header, Sider, Content } = Layout;
 
@@ -32,6 +36,8 @@ function App() {
 
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
+    { key: '/campaigns', icon: <ProjectOutlined />, label: '项目与产品' },
+    { key: '/products', icon: <ProductOutlined />, label: '产品目录' },
     { key: '/strategy', icon: <ProfileOutlined />, label: 'KOL 策略' },
     { key: '/finder', icon: <SearchOutlined />, label: 'KOL 寻找' },
     { key: '/customers', icon: <UserOutlined />, label: 'KOL 管理' },
@@ -63,6 +69,8 @@ function App() {
         <Content style={{ margin: '0 16px' }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/campaigns" element={<Campaigns />} />
+            <Route path="/products" element={<Products />} />
             <Route path="/strategy" element={<KolStrategy />} />
             <Route path="/finder" element={<RawCandidates />} />
             <Route path="/customers" element={<Customers />} />

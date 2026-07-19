@@ -2,6 +2,7 @@ module.exports = (sequelize, DataTypes) => {
   const FinderTask = sequelize.define('FinderTask', {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     campaign_id: DataTypes.INTEGER,
+    campaign_product_id: DataTypes.INTEGER,
     strategy_id: DataTypes.INTEGER,
     name: DataTypes.STRING(255),
     platform: DataTypes.STRING(100),
@@ -28,6 +29,7 @@ module.exports = (sequelize, DataTypes) => {
 
   FinderTask.associate = models => {
     FinderTask.belongsTo(models.Campaign, { foreignKey: 'campaign_id', onDelete: 'SET NULL' });
+    FinderTask.belongsTo(models.CampaignProduct, { foreignKey: 'campaign_product_id', onDelete: 'SET NULL' });
     FinderTask.belongsTo(models.KolStrategy, { foreignKey: 'strategy_id', onDelete: 'SET NULL' });
     FinderTask.hasMany(models.FinderVideoEvidence, { foreignKey: 'finder_task_id', onDelete: 'CASCADE' });
     FinderTask.hasMany(models.RawCandidate, { foreignKey: 'finder_task_id', onDelete: 'SET NULL' });

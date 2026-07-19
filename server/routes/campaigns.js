@@ -3,13 +3,313 @@ const { dbOperations } = require('../database');
 
 const router = express.Router();
 
+const CAMPAIGN_PRODUCT_ROLES = new Set(['hero', 'secondary', 'test']);
+const CAMPAIGN_PRODUCT_STATUSES = new Set(['planned', 'active', 'paused', 'completed', 'archived']);
+const MYSQL_SIGNED_INT_MAX = 2147483647;
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function parsePathId(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function parseBodyId(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  return parsePathId(value);
+}
+
+function isNonNegativeIntegerNumber(value) {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
+    && value <= MYSQL_SIGNED_INT_MAX;
+}
+
+function isForeignKeyConstraintError(error) {
+  const code = error?.original?.code || error?.parent?.code || error?.code;
+  return error?.name === 'SequelizeForeignKeyConstraintError'
+    || code === 'ER_NO_REFERENCED_ROW_2'
+    || code === 'ER_ROW_IS_REFERENCED_2';
+}
+
+function toCampaignProduct(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    campaign_id: row.campaign_id,
+    product_id: row.product_id,
+    product: {
+      id: row.product_id,
+      brand: row.product_brand,
+      name: row.product_name,
+      sku: row.product_sku,
+      category: row.product_category,
+      product_url: row.product_url,
+      description: row.product_description,
+      selling_points: row.product_selling_points,
+      status: row.product_status
+    },
+    role: row.role,
+    priority: row.priority,
+    campaign_brief: row.campaign_brief,
+    status: row.status
+  };
+}
+
+async function getCampaignProduct(campaignId, campaignProductId) {
+  return dbOperations.get(
+    `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
+       p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
+       p.category AS product_category, p.product_url, p.description AS product_description,
+       p.selling_points AS product_selling_points, p.status AS product_status
+     FROM campaign_products cp
+     JOIN products p ON p.id = cp.product_id
+     WHERE cp.campaign_id = ? AND cp.id = ?`,
+    [campaignId, campaignProductId]
+  );
+}
+
+function validateCampaignProductValues(role, status) {
+  if (!CAMPAIGN_PRODUCT_ROLES.has(role)) return 'Invalid Campaign Product role';
+  if (!CAMPAIGN_PRODUCT_STATUSES.has(status)) return 'Invalid Campaign Product status';
+  return null;
+}
+
 router.get('/', async (req, res) => {
   try {
     const rows = await dbOperations.query(`
-      SELECT * FROM campaigns
-      ORDER BY CASE WHEN id = 1 THEN 0 ELSE 1 END, created_at DESC, id DESC
+      SELECT c.*,
+        COUNT(cp.id) AS associated_product_count,
+        COALESCE(SUM(CASE WHEN cp.status = 'active' THEN 1 ELSE 0 END), 0) AS active_product_count
+      FROM campaigns c
+      LEFT JOIN campaign_products cp ON cp.campaign_id = c.id
+      GROUP BY c.id
+      ORDER BY CASE WHEN c.id = 1 THEN 0 ELSE 1 END, c.created_at DESC, c.id DESC
     `);
     res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/:id/products', async (req, res) => {
+  try {
+    const campaignId = parsePathId(req.params.id);
+    if (campaignId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
+    const campaign = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const rows = await dbOperations.query(
+      `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
+         p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
+         p.category AS product_category, p.product_url, p.description AS product_description,
+         p.selling_points AS product_selling_points, p.status AS product_status
+       FROM campaign_products cp
+       JOIN products p ON p.id = cp.product_id
+       WHERE cp.campaign_id = ?
+       ORDER BY cp.priority DESC, cp.created_at ASC, cp.id ASC`,
+      [campaignId]
+    );
+    res.json({ success: true, data: rows.map(toCampaignProduct) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/products', async (req, res) => {
+  let campaignId = null;
+  let productId = null;
+  try {
+    campaignId = parsePathId(req.params.id);
+    productId = parseBodyId(req.body.product_id);
+    if (campaignId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
+    if (productId === null) {
+      return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
+    }
+
+    const role = req.body.role === undefined ? 'hero' : req.body.role;
+    const status = req.body.status === undefined ? 'active' : req.body.status;
+    const priority = req.body.priority === undefined ? 0 : req.body.priority;
+    if (hasOwn(req.body, 'campaign_brief') && typeof req.body.campaign_brief !== 'string') {
+      return res.status(400).json({ success: false, error: 'Campaign Product campaign_brief must be a string' });
+    }
+    const campaignBrief = hasOwn(req.body, 'campaign_brief') ? req.body.campaign_brief.trim() : null;
+    const validationError = validateCampaignProductValues(role, status);
+    if (validationError) {
+      return res.status(400).json({ success: false, error: validationError });
+    }
+    if (!isNonNegativeIntegerNumber(priority)) {
+      return res.status(400).json({ success: false, error: 'Campaign Product priority must be a non-negative integer number' });
+    }
+
+    const campaign = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+    const product = await dbOperations.get('SELECT id, status FROM products WHERE id = ?', [productId]);
+    if (!product) {
+      return res.status(404).json({ success: false, error: 'Product not found' });
+    }
+    if (product.status === 'archived') {
+      return res.status(409).json({ success: false, error: 'Archived Product cannot be attached to a Campaign' });
+    }
+    const duplicate = await dbOperations.get(
+      'SELECT id FROM campaign_products WHERE campaign_id = ? AND product_id = ?',
+      [campaignId, productId]
+    );
+    if (duplicate) {
+      return res.status(409).json({ success: false, error: 'Product is already attached to this Campaign' });
+    }
+
+    const result = await dbOperations.run(
+      `INSERT INTO campaign_products
+        (campaign_id, product_id, role, priority, campaign_brief, status, created_at, updated_at)
+       SELECT ?, p.id, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+       FROM products p
+       WHERE p.id = ? AND p.status = 'active'`,
+      [campaignId, role, priority, campaignBrief, status, productId]
+    );
+    const created = await getCampaignProduct(campaignId, result.id);
+    if (!created) {
+      const currentCampaign = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
+      if (!currentCampaign) {
+        return res.status(404).json({ success: false, error: 'Campaign not found' });
+      }
+      const currentProduct = await dbOperations.get('SELECT id, status FROM products WHERE id = ?', [productId]);
+      if (!currentProduct) {
+        return res.status(404).json({ success: false, error: 'Product not found' });
+      }
+      if (currentProduct.status === 'archived') {
+        return res.status(409).json({ success: false, error: 'Archived Product cannot be attached to a Campaign' });
+      }
+      return res.status(409).json({ success: false, error: 'Campaign Product creation conflicted with another update' });
+    }
+    res.json({ success: true, data: toCampaignProduct(created), message: 'Product attached to Campaign' });
+  } catch (error) {
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json({ success: false, error: 'Product is already attached to this Campaign' });
+    }
+    if (isForeignKeyConstraintError(error)) {
+      const campaign = campaignId === null
+        ? null
+        : await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
+      if (!campaign) {
+        return res.status(404).json({ success: false, error: 'Campaign not found' });
+      }
+      const product = productId === null
+        ? null
+        : await dbOperations.get('SELECT id, status FROM products WHERE id = ?', [productId]);
+      if (!product) {
+        return res.status(404).json({ success: false, error: 'Product not found' });
+      }
+      return res.status(409).json({ success: false, error: 'Campaign Product creation conflicted with another update' });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put('/:campaignId/products/:campaignProductId', async (req, res) => {
+  try {
+    const campaignId = parsePathId(req.params.campaignId);
+    const campaignProductId = parsePathId(req.params.campaignProductId);
+    if (campaignId === null || campaignProductId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign and Campaign Product ids must be positive integers' });
+    }
+    const current = await getCampaignProduct(campaignId, campaignProductId);
+    if (!current) {
+      return res.status(404).json({ success: false, error: 'Campaign Product not found' });
+    }
+
+    if (hasOwn(req.body, 'role') && !CAMPAIGN_PRODUCT_ROLES.has(req.body.role)) {
+      return res.status(400).json({ success: false, error: 'Invalid Campaign Product role' });
+    }
+    if (hasOwn(req.body, 'status') && !CAMPAIGN_PRODUCT_STATUSES.has(req.body.status)) {
+      return res.status(400).json({ success: false, error: 'Invalid Campaign Product status' });
+    }
+    if (hasOwn(req.body, 'priority') && !isNonNegativeIntegerNumber(req.body.priority)) {
+      return res.status(400).json({ success: false, error: 'Campaign Product priority must be a non-negative integer number' });
+    }
+    if (hasOwn(req.body, 'campaign_brief') && typeof req.body.campaign_brief !== 'string') {
+      return res.status(400).json({ success: false, error: 'Campaign Product campaign_brief must be a string' });
+    }
+
+    const assignments = [];
+    const values = [];
+    const requestedValues = {};
+    for (const field of ['role', 'priority', 'campaign_brief', 'status']) {
+      if (!hasOwn(req.body, field)) continue;
+      const value = field === 'campaign_brief' ? req.body[field].trim() : req.body[field];
+      assignments.push(`${field} = ?`);
+      values.push(value);
+      requestedValues[field] = value;
+    }
+
+    let result = { changes: 0 };
+    if (assignments.length > 0) {
+      result = await dbOperations.run(
+        `UPDATE campaign_products SET
+         ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+         WHERE campaign_id = ? AND id = ? AND status <> 'archived'`,
+        [...values, campaignId, campaignProductId]
+      );
+    }
+    const updated = await getCampaignProduct(campaignId, campaignProductId);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Campaign Product not found' });
+    }
+    const matchesRequestedValues = Object.entries(requestedValues).every(([field, value]) => (
+      field === 'priority' ? Number(updated[field]) === value : updated[field] === value
+    ));
+    if (result.changes === 0 && !matchesRequestedValues) {
+      const error = updated.status === 'archived'
+        ? 'Archived Campaign Product cannot be restored or changed'
+        : 'Campaign Product changed concurrently before update';
+      return res.status(409).json({ success: false, error });
+    }
+    res.json({ success: true, data: toCampaignProduct(updated), message: 'Campaign Product updated' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:campaignId/products/:campaignProductId/archive', async (req, res) => {
+  try {
+    const campaignId = parsePathId(req.params.campaignId);
+    const campaignProductId = parsePathId(req.params.campaignProductId);
+    if (campaignId === null || campaignProductId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign and Campaign Product ids must be positive integers' });
+    }
+
+    const result = await dbOperations.run(
+      `UPDATE campaign_products
+       SET status = 'archived', updated_at = CURRENT_TIMESTAMP
+       WHERE campaign_id = ? AND id = ? AND status <> 'archived'`,
+      [campaignId, campaignProductId]
+    );
+    const archived = await getCampaignProduct(campaignId, campaignProductId);
+    if (!archived) {
+      return res.status(404).json({ success: false, error: 'Campaign Product not found' });
+    }
+    if (archived.status !== 'archived') {
+      return res.status(409).json({ success: false, error: 'Campaign Product archive conflicted with another update' });
+    }
+    res.json({
+      success: true,
+      data: toCampaignProduct(archived),
+      message: result.changes === 0 ? 'Campaign Product already archived' : 'Campaign Product archived'
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -89,7 +389,10 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePathId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
     if (id === 1) {
       return res.status(400).json({ success: false, error: 'Default Campaign 不能删除' });
     }
@@ -97,6 +400,17 @@ router.delete('/:id', async (req, res) => {
     const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [id]);
     if (!campaign) {
       return res.status(404).json({ success: false, error: '产品/活动不存在' });
+    }
+
+    const campaignProductUsage = await dbOperations.get(
+      'SELECT COUNT(*) as count FROM campaign_products WHERE campaign_id = ?',
+      [id]
+    );
+    if (campaignProductUsage?.count > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `该产品/活动已有 ${campaignProductUsage.count} 条 Campaign Product 历史，不能删除。请保留活动以避免物理删除关联记录。`
+      });
     }
 
     const usage = await dbOperations.get('SELECT COUNT(*) as count FROM campaign_videos WHERE campaign_id = ?', [id]);
@@ -119,8 +433,26 @@ router.delete('/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: `该产品/活动已有 ${strategyUsage.count} 条 KOL Strategy，不能删除。请先归档或删除 Strategy。` });
     }
 
-    await dbOperations.run('DELETE FROM campaigns WHERE id = ?', [id]);
-    res.json({ success: true, message: '产品/活动已删除' });
+    await dbOperations.run(
+      `DELETE FROM campaigns
+       WHERE id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM campaign_products cp WHERE cp.campaign_id = campaigns.id
+      )`,
+      [id]
+    );
+    const current = await dbOperations.get('SELECT id FROM campaigns WHERE id = ?', [id]);
+    if (!current) {
+      return res.json({ success: true, message: '产品/活动已删除' });
+    }
+    const currentCampaignProductUsage = await dbOperations.get(
+      'SELECT COUNT(*) as count FROM campaign_products WHERE campaign_id = ?',
+      [id]
+    );
+    if (currentCampaignProductUsage?.count > 0) {
+      return res.status(400).json({ success: false, error: '该产品/活动已有 Campaign Product 历史，不能删除' });
+    }
+    return res.status(409).json({ success: false, error: 'Campaign deletion conflicted with another update' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

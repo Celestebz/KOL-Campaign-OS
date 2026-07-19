@@ -42,6 +42,13 @@ const EDITABLE_FIELDS = [
   'project_override'
 ];
 
+const CAMPAIGN_KOL_PRODUCT_STATUSES = {
+  fit_status: new Set(['pending', 'approved', 'rejected']),
+  assignment_status: new Set(['active', 'paused', 'completed', 'archived']),
+  sample_status: new Set(['pending', 'sent', 'received', 'returned']),
+  content_status: new Set(['pending', 'draft', 'review', 'published'])
+};
+
 const JSON_FIELDS = new Set(['evidence_summary', 'project_override']);
 
 function normalizeJsonField(value) {
@@ -107,6 +114,107 @@ router.get('/', async (req, res) => {
       project_override: safeParseJson(row.project_override),
       evidence_summary: safeParseJson(row.evidence_summary)
     })) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+function parsePathId(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function normalizeCampaignKolProduct(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    evidence_summary: safeParseJson(row.evidence_summary),
+    deliverables: safeParseJson(row.deliverables)
+  };
+}
+
+router.get('/:id/products', async (req, res) => {
+  try {
+    const campaignKolId = parsePathId(req.params.id);
+    if (campaignKolId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign KOL id must be a positive integer' });
+    }
+    const campaignKol = await dbOperations.get('SELECT id, campaign_id FROM campaign_kols WHERE id = ?', [campaignKolId]);
+    if (!campaignKol) {
+      return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
+    }
+
+    const rows = await dbOperations.query(
+      `SELECT ckp.*, cp.campaign_id, cp.role, cp.priority, cp.campaign_brief, cp.status AS campaign_product_status,
+         p.id AS product_id, p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
+         p.category AS product_category, p.product_url, p.description AS product_description,
+         p.selling_points AS product_selling_points, p.status AS product_status
+       FROM campaign_kol_products ckp
+       JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+       JOIN products p ON p.id = cp.product_id
+       WHERE ckp.campaign_kol_id = ?
+       ORDER BY cp.priority DESC, cp.created_at ASC, cp.id ASC`,
+      [campaignKolId]
+    );
+    res.json({ success: true, data: rows.map(normalizeCampaignKolProduct) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put('/:id/products/:campaignProductId', async (req, res) => {
+  try {
+    const campaignKolId = parsePathId(req.params.id);
+    const campaignProductId = parsePathId(req.params.campaignProductId);
+    if (campaignKolId === null || campaignProductId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign KOL and Campaign Product ids must be positive integers' });
+    }
+
+    const campaignKol = await dbOperations.get('SELECT id, campaign_id FROM campaign_kols WHERE id = ?', [campaignKolId]);
+    if (!campaignKol) {
+      return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
+    }
+
+    const current = await dbOperations.get(
+      `SELECT ckp.*, cp.campaign_id
+       FROM campaign_kol_products ckp
+       JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+       WHERE ckp.campaign_kol_id = ? AND ckp.campaign_product_id = ?`,
+      [campaignKolId, campaignProductId]
+    );
+    if (!current) {
+      return res.status(404).json({ success: false, error: 'Campaign KOL Product assignment not found' });
+    }
+    if (current.campaign_id !== campaignKol.campaign_id) {
+      return res.status(400).json({ success: false, error: 'Campaign Product does not belong to the same Campaign as Campaign KOL' });
+    }
+
+    const assignments = [];
+    const values = [];
+    const allowedFields = ['fit_status', 'assignment_status', 'sample_status', 'content_status', 'quoted_fee', 'deliverables', 'result_summary'];
+    for (const field of allowedFields) {
+      if (req.body[field] === undefined) continue;
+      if (CAMPAIGN_KOL_PRODUCT_STATUSES[field]) {
+        if (!CAMPAIGN_KOL_PRODUCT_STATUSES[field].has(req.body[field])) {
+          return res.status(400).json({ success: false, error: `Invalid ${field}` });
+        }
+      }
+      const value = field === 'deliverables' ? normalizeJsonField(req.body[field]) : req.body[field];
+      assignments.push(`${field} = ?`);
+      values.push(value);
+    }
+
+    if (assignments.length === 0) {
+      return res.status(400).json({ success: false, error: 'No editable fields provided' });
+    }
+
+    await dbOperations.run(
+      `UPDATE campaign_kol_products SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [...values, current.id]
+    );
+    const updated = await dbOperations.get('SELECT * FROM campaign_kol_products WHERE id = ?', [current.id]);
+    res.json({ success: true, data: normalizeCampaignKolProduct(updated), message: 'Campaign KOL Product updated' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

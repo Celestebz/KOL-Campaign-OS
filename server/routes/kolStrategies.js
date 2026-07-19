@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const mammoth = require('mammoth');
 const pdfParse = require('pdf-parse');
-const { dbOperations } = require('../database');
+const { dbOperations, sequelize, Sequelize } = require('../database');
 
 const router = express.Router();
 
@@ -12,6 +12,7 @@ const SYSTEM_SELECTION_KEY = 'system.provider_selection';
 const MAX_MATERIAL_CHARS = 50000;
 const MAX_MATERIAL_FILES = 5;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MYSQL_SIGNED_INT_MAX = 2147483647;
 
 function getDataDir() {
   if (process.pkg) return path.join(path.dirname(process.execPath), 'data');
@@ -69,6 +70,68 @@ function asJson(value, fallback) {
   return JSON.stringify(value);
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function parsePathId(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= MYSQL_SIGNED_INT_MAX ? parsed : null;
+}
+
+function parseBodyId(value) {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value > 0
+    && value <= MYSQL_SIGNED_INT_MAX
+    ? value
+    : null;
+}
+
+function routeError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function isConcurrencyError(error) {
+  const code = error?.original?.code || error?.parent?.code || error?.code;
+  return error?.name === 'SequelizeForeignKeyConstraintError'
+    || error?.name === 'SequelizeUniqueConstraintError'
+    || error?.name === 'SequelizeTimeoutError'
+    || ['ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT', 'ER_NO_REFERENCED_ROW_2', 'ER_ROW_IS_REFERENCED_2'].includes(code);
+}
+
+function sendRouteError(res, error, fallbackStatus = 500) {
+  const status = error.statusCode || (isConcurrencyError(error) ? 409 : fallbackStatus);
+  return res.status(status).json({ success: false, error: error.message });
+}
+
+async function transactionGet(sql, params, transaction) {
+  const rows = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.SELECT,
+    transaction,
+    logging: false
+  });
+  return rows[0] || null;
+}
+
+async function transactionRun(sql, params, transaction) {
+  const [result, metadata] = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.RAW,
+    transaction,
+    logging: false
+  });
+  const isInsert = /^\s*INSERT\b/i.test(sql);
+  return {
+    id: isInsert ? (Number(result) || 0) : 0,
+    changes: Number(metadata !== undefined ? metadata : result) || 0
+  };
+}
+
 function rejectLegacyCycleFields(body = {}) {
   const legacy = ['search_strategy', 'cycles', 'search_cycles', 'search_intensity']
     .filter((key) => Object.prototype.hasOwnProperty.call(body, key));
@@ -81,8 +144,14 @@ function rejectLegacyCycleFields(body = {}) {
 
 function normalizeStrategy(row) {
   if (!row) return row;
+  const { joined_campaign_product_id: joinedCampaignProductId, ...strategy } = row;
   return {
-    ...row,
+    ...strategy,
+    product_binding_status: row.campaign_product_id == null
+      ? 'legacy_unassigned'
+      : joinedCampaignProductId == null
+        ? 'invalid_binding'
+        : 'assigned',
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
@@ -91,6 +160,35 @@ function normalizeStrategy(row) {
     source_material_meta: parseJson(row.source_material_meta, {}),
     research_sources: parseJson(row.research_sources, [])
   };
+}
+
+async function getCampaignProductForStrategy(
+  campaignId,
+  campaignProductId,
+  { requireActive = false, transaction = null } = {}
+) {
+  if (parseBodyId(campaignProductId) === null) {
+    throw routeError('campaign_product_id is required and must be a positive integer', 400);
+  }
+
+  const sql =
+    `SELECT cp.id, cp.campaign_id, cp.product_id, cp.status, p.name AS product_name
+     FROM campaign_products cp
+     JOIN products p ON p.id = cp.product_id
+     WHERE cp.id = ?${transaction ? ' FOR UPDATE' : ''}`;
+  const campaignProduct = transaction
+    ? await transactionGet(sql, [campaignProductId], transaction)
+    : await dbOperations.get(sql, [campaignProductId]);
+  if (!campaignProduct) {
+    throw routeError('Campaign Product not found', 400);
+  }
+  if (campaignProduct.campaign_id !== campaignId) {
+    throw routeError('Campaign Product 不属于当前项目', 400);
+  }
+  if (requireActive && campaignProduct.status !== 'active') {
+    throw routeError('Campaign Product must be active', 400);
+  }
+  return campaignProduct;
 }
 
 function extractJson(content) {
@@ -366,14 +464,29 @@ async function generateDraft(strategy, materialContext = null) {
   return extractJson(content);
 }
 
-async function getStrategy(id) {
-  const row = await dbOperations.get(`
-    SELECT ks.*, c.name as campaign_name
+async function getStrategy(id, { transaction = null } = {}) {
+  const sql = `
+    SELECT ks.*, c.name as campaign_name, cp.status AS campaign_product_status,
+      cp.id AS joined_campaign_product_id, cp.product_id, p.name AS product_name
     FROM kol_strategies ks
     LEFT JOIN campaigns c ON c.id = ks.campaign_id
+    LEFT JOIN campaign_products cp ON cp.id = ks.campaign_product_id
+    LEFT JOIN products p ON p.id = cp.product_id
     WHERE ks.id = ?
-  `, [id]);
+  `;
+  const row = transaction
+    ? await transactionGet(sql, [id], transaction)
+    : await dbOperations.get(sql, [id]);
   return normalizeStrategy(row);
+}
+
+async function getStrategyForUpdate(id, transaction) {
+  const row = await transactionGet(
+    'SELECT * FROM kol_strategies WHERE id = ? FOR UPDATE',
+    [id],
+    transaction
+  );
+  return row ? normalizeStrategy({ ...row, joined_campaign_product_id: row.campaign_product_id }) : null;
 }
 
 function validateReady(strategy) {
@@ -387,16 +500,19 @@ function validateReady(strategy) {
   if (!Object.keys(strategy.persona_config || {}).length) missing.push('KOL Persona');
 
   if (!Object.keys(strategy.finder_handoff || {}).length) missing.push('Finder Handoff');
-  if (missing.length) throw new Error(`Cannot mark ready. Missing: ${missing.join(', ')}`);
+  if (missing.length) throw routeError(`Cannot mark ready. Missing: ${missing.join(', ')}`, 400);
 }
 
 router.get('/', async (req, res) => {
   try {
     const { campaign_id, status, search } = req.query;
     let sql = `
-      SELECT ks.*, c.name as campaign_name
+      SELECT ks.*, c.name as campaign_name, cp.status AS campaign_product_status,
+        cp.id AS joined_campaign_product_id, cp.product_id, p.name AS product_name
       FROM kol_strategies ks
       LEFT JOIN campaigns c ON c.id = ks.campaign_id
+      LEFT JOIN campaign_products cp ON cp.id = ks.campaign_product_id
+      LEFT JOIN products p ON p.id = cp.product_id
       WHERE 1=1
     `;
     const params = [];
@@ -425,36 +541,57 @@ router.post('/', async (req, res) => {
   try {
     const body = req.body || {};
     rejectLegacyCycleFields(body);
-    const campaignId = Number(body.campaign_id || 1);
-    const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [campaignId]);
-    const name = clean(body.name || `${campaign?.name || 'Campaign'} Strategy`);
-    const result = await dbOperations.run(
-      `INSERT INTO kol_strategies
-       (campaign_id, name, brand, product, category, target_market, language, primary_platform,
-        secondary_platforms, campaign_goal, status, product_context, persona_config,
-        scoring_weights, finder_handoff)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    const campaignId = parseBodyId(body.campaign_id);
+    const campaignProductId = parseBodyId(body.campaign_product_id);
+    if (campaignId === null) throw routeError('campaign_id is required and must be a positive integer', 400);
+    if (campaignProductId === null) throw routeError('campaign_product_id is required and must be a positive integer', 400);
+
+    const strategy = await sequelize.transaction(async (transaction) => {
+      const campaign = await transactionGet(
+        'SELECT * FROM campaigns WHERE id = ? FOR UPDATE',
+        [campaignId],
+        transaction
+      );
+      if (!campaign) throw routeError('Campaign not found', 400);
+      const campaignProduct = await getCampaignProductForStrategy(
         campaignId,
-        name,
-        body.brand ?? campaign?.brand ?? '',
-        body.product ?? campaign?.product ?? campaign?.name ?? '',
-        clean(body.category),
-        clean(body.target_market),
-        clean(body.language),
-        clean(body.primary_platform),
-        asJson(body.secondary_platforms, []),
-        clean(body.campaign_goal),
-        clean(body.status) || 'draft',
-        asJson(body.product_context, {}),
-        asJson(body.persona_config, {}),
-        asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
-        asJson(body.finder_handoff, {})
-      ]
-    );
-    res.json({ success: true, data: await getStrategy(result.id), message: 'Strategy created' });
+        campaignProductId,
+        { requireActive: true, transaction }
+      );
+      const name = clean(body.name || `${campaign.name || 'Campaign'} Strategy`);
+      const result = await transactionRun(
+        `INSERT INTO kol_strategies
+         (campaign_id, campaign_product_id, name, brand, product, category, target_market, language, primary_platform,
+          secondary_platforms, campaign_goal, status, product_context, persona_config,
+          scoring_weights, finder_handoff)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          campaignId,
+          campaignProduct.id,
+          name,
+          body.brand ?? campaign.brand ?? '',
+          body.product ?? campaign.product ?? campaign.name ?? '',
+          clean(body.category),
+          clean(body.target_market),
+          clean(body.language),
+          clean(body.primary_platform),
+          asJson(body.secondary_platforms, []),
+          clean(body.campaign_goal),
+          clean(body.status) || 'draft',
+          asJson(body.product_context, {}),
+          asJson(body.persona_config, {}),
+          asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
+          asJson(body.finder_handoff, {})
+        ],
+        transaction
+      );
+      const created = await getStrategy(result.id, { transaction });
+      if (!created) throw routeError('Strategy creation conflicted with another update', 409);
+      return created;
+    });
+    res.json({ success: true, data: strategy, message: 'Strategy created' });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+    sendRouteError(res, error);
   }
 });
 
@@ -462,34 +599,63 @@ router.put('/:id', async (req, res) => {
   try {
     const body = req.body || {};
     rejectLegacyCycleFields(body);
-    await dbOperations.run(
-      `UPDATE kol_strategies SET
-       campaign_id = ?, name = ?, brand = ?, product = ?, category = ?, target_market = ?,
-       language = ?, primary_platform = ?, secondary_platforms = ?, campaign_goal = ?,
-       product_context = ?, persona_config = ?, scoring_weights = ?,
-       finder_handoff = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [
-        Number(body.campaign_id || 1),
-        clean(body.name),
-        clean(body.brand),
-        clean(body.product),
-        clean(body.category),
-        clean(body.target_market),
-        clean(body.language),
-        clean(body.primary_platform),
-        asJson(body.secondary_platforms, []),
-        clean(body.campaign_goal),
-        asJson(body.product_context, {}),
-        asJson(body.persona_config, {}),
-        asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
-        asJson(body.finder_handoff, {}),
-        req.params.id
-      ]
-    );
-    res.json({ success: true, data: await getStrategy(req.params.id), message: 'Strategy saved' });
+    const strategyId = parsePathId(req.params.id);
+    if (strategyId === null) throw routeError('Strategy id must be a positive integer', 400);
+    const requestedCampaignId = hasOwn(body, 'campaign_id') ? parseBodyId(body.campaign_id) : undefined;
+    const requestedCampaignProductId = hasOwn(body, 'campaign_product_id')
+      ? parseBodyId(body.campaign_product_id)
+      : undefined;
+    if (hasOwn(body, 'campaign_id') && requestedCampaignId === null) {
+      throw routeError('campaign_id must be a positive integer', 400);
+    }
+    if (hasOwn(body, 'campaign_product_id') && requestedCampaignProductId === null) {
+      throw routeError('campaign_product_id must be a positive integer', 400);
+    }
+
+    const strategy = await sequelize.transaction(async (transaction) => {
+      const existing = await getStrategyForUpdate(strategyId, transaction);
+      if (!existing) throw routeError('Strategy not found', 404);
+      const campaignId = requestedCampaignId ?? existing.campaign_id;
+      const campaignProductId = requestedCampaignProductId ?? existing.campaign_product_id;
+      await getCampaignProductForStrategy(
+        campaignId,
+        campaignProductId,
+        { requireActive: true, transaction }
+      );
+      await transactionRun(
+        `UPDATE kol_strategies SET
+         campaign_id = ?, campaign_product_id = ?, name = ?, brand = ?, product = ?, category = ?, target_market = ?,
+         language = ?, primary_platform = ?, secondary_platforms = ?, campaign_goal = ?,
+         product_context = ?, persona_config = ?, scoring_weights = ?,
+         finder_handoff = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [
+          campaignId,
+          campaignProductId,
+          clean(body.name),
+          clean(body.brand),
+          clean(body.product),
+          clean(body.category),
+          clean(body.target_market),
+          clean(body.language),
+          clean(body.primary_platform),
+          asJson(body.secondary_platforms, []),
+          clean(body.campaign_goal),
+          asJson(body.product_context, {}),
+          asJson(body.persona_config, {}),
+          asJson(body.scoring_weights, DEFAULT_SCORING_WEIGHTS),
+          asJson(body.finder_handoff, {}),
+          strategyId
+        ],
+        transaction
+      );
+      const updated = await getStrategy(strategyId, { transaction });
+      if (!updated) throw routeError('Strategy update conflicted with another update', 409);
+      return updated;
+    });
+    res.json({ success: true, data: strategy, message: 'Strategy saved' });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+    sendRouteError(res, error);
   }
 });
 
@@ -582,58 +748,106 @@ router.post('/:id/mark-ready', async (req, res) => {
   try {
     const body = req.body || {};
     rejectLegacyCycleFields(body);
-    const strategy = await getStrategy(req.params.id);
-    if (!strategy) return res.status(404).json({ success: false, error: 'Strategy not found' });
-    validateReady(strategy);
-    await dbOperations.run(
-      'UPDATE kol_strategies SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      ['ready', req.params.id]
-    );
-    res.json({ success: true, data: await getStrategy(req.params.id), message: 'Strategy is ready' });
+    const strategyId = parsePathId(req.params.id);
+    if (strategyId === null) throw routeError('Strategy id must be a positive integer', 400);
+    const ready = await sequelize.transaction(async (transaction) => {
+      const strategy = await getStrategyForUpdate(strategyId, transaction);
+      if (!strategy) throw routeError('Strategy not found', 404);
+      await getCampaignProductForStrategy(
+        strategy.campaign_id,
+        strategy.campaign_product_id,
+        { requireActive: true, transaction }
+      );
+      validateReady(strategy);
+      await transactionRun(
+        'UPDATE kol_strategies SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        ['ready', strategyId],
+        transaction
+      );
+      const updated = await getStrategy(strategyId, { transaction });
+      if (!updated) throw routeError('Strategy ready update conflicted with another update', 409);
+      return updated;
+    });
+    res.json({ success: true, data: ready, message: 'Strategy is ready' });
   } catch (error) {
-    res.status(error.statusCode || 400).json({ success: false, error: error.message });
+    sendRouteError(res, error);
   }
 });
 
 router.post('/:id/archive', async (req, res) => {
   try {
-    await dbOperations.run('UPDATE kol_strategies SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['archived', req.params.id]);
-    res.json({ success: true, data: await getStrategy(req.params.id), message: 'Strategy archived' });
+    const strategyId = parsePathId(req.params.id);
+    if (strategyId === null) throw routeError('Strategy id must be a positive integer', 400);
+    const outcome = await sequelize.transaction(async (transaction) => {
+      const existing = await getStrategyForUpdate(strategyId, transaction);
+      if (!existing) return null;
+      const result = await transactionRun(
+        `UPDATE kol_strategies
+         SET status = 'archived', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status <> 'archived'`,
+        [strategyId],
+        transaction
+      );
+      const archived = await getStrategy(strategyId, { transaction });
+      if (!archived) throw routeError('Strategy archive conflicted with another update', 409);
+      if (archived.status !== 'archived') throw routeError('Strategy archive conflicted with another update', 409);
+      return { strategy: archived, changed: result.changes > 0 };
+    });
+    if (!outcome) return res.status(404).json({ success: false, error: 'Strategy not found' });
+    res.json({
+      success: true,
+      data: outcome.strategy,
+      message: outcome.changed ? 'Strategy archived' : 'Strategy already archived'
+    });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendRouteError(res, error);
   }
 });
 
 router.post('/:id/duplicate', async (req, res) => {
   try {
-    const strategy = await getStrategy(req.params.id);
-    if (!strategy) return res.status(404).json({ success: false, error: 'Strategy not found' });
-    const result = await dbOperations.run(
-      `INSERT INTO kol_strategies
-       (campaign_id, name, brand, product, category, target_market, language, primary_platform,
-        secondary_platforms, campaign_goal, status, product_context, persona_config,
-        scoring_weights, finder_handoff)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
-      [
+    const strategyId = parsePathId(req.params.id);
+    if (strategyId === null) throw routeError('Strategy id must be a positive integer', 400);
+    const duplicated = await sequelize.transaction(async (transaction) => {
+      const strategy = await getStrategyForUpdate(strategyId, transaction);
+      if (!strategy) throw routeError('Strategy not found', 404);
+      const campaignProduct = await getCampaignProductForStrategy(
         strategy.campaign_id,
-        `${strategy.name} Copy`,
-        strategy.brand || '',
-        strategy.product || '',
-        strategy.category || '',
-        strategy.target_market || '',
-        strategy.language || '',
-        strategy.primary_platform || '',
-        JSON.stringify(strategy.secondary_platforms || []),
-        strategy.campaign_goal || '',
-        JSON.stringify(strategy.product_context || {}),
-        JSON.stringify(strategy.persona_config || {}),
-        JSON.stringify(strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS),
-        JSON.stringify(strategy.finder_handoff || {})
-      ]
-    );
-    res.json({ success: true, data: await getStrategy(result.id), message: 'Strategy duplicated' });
+        strategy.campaign_product_id,
+        { requireActive: true, transaction }
+      );
+      const result = await transactionRun(
+        `INSERT INTO kol_strategies
+         (campaign_id, campaign_product_id, name, brand, product, category, target_market, language, primary_platform,
+          secondary_platforms, campaign_goal, status, product_context, persona_config,
+          scoring_weights, finder_handoff)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+        [
+          strategy.campaign_id,
+          campaignProduct.id,
+          `${strategy.name} Copy`,
+          strategy.brand || '',
+          strategy.product || '',
+          strategy.category || '',
+          strategy.target_market || '',
+          strategy.language || '',
+          strategy.primary_platform || '',
+          JSON.stringify(strategy.secondary_platforms || []),
+          strategy.campaign_goal || '',
+          JSON.stringify(strategy.product_context || {}),
+          JSON.stringify(strategy.persona_config || {}),
+          JSON.stringify(strategy.scoring_weights || DEFAULT_SCORING_WEIGHTS),
+          JSON.stringify(strategy.finder_handoff || {})
+        ],
+        transaction
+      );
+      const copy = await getStrategy(result.id, { transaction });
+      if (!copy) throw routeError('Strategy duplication conflicted with another update', 409);
+      return copy;
+    });
+    res.json({ success: true, data: duplicated, message: 'Strategy duplicated' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendRouteError(res, error);
   }
 });
 

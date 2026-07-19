@@ -116,6 +116,7 @@ const KolStrategy = () => {
   const [newCampaignName, setNewCampaignName] = useState('');
   const [briefText, setBriefText] = useState('');
   const [materialFiles, setMaterialFiles] = useState([]);
+  const [campaignProducts, setCampaignProducts] = useState([]);
   const [form] = Form.useForm();
 
   const campaignOptions = useMemo(() => campaigns.map((item) => ({
@@ -123,6 +124,13 @@ const KolStrategy = () => {
     label: item.name,
     campaign: item
   })), [campaigns]);
+
+  const campaignProductOptions = useMemo(() => campaignProducts
+    .filter((item) => item.status === 'active')
+    .map((item) => ({
+      value: item.id,
+      label: `${item.product?.name || item.product_name || ''} (${item.role || 'hero'})`.trim()
+    })), [campaignProducts]);
 
   useEffect(() => {
     fetchCampaigns();
@@ -133,6 +141,19 @@ const KolStrategy = () => {
   const fetchCampaigns = async () => {
     const res = await axios.get('/api/campaigns');
     setCampaigns(res.data.data || []);
+  };
+
+  const fetchCampaignProducts = async (campaignId) => {
+    if (!campaignId) {
+      setCampaignProducts([]);
+      return;
+    }
+    try {
+      const res = await axios.get(`/api/campaigns/${campaignId}/products`);
+      setCampaignProducts(res.data.data || []);
+    } catch (error) {
+      setCampaignProducts([]);
+    }
   };
 
   const createCampaign = async (name, selectAfterCreate = false) => {
@@ -230,12 +251,14 @@ const KolStrategy = () => {
     }
   };
 
-  const applyStrategyToForm = (strategy) => {
+  const applyStrategyToForm = async (strategy) => {
+    await fetchCampaignProducts(strategy.campaign_id);
     const handoff = strategy.finder_handoff && Object.keys(strategy.finder_handoff).length
       ? strategy.finder_handoff
       : defaultHandoff;
     form.setFieldsValue({
       ...strategy,
+      campaign_product_id: strategy.campaign_product_id || undefined,
       secondary_platforms: strategy.secondary_platforms || [],
       product_context_text: stringifySection(strategy.product_context, defaultProductContext),
       persona_config_text: stringifySection(strategy.persona_config, defaultPersona),
@@ -249,12 +272,15 @@ const KolStrategy = () => {
     setMaterialFiles([]);
   };
 
-  const openCreate = () => {
+  const openCreate = async () => {
     setEditing(null);
     form.resetFields();
     const campaign = campaigns[0] || {};
+    await fetchCampaignProducts(campaign.id);
+    const activeProducts = campaignProducts.filter((item) => item.status === 'active');
     form.setFieldsValue({
       campaign_id: campaign.id || 1,
+      campaign_product_id: activeProducts[0]?.id || undefined,
       name: `${campaign.name || '项目'} KOL 策略`,
       brand: campaign.brand || '',
       product: campaign.product || campaign.name || '',
@@ -273,9 +299,9 @@ const KolStrategy = () => {
     setModalOpen(true);
   };
 
-  const openEdit = (record) => {
+  const openEdit = async (record) => {
     setEditing(record);
-    applyStrategyToForm(record);
+    await applyStrategyToForm(record);
     setModalOpen(true);
   };
 
@@ -368,6 +394,10 @@ const KolStrategy = () => {
 
   const markReady = async (record = editing) => {
     if (!record?.id) return;
+    if (!record.campaign_product_id) {
+      message.error('请先为策略选择项目产品');
+      return;
+    }
     try {
       const res = await axios.post(`/api/kol-strategies/${record.id}/mark-ready`);
       message.success('策略已发布给 KOL 寻找');
@@ -394,12 +424,15 @@ const KolStrategy = () => {
     fetchStrategies();
   };
 
-  const updateCampaignFields = (campaignId) => {
+  const updateCampaignFields = async (campaignId) => {
     const campaign = campaignOptions.find((item) => item.value === campaignId)?.campaign;
+    await fetchCampaignProducts(campaignId);
     if (!campaign) return;
+    const activeProducts = campaignProducts.filter((item) => item.status === 'active');
     form.setFieldsValue({
       brand: campaign.brand || '',
-      product: campaign.product || campaign.name || ''
+      product: campaign.product || campaign.name || '',
+      campaign_product_id: activeProducts[0]?.id || undefined
     });
   };
 
@@ -488,7 +521,7 @@ const KolStrategy = () => {
         footer={[
           <Button key="cancel" onClick={() => setModalOpen(false)}>关闭</Button>,
           <Button key="ai" icon={<RobotOutlined />} loading={generating} disabled={!editing?.id} onClick={generateDraft}>无材料生成草稿</Button>,
-          <Button key="ready" icon={<PlayCircleOutlined />} disabled={!editing?.id || editing?.status === 'ready'} onClick={() => markReady()}>发布给 KOL 寻找</Button>,
+          <Button key="ready" icon={<PlayCircleOutlined />} disabled={!editing?.id || editing?.status === 'ready' || !editing?.campaign_product_id} onClick={() => markReady()}>发布给 KOL 寻找</Button>,
           <Button key="save" type="primary" icon={<SaveOutlined />} loading={saving} onClick={saveStrategy}>保存草稿</Button>
         ]}
       >
@@ -527,6 +560,18 @@ const KolStrategy = () => {
                 />
               </Form.Item>
             </Col>
+            <Col span={8}>
+              <Form.Item label="项目产品" name="campaign_product_id" rules={[{ required: true, message: '请选择项目产品' }]}>
+                <Select
+                  showSearch
+                  options={campaignProductOptions}
+                  optionFilterProp="label"
+                  placeholder={campaignProductOptions.length ? '选择产品' : '请先选择项目'}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
             <Col span={8}>
               <Form.Item label="合作目标" name="campaign_goal">
                 <Select options={goalOptions} />

@@ -40,6 +40,27 @@ const cooperationTypeOptions = [
   { value: 'other', label: '其他' }
 ];
 
+const assignmentStatusOptions = [
+  { value: 'active', label: '进行中' },
+  { value: 'paused', label: '已暂停' },
+  { value: 'completed', label: '已完成' },
+  { value: 'archived', label: '已归档' }
+];
+
+const sampleStatusOptions = [
+  { value: 'pending', label: '待处理' },
+  { value: 'sent', label: '已寄出' },
+  { value: 'received', label: '已收到' },
+  { value: 'returned', label: '已退回' }
+];
+
+const contentStatusOptions = [
+  { value: 'pending', label: '待处理' },
+  { value: 'draft', label: '草稿' },
+  { value: 'review', label: '审核中' },
+  { value: 'published', label: '已发布' }
+];
+
 const cooperationTypeLabel = (value) => (
   cooperationTypeOptions.find((item) => item.value === value)?.label || '付费＋产品'
 );
@@ -73,8 +94,11 @@ const CampaignKols = () => {
   const [detailRow, setDetailRow] = useState(null);
   const [masterDetail, setMasterDetail] = useState(null);
   const [history, setHistory] = useState([]);
+  const [productAssignments, setProductAssignments] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const [editingAssignment, setEditingAssignment] = useState(null);
+  const [assignmentForm] = Form.useForm();
   const [form] = Form.useForm();
   const cooperationType = Form.useWatch('cooperation_type', form);
 
@@ -138,15 +162,18 @@ const CampaignKols = () => {
     setDetailRow(record);
     setMasterDetail(null);
     setHistory([]);
+    setProductAssignments([]);
     setDetailError('');
     setDetailLoading(true);
     try {
-      const [master, projectHistory] = await Promise.all([
+      const [master, projectHistory, assignments] = await Promise.all([
         axios.get(`/api/customers/${record.customer_id}`),
-        axios.get(`/api/customers/${record.customer_id}/project-history`)
+        axios.get(`/api/customers/${record.customer_id}/project-history`),
+        axios.get(`/api/campaign-kols/${record.id}/products`)
       ]);
       setMasterDetail(master.data.data);
       setHistory(projectHistory.data.data || []);
+      setProductAssignments(assignments.data.data || []);
     } catch (error) {
       setDetailError('KOL 详情加载失败，请稍后重试');
     } finally {
@@ -169,6 +196,30 @@ const CampaignKols = () => {
     message.success('项目 KOL 已更新');
     setEditing(null);
     fetchRows();
+  };
+
+  const openEditAssignment = (record) => {
+    setEditingAssignment(record);
+    assignmentForm.setFieldsValue({
+      assignment_status: record.assignment_status || 'active',
+      sample_status: record.sample_status || 'pending',
+      content_status: record.content_status || 'pending',
+      quoted_fee: record.quoted_fee || ''
+    });
+  };
+
+  const saveAssignment = async () => {
+    if (!editingAssignment || !detailRow) return;
+    const values = await assignmentForm.validateFields();
+    try {
+      await axios.put(`/api/campaign-kols/${detailRow.id}/products/${editingAssignment.campaign_product_id}`, values);
+      message.success('产品合作状态已更新');
+      setEditingAssignment(null);
+      const res = await axios.get(`/api/campaign-kols/${detailRow.id}/products`);
+      setProductAssignments(res.data.data || []);
+    } catch (error) {
+      message.error(error.response?.data?.error || '更新失败');
+    }
   };
 
   const deleteOne = async (id) => {
@@ -325,6 +376,27 @@ const CampaignKols = () => {
               <Descriptions.Item label="跟进人">{detailRow.owner || '-'}</Descriptions.Item>
               <Descriptions.Item label="项目备注">{detailRow.project_notes || detailRow.notes || '-'}</Descriptions.Item>
             </Descriptions>
+            <div>
+              <h3>产品合作分配</h3>
+              {productAssignments.length ? (
+                <Table size="small" rowKey="id" pagination={false} dataSource={productAssignments} columns={[
+                  { title: '产品', dataIndex: 'product_name' },
+                  { title: '角色', dataIndex: 'role', render: (v) => v || '-' },
+                  { title: '分配状态', dataIndex: 'assignment_status', render: (v) => assignmentStatusOptions.find((item) => item.value === v)?.label || v || '-' },
+                  { title: '样品状态', dataIndex: 'sample_status', render: (v) => sampleStatusOptions.find((item) => item.value === v)?.label || v || '-' },
+                  { title: '内容状态', dataIndex: 'content_status', render: (v) => contentStatusOptions.find((item) => item.value === v)?.label || v || '-' },
+                  { title: '报价', dataIndex: 'quoted_fee', render: (v) => v || '-' },
+                  { title: '匹配分', dataIndex: 'fit_score', render: (v) => v ?? '-' },
+                  {
+                    title: '操作',
+                    key: 'action',
+                    render: (_, record) => (
+                      <Button type="link" icon={<EditOutlined />} onClick={() => openEditAssignment(record)}>编辑</Button>
+                    )
+                  }
+                ]} />
+              ) : <Empty description="暂无产品分配" />}
+            </div>
             <div><h3>全部项目历史</h3>
               {history.length ? <Table size="small" rowKey="id" pagination={false} dataSource={history}
                 columns={[
@@ -337,6 +409,23 @@ const CampaignKols = () => {
           </Space>
         )}
       </Drawer>
+
+      <Modal title={`编辑产品合作 - ${editingAssignment?.product_name || ''}`} open={Boolean(editingAssignment)} onCancel={() => setEditingAssignment(null)} onOk={saveAssignment} width={560}>
+        <Form form={assignmentForm} layout="vertical">
+          <Form.Item label="分配状态" name="assignment_status" rules={[{ required: true }]}>
+            <Select options={assignmentStatusOptions} />
+          </Form.Item>
+          <Form.Item label="样品状态" name="sample_status">
+            <Select options={sampleStatusOptions} allowClear />
+          </Form.Item>
+          <Form.Item label="内容状态" name="content_status">
+            <Select options={contentStatusOptions} allowClear />
+          </Form.Item>
+          <Form.Item label="产品报价" name="quoted_fee">
+            <Input placeholder="可选" />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal title="编辑 KOL 合作" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>
         <Form form={form} layout="vertical">
