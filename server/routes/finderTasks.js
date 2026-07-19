@@ -660,7 +660,7 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
       product_context: strategy.product_context || {},
       persona_config: strategy.persona_config || {},
       finder_handoff: strategy.finder_handoff || {},
-      existing_creator_context: creatorContext
+      existing_creator_context: creatorContext?.ai_summary || { known_creator: false }
     }, null, 2),
     '',
     'Video evidence:',
@@ -781,6 +781,16 @@ async function scopedRun(sql, params, transaction = null) {
   };
 }
 
+async function scopedQuery(sql, params, transaction = null) {
+  if (!transaction) return dbOperations.query(sql, params);
+  return sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.SELECT,
+    transaction,
+    logging: false
+  });
+}
+
 async function getReadyStrategy(strategyId, { requireActiveProduct = false, transaction = null } = {}) {
   const row = await scopedGet(`
     SELECT ks.*, c.name as campaign_name, c.brand as campaign_brand, c.product as campaign_product
@@ -821,6 +831,52 @@ async function getReadyStrategy(strategyId, { requireActiveProduct = false, tran
     persona_config: parseJson(row.persona_config, {}),
     scoring_weights: parseJson(row.scoring_weights, {}),
     finder_handoff: parseJson(row.finder_handoff, {})
+  };
+}
+
+function taskBindingError(message) {
+  return Object.assign(new Error(message), { status: 409 });
+}
+
+async function getReadyStrategyForTask(task, { transaction = null } = {}) {
+  if (!task?.campaign_product_id) throw taskBindingError('Finder task requires a Campaign Product binding');
+  const strategy = await getReadyStrategy(task.strategy_id, { requireActiveProduct: true, transaction });
+  if (Number(strategy.campaign_id) !== Number(task.campaign_id)) {
+    throw taskBindingError('Finder task campaign does not match its Strategy');
+  }
+  if (Number(strategy.campaign_product_id) !== Number(task.campaign_product_id)) {
+    throw taskBindingError('Finder task Campaign Product does not match its Strategy');
+  }
+  return strategy;
+}
+
+function usernameFromProfileUrl(platform, profileUrl) {
+  const normalized = normalizeProfileIdentity(platform, profileUrl);
+  if (!normalized) return '';
+  try {
+    const parts = new URL(normalized).pathname.split('/').filter(Boolean);
+    const first = clean(parts[0]);
+    if (!first) return '';
+    if (normalizedPlatform(platform, normalized) === 'youtube' && first.startsWith('@')) return first.slice(1).toLowerCase();
+    if (['instagram', 'tiktok'].includes(normalizedPlatform(platform, normalized))) return first.replace(/^@/, '').toLowerCase();
+    return first.replace(/^@/, '').toLowerCase();
+  } catch (error) {
+    return '';
+  }
+}
+
+function creatorContextSummary(matched, cooperationHistory) {
+  const history = Array.isArray(cooperationHistory) ? cooperationHistory : [];
+  const completed = history.filter((item) => ['completed', 'complete', 'done'].includes(clean(item.status || item.content_status).toLowerCase())).length;
+  const issues = history.filter((item) => ['cancelled', 'failed', 'disputed', 'issue'].includes(clean(item.status || item.project_status).toLowerCase())).length;
+  return {
+    known_creator: true,
+    campaign_count: history.length,
+    cooperation_status: clean(matched.cooperation_status) || 'unknown',
+    do_not_contact: clean(matched.cooperation_status).toLowerCase() === 'do_not_contact',
+    risk_category: clean(matched.cooperation_risk_category) || 'none',
+    completed_count: completed,
+    issue_count: issues
   };
 }
 
@@ -865,6 +921,21 @@ async function resolveExistingCreatorContext(platform, profileUrl, authorName) {
         LIMIT 1
       `, [normalized, normalizedProfileUrl, normalizedProfileUrl]);
     }
+    if (!matched) {
+      const username = usernameFromProfileUrl(normalized, normalizedProfileUrl);
+      if (username) {
+        matched = await dbOperations.get(`
+          SELECT ${customerFields}, kpa.id AS platform_account_id,
+            kpa.platform AS account_platform, kpa.username AS account_username,
+            kpa.profile_url AS account_profile_url, kpa.followers_text AS account_followers
+          FROM kol_platform_accounts kpa
+          JOIN customers c ON c.id = kpa.customer_id
+          WHERE LOWER(kpa.platform) = ? AND REPLACE(LOWER(kpa.username), '@', '') = ?
+          ORDER BY kpa.id ASC
+          LIMIT 1
+        `, [normalized, username]);
+      }
+    }
   } else if (normalizedAuthor) {
     matched = await dbOperations.get(`
       SELECT ${customerFields}, kpa.id AS platform_account_id,
@@ -890,11 +961,8 @@ async function resolveExistingCreatorContext(platform, profileUrl, authorName) {
   `, [matched.customer_id]);
   return {
     customer_id: matched.customer_id,
-    customer_name: matched.customer_name,
     cooperation_status: matched.cooperation_status,
     cooperation_risk_category: matched.cooperation_risk_category,
-    cooperation_risk_reason: matched.cooperation_risk_reason,
-    country_region: matched.customer_country_region,
     platform_account: matched.platform_account_id ? {
       id: matched.platform_account_id,
       platform: matched.account_platform,
@@ -902,7 +970,8 @@ async function resolveExistingCreatorContext(platform, profileUrl, authorName) {
       profile_url: matched.account_profile_url,
       followers: matched.account_followers
     } : null,
-    cooperation_history: cooperationHistory
+    cooperation_history: cooperationHistory,
+    ai_summary: creatorContextSummary(matched, cooperationHistory)
   };
 }
 
@@ -1465,23 +1534,18 @@ function profileKey(candidate) {
   return `name:${candidate.platform}:${candidate.kol_name.toLowerCase()}`;
 }
 
-async function rawCandidateExists(candidate, strategyId) {
+async function rawCandidateExists(candidate, strategyId, transaction = null) {
   if (candidate.profile_url) {
-    const row = await dbOperations.get('SELECT * FROM raw_candidates WHERE strategy_id = ? AND profile_url = ? LIMIT 1', [strategyId, candidate.profile_url]);
-    if (row) return row;
+    return scopedGet('SELECT * FROM raw_candidates WHERE strategy_id = ? AND profile_url = ? LIMIT 1', [strategyId, candidate.profile_url], transaction);
   }
-  if (candidate.email) {
-    const row = await dbOperations.get('SELECT * FROM raw_candidates WHERE strategy_id = ? AND email = ? LIMIT 1', [strategyId, candidate.email]);
-    if (row) return row;
-  }
-  return dbOperations.get('SELECT * FROM raw_candidates WHERE strategy_id = ? AND platform = ? AND kol_name = ? LIMIT 1', [strategyId, candidate.platform, candidate.kol_name]);
+  return scopedGet('SELECT * FROM raw_candidates WHERE strategy_id = ? AND platform = ? AND kol_name = ? LIMIT 1', [strategyId, candidate.platform, candidate.kol_name], transaction);
 }
 
-async function upsertRawCandidate(candidate, task, provider, creatorContext = null) {
+async function upsertRawCandidate(candidate, task, provider, creatorContext = null, transaction = null) {
   if (!candidate.kol_name && !candidate.profile_url) {
     return { inserted: false, skipped: true, reason: 'Missing kol_name/profile_url' };
   }
-  const existing = await rawCandidateExists(candidate, task.strategy_id);
+  const existing = await rawCandidateExists(candidate, task.strategy_id, transaction);
   const desiredStatus = ['new', 'ignored', 'error', 'manual_review', 'risk_review'].includes(candidate.status) ? candidate.status : '';
   const globalRisk = creatorContext?.cooperation_status === 'do_not_contact';
   const status = desiredStatus || 'new';
@@ -1501,7 +1565,7 @@ async function upsertRawCandidate(candidate, task, provider, creatorContext = nu
     data: candidate.raw_data
   });
   if (existing) {
-    await dbOperations.run(
+    await scopedRun(
       `UPDATE raw_candidates SET
        profile_url = COALESCE(NULLIF(profile_url, ''), ?),
        followers = COALESCE(NULLIF(followers, ''), ?),
@@ -1560,11 +1624,11 @@ async function upsertRawCandidate(candidate, task, provider, creatorContext = nu
         candidate.matched_persona,
         rawData,
         existing.id
-      ]
+      ], transaction
     );
     return { inserted: false, duplicate: true, id: existing.id, status: existing.status || status };
   }
-  const result = await dbOperations.run(
+  const result = await scopedRun(
     `INSERT INTO raw_candidates
      (finder_task_id, campaign_id, strategy_id, platform, kol_name, profile_url, video_url, video_title,
       followers, avg_views, email, country_region, matched_keywords, ai_score, ai_match_reason,
@@ -1605,22 +1669,40 @@ async function upsertRawCandidate(candidate, task, provider, creatorContext = nu
       status === 'ignored' ? 'project' : status === 'risk_review' ? 'global' : '',
       status === 'risk_review' ? creatorContext?.cooperation_risk_category || '' : '',
       status === 'risk_review' ? creatorContext?.cooperation_risk_reason || '' : ''
-    ]
+    ], transaction
   );
   return { inserted: true, id: result.id, status };
 }
 
-async function upsertRawCandidateProductFit(candidate, task, identity, creatorContext, rawCandidateId) {
+function uniqueEvidence(values = []) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = clean(value?.video_source_id || value?.evidence_id || value?.video_url || value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function upsertRawCandidateProductFit(candidate, task, identity, creatorContext, rawCandidateId, transaction = null) {
   if (!task.campaign_product_id) {
     throw new Error('Finder task is missing its Campaign Product binding');
   }
-  const evidence = Array.isArray(candidate.raw_data?.evidence) ? candidate.raw_data.evidence : [];
+  const existingFit = await scopedGet(
+    `SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ? AND identity_key_hash = ?${transaction ? ' FOR UPDATE' : ''}`,
+    [task.campaign_product_id, identity.identityKeyHash], transaction
+  );
+  const previousSummary = parseJson(existingFit?.evidence_summary, {}) || {};
+  const evidence = uniqueEvidence([...(Array.isArray(previousSummary.evidence) ? previousSummary.evidence : []), ...(Array.isArray(candidate.raw_data?.evidence) ? candidate.raw_data.evidence : [])]);
+  const evidenceIds = [...new Set([...(previousSummary.evidence_ids || []), ...(candidate.raw_data?.evidence_ids || [])])];
+  const analysisIds = [...new Set([...(previousSummary.analysis_ids || []), ...(candidate.raw_data?.analysis_ids || [])])];
+  const videoSourceIds = [...new Set([...(previousSummary.video_source_ids || []), ...(candidate.raw_data?.video_source_ids || [])])];
   const evidenceSummary = JSON.stringify({
     identity_key: identity.identityKey,
     evidence_count: evidence.length,
-    evidence_ids: candidate.raw_data?.evidence_ids || [],
-    analysis_ids: candidate.raw_data?.analysis_ids || [],
-    video_source_ids: candidate.raw_data?.video_source_ids || [],
+    evidence_ids: evidenceIds,
+    analysis_ids: analysisIds,
+    video_source_ids: videoSourceIds,
     evidence,
     best_score: candidate.scoring_breakdown?.best_score ?? candidate.ai_score,
     average_score: candidate.scoring_breakdown?.average_score ?? candidate.ai_score,
@@ -1629,7 +1711,7 @@ async function upsertRawCandidateProductFit(candidate, task, identity, creatorCo
     existing_creator_context: creatorContext || null
   });
   const identityStatus = creatorContext ? 'known_kol_new_product_fit' : 'new_kol';
-  await dbOperations.run(
+  await scopedRun(
     `INSERT INTO raw_candidate_product_fits
      (latest_raw_candidate_id, existing_customer_id, campaign_product_id, platform,
       identity_key_hash, strategy_id, finder_task_id, identity_status, fit_score,
@@ -1663,11 +1745,11 @@ async function upsertRawCandidateProductFit(candidate, task, identity, creatorCo
       candidate.ai_score,
       candidate.matched_persona,
       evidenceSummary
-    ]
+    ], transaction
   );
-  return dbOperations.get(
+  return scopedGet(
     'SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ? AND identity_key_hash = ?',
-    [task.campaign_product_id, identity.identityKeyHash]
+    [task.campaign_product_id, identity.identityKeyHash], transaction
   );
 }
 
@@ -1759,7 +1841,7 @@ function toMysqlDatetime(value) {
   return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-async function updateTask(id, patch) {
+async function updateTask(id, patch, transaction = null) {
   const fields = Object.keys(patch);
   if (!fields.length) return;
   const assignments = fields.map((field) => `${field} = ?`).join(', ');
@@ -1769,9 +1851,9 @@ async function updateTask(id, patch) {
     }
     return patch[field];
   });
-  await dbOperations.run(
+  await scopedRun(
     `UPDATE finder_tasks SET ${assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [...values, id]
+    [...values, id], transaction
   );
 }
 
@@ -2000,7 +2082,12 @@ function failedQueryAudit(attempts = []) {
 async function processVideoEvidenceTask(taskId, options = {}) {
   const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
   if (!task) return;
-  const strategy = await getReadyStrategy(task.strategy_id);
+  let strategy;
+  try {
+    strategy = await getReadyStrategyForTask(task);
+  } catch (error) {
+    return;
+  }
   const rawRequest = parseJson(task.raw_request, {});
   const targetPlatform = clean(rawRequest.target_platform || options.targetPlatform || task.platform);
   const limit = Math.max(1, Math.min(Number(rawRequest.limit || options.limit || 10), 50));
@@ -2132,6 +2219,7 @@ router.post('/:id/video-evidence/import', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
+    await getReadyStrategyForTask(task);
     const rawRequest = parseJson(task.raw_request, {});
     const defaultTarget = clean(req.body?.target_platform || req.body?.targetPlatform || rawRequest.target_platform || task.platform).split(',')[0] || 'youtube';
     const rows = Array.isArray(req.body?.video_evidence)
@@ -2171,7 +2259,7 @@ router.post('/:id/video-evidence/import', async (req, res) => {
     });
     res.json({ success: true, data: { inserted, updated, failed: results.filter((item) => !item.success).length, results } });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });
 
@@ -2230,7 +2318,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
-    const strategy = await getReadyStrategy(task.strategy_id);
+    const strategy = await getReadyStrategyForTask(task);
     const ids = (req.body?.evidence_ids || req.body?.evidenceIds || []).map(Number).filter(Boolean);
     let sql = `
       SELECT fve.*, vs.source_url as video_url, vs.title as video_title, vs.author_name as video_author_name,
@@ -2308,7 +2396,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     }
     res.json({ success: true, data: { success_count: successCount, failed_count: failedCount, results } });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });
 
@@ -2316,7 +2404,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
-    const strategy = await getReadyStrategy(task.strategy_id);
+    const strategy = await getReadyStrategyForTask(task);
     const rows = await dbOperations.query(`
       SELECT fve.*, vai.id as analysis_id,
         JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.content_relevance_score')) as content_relevance_score,
@@ -2378,15 +2466,18 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
       groups.get(identity.identityKeyHash).rows.push(row);
     }
 
-    const inserted = [];
-    const skipped = [];
-    const productFits = [];
+    const generated = await sequelize.transaction(async (transaction) => {
+      const lockedStrategy = await getReadyStrategyForTask(task, { transaction });
+      await scopedGet('SELECT id FROM campaign_products WHERE id = ? FOR UPDATE', [task.campaign_product_id], transaction);
+      const inserted = [];
+      const skipped = [];
+      const productFits = [];
     for (const evidenceGroup of groups.values()) {
       const sorted = evidenceGroup.rows.sort((a, b) => Number(b.candidate_priority_score || 0) - Number(a.candidate_priority_score || 0));
       const best = sorted[0];
       const averageScore = Math.round(sorted.reduce((sum, item) => sum + Number(item.candidate_priority_score || 0), 0) / sorted.length);
       const recommendedStatus = clean(best.recommended_status) || 'manual_review';
-      const matchedPersona = inferPersonaFromEvidence(best, strategy);
+      const matchedPersona = inferPersonaFromEvidence(best, lockedStrategy);
       const creatorContext = await resolveExistingCreatorContext(
         best.target_platform || best.evidence_platform,
         evidenceGroup.normalizedProfileUrl,
@@ -2445,14 +2536,15 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
           }))
         }
       };
-      const saved = await upsertRawCandidate(candidate, task, 'video_evidence_finder', creatorContext);
+      const saved = await upsertRawCandidate(candidate, task, 'video_evidence_finder', creatorContext, transaction);
       if (saved.id) {
         productFits.push(await upsertRawCandidateProductFit(
           candidate,
           task,
           evidenceGroup.identity,
           creatorContext,
-          saved.id
+          saved.id,
+          transaction
         ));
       }
       if (saved.inserted) inserted.push(saved);
@@ -2466,7 +2558,10 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
         skipped: skipped.length,
         product_fits: productFits.length
       })
+    }, transaction);
+      return { inserted, skipped, productFits };
     });
+    const { inserted, skipped, productFits } = generated;
     res.json({
       success: true,
       data: {
@@ -2478,7 +2573,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(400).json({ success: false, error: error.message });
+    res.status(error.status || 400).json({ success: false, error: error.message });
   }
 });
 
