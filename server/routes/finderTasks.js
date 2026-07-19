@@ -803,7 +803,7 @@ async function getReadyStrategy(strategyId, { requireActiveProduct = false, tran
   let campaignProduct = null;
   if (row.campaign_product_id) {
     campaignProduct = await scopedGet(`
-      SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority,
+      SELECT cp.id AS joined_campaign_product_id, cp.campaign_id, cp.product_id, cp.role, cp.priority,
         cp.campaign_brief, cp.status AS campaign_product_status,
         p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
         p.category AS product_category, p.product_url, p.price AS product_price,

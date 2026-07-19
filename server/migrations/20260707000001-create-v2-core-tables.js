@@ -381,7 +381,7 @@ module.exports = {
       source_query: DataTypes.TEXT,
       evidence_reason: DataTypes.TEXT,
       status: { type: DataTypes.STRING(50), defaultValue: 'discovered' },
-      raw_data: DataTypes.TEXT,
+      raw_data: DataTypes.TEXT('medium'),
       created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP') },
       updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP') }
     });

@@ -1136,6 +1136,60 @@ test('video evidence finder default task saves single target-platform request fi
   assert.equal(Object.prototype.hasOwnProperty.call(res.body.data, 'total_cycles'), false);
 });
 
+test('finder task preserves strategy id when it differs from campaign product id', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { campaign, campaignProduct } = await seedBaseData();
+  const strategy = await models.KolStrategy.create({
+    campaign_id: campaign.id,
+    campaign_product_id: campaignProduct.id,
+    name: 'Distinct Strategy Id',
+    brand: 'Test Brand',
+    product: 'Test Product',
+    primary_platform: 'tiktok',
+    status: 'ready'
+  });
+
+  assert.notEqual(strategy.id, campaignProduct.id);
+
+  const res = await request
+    .post('/api/finder-tasks')
+    .send({ strategy_id: strategy.id, target_platform: 'tiktok', limit: 5 });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.strategy_id, strategy.id);
+  assert.equal(JSON.parse(res.body.data.raw_request).strategy_id, strategy.id);
+});
+
+test('video evidence import preserves provider payloads larger than MySQL TEXT', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  const taskRes = await request
+    .post('/api/finder-tasks')
+    .send({ strategy_id: strategy.id, target_platform: 'tiktok', limit: 5 });
+  const oversizedPayload = 'x'.repeat(70 * 1024);
+
+  const importRes = await request
+    .post(`/api/finder-tasks/${taskRes.body.data.id}/video-evidence/import`)
+    .send({
+      evidence: [{
+        video_url: 'https://www.tiktok.com/@large.payload/video/7530000000000000001',
+        author_profile_url: 'https://www.tiktok.com/@large.payload',
+        raw_data: { provider_payload: oversizedPayload }
+      }]
+    });
+
+  assert.equal(importRes.status, 200);
+  assert.equal(importRes.body.data.inserted, 1);
+  const evidence = await models.FinderVideoEvidence.findOne();
+  assert.equal(JSON.parse(evidence.raw_data).provider_payload.length, oversizedPayload.length);
+});
+
 test('finder task -> video evidence -> video_sources reuse', async () => {
   await resetTestDatabase();
   await initDatabase();

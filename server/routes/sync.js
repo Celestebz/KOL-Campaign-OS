@@ -1,5 +1,6 @@
 const express = require('express');
 const { dbOperations } = require('../database');
+const { getCampaignKolTableId, missingCampaignSubtableError } = require('../utils/feishuSubtableMapping');
 
 const router = express.Router();
 
@@ -18,6 +19,23 @@ function parseJson(value, fallback = {}) {
 function compact(value) {
   if (value === undefined || value === null) return '';
   return String(value);
+}
+
+// Feishu field type 15 (hyperlink) requires a { link, text } object.
+function setHyperlinkField(fields, name, value) {
+  const url = compact(value).trim();
+  if (!url) return;
+  fields[name] = { link: url, text: url };
+}
+
+// Feishu field type 2 (number) requires a numeric value; non-numeric or empty
+// values must be omitted rather than sent as '' (which fails the whole record).
+function setNumberField(fields, name, value) {
+  const text = compact(value).trim().replace(/,/g, '');
+  if (!text) return;
+  const number = Number(text);
+  if (!Number.isFinite(number)) return;
+  fields[name] = number;
 }
 
 function parseCampaignSubtableMap(value) {
@@ -43,7 +61,9 @@ async function fetchJson(url, options = {}) {
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
   if (!response.ok || (data.code !== undefined && data.code !== 0)) {
-    throw new Error(data.msg || data.message || `HTTP ${response.status}`);
+    const error = new Error(data.msg || data.message || `HTTP ${response.status}`);
+    error.code = data.code;
+    throw error;
   }
   return data;
 }
@@ -87,20 +107,28 @@ async function pushBitableRecord(config, token, tableId, recordId, fields) {
     Authorization: `Bearer ${token}`
   };
   const base = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/records`;
-  if (recordId) {
-    const data = await fetchJson(`${base}/${encodeURIComponent(recordId)}`, {
-      method: 'PUT',
+  const createRecord = async () => {
+    const data = await fetchJson(base, {
+      method: 'POST',
       headers,
       body: JSON.stringify({ fields })
     });
-    return data.data?.record?.record_id || recordId;
+    return data.data?.record?.record_id;
+  };
+  if (recordId) {
+    try {
+      const data = await fetchJson(`${base}/${encodeURIComponent(recordId)}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ fields })
+      });
+      return data.data?.record?.record_id || recordId;
+    } catch (error) {
+      if (error.code !== 1254043 && !String(error.message).includes('RecordIdNotFound')) throw error;
+      return createRecord();
+    }
   }
-  const data = await fetchJson(base, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ fields })
-  });
-  return data.data?.record?.record_id;
+  return createRecord();
 }
 
 function kolFields(row) {
@@ -123,22 +151,13 @@ function kolFields(row) {
 }
 
 function campaignKolFields(row) {
-  return {
+  const fields = {
     'KOL名称': compact(row.kol_name || row.kol_name_snapshot),
     '项目状态': compact(row.status),
     '平台': compact(row.platform),
-    'Instagram主页': compact(row.instagram_url || row.instagram_url_snapshot),
-    'Instagram粉丝量': compact(row.instagram_followers || row.instagram_followers_snapshot),
-    'YouTube主页': compact(row.youtube_url || row.youtube_url_snapshot),
-    'YouTube粉丝量': compact(row.youtube_followers || row.youtube_followers_snapshot),
-    'TikTok主页': compact(row.tiktok_url || row.tiktok_url_snapshot),
-    'TikTok粉丝量': compact(row.tiktok_followers || row.tiktok_followers_snapshot),
     Email: compact(row.email || row.email_snapshot),
     '国家地区': compact(row.country_region || row.country_region_snapshot),
     Tier: '',
-    '项目报价': compact(row.quoted_price),
-    '汇率': compact(row.exchange_rate),
-    '价格RMB': compact(row.price_rmb),
     '跟进人': compact(row.owner),
     '联系状态': '',
     '回复状态': '',
@@ -147,11 +166,16 @@ function campaignKolFields(row) {
     '项目备注': `campaign_kol_id: ${row.id}\ncustomer_id: ${row.customer_id}\nraw_candidate_id: ${row.raw_candidate_id || ''}`,
     '来源RawCandidate': row.raw_candidate_id ? `raw_candidate_${row.raw_candidate_id}` : ''
   };
-}
-
-function getCampaignKolTableId(config, row) {
-  const map = config.campaign_subtable_map || {};
-  return map[row.campaign_id] || map[String(row.campaign_id)] || map[row.campaign_name] || config.campaign_kol_table_id || '';
+  setHyperlinkField(fields, 'Instagram主页', row.instagram_url || row.instagram_url_snapshot);
+  setHyperlinkField(fields, 'YouTube主页', row.youtube_url || row.youtube_url_snapshot);
+  setHyperlinkField(fields, 'TikTok主页', row.tiktok_url || row.tiktok_url_snapshot);
+  setNumberField(fields, 'Instagram粉丝量', row.instagram_followers || row.instagram_followers_snapshot);
+  setNumberField(fields, 'YouTube粉丝量', row.youtube_followers || row.youtube_followers_snapshot);
+  setNumberField(fields, 'TikTok粉丝量', row.tiktok_followers || row.tiktok_followers_snapshot);
+  setNumberField(fields, '项目报价', row.quoted_price);
+  setNumberField(fields, '汇率', row.exchange_rate);
+  setNumberField(fields, '价格RMB', row.price_rmb);
+  return fields;
 }
 
 function campaignFields(row) {
@@ -246,7 +270,7 @@ async function syncCampaignKols(config, token, ids = []) {
   for (const row of rows) {
     try {
       const tableId = getCampaignKolTableId(config, row);
-      if (!tableId) throw new Error(`No Feishu campaign subtable configured for ${row.campaign_name}`);
+      if (!tableId) throw missingCampaignSubtableError(row);
       const recordId = await pushBitableRecord(
         config,
         token,

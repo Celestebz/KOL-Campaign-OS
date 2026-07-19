@@ -141,6 +141,27 @@
   margin-top: 20px;
 }
 
+.feishu-subtable-mappings {
+  padding: 14px;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  background: #fafcfd;
+}
+
+.feishu-subtable-mappings__alert { margin-bottom: 12px; }
+
+.feishu-subtable-mappings__row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.3fr) 40px;
+  align-items: start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.feishu-subtable-mappings__field { margin-bottom: 8px; }
+.feishu-subtable-mappings__field .ant-select { width: 100%; }
+.feishu-subtable-mappings__note { display: block; margin-top: 10px; line-height: 1.5; }
+
 @media (max-width: 768px) {
   .settings-section-nav { display: none; }
   .settings-mobile-nav { display: block; }
@@ -148,4 +169,6 @@
   .settings-overview-grid { grid-template-columns: 1fr; }
   .settings-section-heading { align-items: stretch; flex-direction: column; }
   .settings-provider-drawer .ant-drawer-content-wrapper { width: 100% !important; }
+  .feishu-subtable-mappings__row { grid-template-columns: 1fr 40px; }
+  .feishu-subtable-mappings__field:first-child { grid-column: 1 / -1; }
 }

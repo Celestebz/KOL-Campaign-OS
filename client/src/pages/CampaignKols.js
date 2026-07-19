@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Space, Spin, Table, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import { describeSyncResult } from './campaignKolSyncResult';
 
 const { TextArea } = Input;
 
@@ -243,7 +244,8 @@ const CampaignKols = () => {
         ids: selectedRowKeys
       });
       const data = res.data.data;
-      message.success(`同步完成：成功 ${data.success_count}，失败 ${data.failed_count}`);
+      const result = describeSyncResult(data);
+      message[result.type](result.content);
       fetchRows();
     } catch (error) {
       message.warning(error.response?.data?.error || '飞书未配置或同步失败，本地数据已保留');

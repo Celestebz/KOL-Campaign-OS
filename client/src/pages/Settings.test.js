@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import axios from 'axios';
@@ -19,7 +19,7 @@ const remoteSettings = {
   },
   aiModels: { active: 'deepseek', providers: { deepseek: { api_key: '••••••••', model: 'deepseek-chat' } } },
   externalAgent: { enabled: true, api_token: '••••••••', notes: '' },
-  cloudStorage: { feishu: { app_id: '', app_secret: '', base_url: 'https://open.feishu.cn', app_token: '' } },
+  cloudStorage: { feishu: { app_id: '', app_secret: '', base_url: 'https://open.feishu.cn', app_token: '', campaign_subtable_map: 'Vivatrees EverJoy=tbliXAzgY46zjt3U' } },
   fallbackStrategy: { enableFallback: false, saveFailureReasons: true, saveRawResponses: true, allowAiToolCalls: false }
 };
 
@@ -41,8 +41,39 @@ beforeAll(() => {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  axios.get.mockResolvedValue({ data: { data: remoteSettings } });
+  axios.get.mockImplementation((url) => Promise.resolve(url === '/api/campaigns'
+    ? { data: { data: [{ id: 7, name: 'VivaTrees Everglow 7.5ft Instagram US 2026' }] } }
+    : { data: { data: remoteSettings } }));
   axios.post.mockResolvedValue({ data: { success: true } });
+});
+
+test('edits Feishu project mappings with system campaign choices', async () => {
+  render(<Settings />);
+  await screen.findByText('配置概览');
+  await userEvent.click(screen.getByRole('tab', { name: '云端存储' }));
+
+  expect(screen.queryByLabelText('默认项目 KOL 子表')).not.toBeInTheDocument();
+  expect(screen.getByText('无法匹配旧项目映射：Vivatrees EverJoy。子表 ID 已带入下方，请重新选择系统项目后保存。')).toBeInTheDocument();
+  const tableId = screen.getByLabelText('飞书子表 ID');
+  expect(tableId).toHaveValue('tbliXAzgY46zjt3U');
+  await userEvent.clear(tableId);
+  await userEvent.type(tableId, 'tbliXAzgY46zjt3U');
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: '系统项目' }));
+  await screen.findByRole('option', { name: 'VivaTrees Everglow 7.5ft Instagram US 2026' });
+  const projectOption = Array.from(document.querySelectorAll('.ant-select-item-option'))
+    .find((option) => option.textContent === 'VivaTrees Everglow 7.5ft Instagram US 2026');
+  fireEvent.click(projectOption);
+  const saveButton = screen.getByRole('button', { name: '保存更改' });
+  expect(saveButton).toBeEnabled();
+  await userEvent.click(saveButton);
+
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/settings', expect.objectContaining({
+    settings: expect.objectContaining({
+      cloudStorage: expect.objectContaining({
+        feishu: expect.objectContaining({ campaign_subtable_map: '{"7":"tbliXAzgY46zjt3U"}' })
+      })
+    })
+  })));
 });
 
 test('removes Agent Automation while retaining YouTube Maton and External Agent API', async () => {
@@ -85,7 +116,7 @@ test('saving one provider posts the complete settings tree and refreshes the pag
       cloudStorage: expect.any(Object)
     })
   })));
-  await waitFor(() => expect(axios.get).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(axios.get).toHaveBeenCalledTimes(4));
   expect(message.success).toHaveBeenCalledWith('DeepSeek 配置已保存');
 });
 

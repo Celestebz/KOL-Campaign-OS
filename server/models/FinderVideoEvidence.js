@@ -13,7 +13,7 @@ module.exports = (sequelize, DataTypes) => {
     source_query: DataTypes.TEXT,
     evidence_reason: DataTypes.TEXT,
     status: { type: DataTypes.STRING(50), defaultValue: 'discovered' },
-    raw_data: DataTypes.TEXT
+    raw_data: DataTypes.TEXT('medium')
   }, {
     tableName: 'finder_video_evidence',
     timestamps: true,

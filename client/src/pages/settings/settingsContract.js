@@ -82,7 +82,7 @@ export const DEFAULT_SETTINGS = {
     primary: 'feishu_bitable',
     feishu: {
       app_id: '', app_secret: '', base_url: 'https://open.feishu.cn', app_token: '',
-      kol_table_id: '', campaign_kol_table_id: '', campaign_table_id: '',
+      kol_table_id: '', campaign_table_id: '',
       campaign_subtable_map: '', notes: ''
     }
   },

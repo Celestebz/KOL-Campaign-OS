@@ -15,6 +15,8 @@ import {
   updateAtPath
 } from './settings/settingsContract';
 import { ProviderCard, ProviderDrawer } from './settings/SettingsProviderComponents';
+import FeishuSubtableMappings from './settings/feishuSubtableMappings';
+import { parseCampaignSubtableMap, serializeCampaignSubtableRows } from './settings/feishuSubtableMappingUtils';
 import './Settings.css';
 
 const { Text } = Typography;
@@ -31,15 +33,32 @@ const Settings = () => {
   const [dirty, setDirty] = useState(false);
   const [drawer, setDrawer] = useState(null);
   const [drawerError, setDrawerError] = useState('');
+  const [campaigns, setCampaigns] = useState([]);
+  const [campaignLoadError, setCampaignLoadError] = useState('');
+  const [unresolvedMappings, setUnresolvedMappings] = useState([]);
 
   const fetchSettings = useCallback(async () => {
     setLoading(true);
     setLoadError('');
     try {
-      const response = await axios.get('/api/settings');
-      const next = mergeSettings(DEFAULT_SETTINGS, response.data.data || {});
+      const [settingsResult, campaignsResult] = await Promise.allSettled([
+        axios.get('/api/settings'),
+        axios.get('/api/campaigns')
+      ]);
+      if (settingsResult.status === 'rejected') throw settingsResult.reason;
+      const nextCampaigns = campaignsResult.status === 'fulfilled' ? (campaignsResult.value.data.data || []) : [];
+      setCampaigns(nextCampaigns);
+      setCampaignLoadError(campaignsResult.status === 'rejected' ? '项目列表加载失败，暂时无法编辑项目子表映射。' : '');
+      const next = mergeSettings(DEFAULT_SETTINGS, settingsResult.value.data.data || {});
+      const parsed = parseCampaignSubtableMap(next.cloudStorage.feishu.campaign_subtable_map, nextCampaigns);
+      const formSettings = mergeSettings(next, {});
+      formSettings.cloudStorage.feishu.campaign_subtable_map = [
+        ...parsed.rows,
+        ...parsed.unresolved.map((item) => ({ campaign_id: null, table_id: item.table_id }))
+      ];
+      setUnresolvedMappings(parsed.unresolved);
       setSettings(next);
-      form.setFieldsValue({ settings: next });
+      form.setFieldsValue({ settings: formSettings });
       setDirty(false);
     } catch (error) {
       setLoadError('获取 API 设置失败，请确认后端服务已启动后重试。');
@@ -77,7 +96,17 @@ const Settings = () => {
   const saveSection = async () => {
     try {
       const values = form.getFieldsValue(true).settings || {};
-      await persistSettings(mergeSettings(settings, values));
+      const nextValues = mergeSettings(values, {});
+      if (activeSection === 'storage') {
+        const rows = values.cloudStorage?.feishu?.campaign_subtable_map || [];
+        const invalid = rows.some((row) => !row?.campaign_id || !/^tbl\S+$/.test(String(row?.table_id || '').trim()))
+          || new Set(rows.map((row) => row.campaign_id)).size !== rows.length;
+        if (invalid) throw new Error('请修正项目子表映射中的错误后再保存。');
+        nextValues.cloudStorage.feishu.campaign_subtable_map = serializeCampaignSubtableRows(rows);
+      } else if (nextValues.cloudStorage?.feishu) {
+        nextValues.cloudStorage.feishu.campaign_subtable_map = settings.cloudStorage.feishu.campaign_subtable_map;
+      }
+      await persistSettings(mergeSettings(settings, nextValues));
     } catch (error) {
       message.error(error.message);
     }
@@ -91,6 +120,9 @@ const Settings = () => {
   const saveProvider = async (providerValues) => {
     try {
       const pendingPageValues = form.getFieldsValue(true).settings || {};
+      if (pendingPageValues.cloudStorage?.feishu) {
+        pendingPageValues.cloudStorage.feishu.campaign_subtable_map = settings.cloudStorage.feishu.campaign_subtable_map;
+      }
       const next = updateAtPath(mergeSettings(settings, pendingPageValues), drawer.path, providerValues);
       await persistSettings(next, `${drawer.meta.label} 配置已保存`);
       setDrawer(null);
@@ -132,7 +164,7 @@ const Settings = () => {
 
   const SaveSectionButton = () => (
     <div className="settings-section-actions">
-      <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!dirty} onClick={saveSection}>保存更改</Button>
+      <Button aria-label="保存更改" type="primary" icon={<SaveOutlined />} loading={saving} disabled={!dirty} onClick={saveSection}>保存更改</Button>
     </div>
   );
 
@@ -256,10 +288,12 @@ const Settings = () => {
       <Row gutter={16}>
         <Col xs={24} md={12}><Form.Item label="Base/App Token" name={['settings', 'cloudStorage', 'feishu', 'app_token']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 app_token" /></Form.Item></Col>
         <Col xs={24} md={12}><Form.Item label="飞书 KOL 总表 ID" name={['settings', 'cloudStorage', 'feishu', 'kol_table_id']}><Input placeholder="tbl..." /></Form.Item></Col>
-        <Col xs={24} md={12}><Form.Item label="默认项目 KOL 子表" name={['settings', 'cloudStorage', 'feishu', 'campaign_kol_table_id']}><Input placeholder="tbl..." /></Form.Item></Col>
         <Col xs={24} md={12}><Form.Item label="项目表 ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_table_id']}><Input placeholder="tbl...（预留）" /></Form.Item></Col>
       </Row>
-      <Form.Item label="项目子表映射" name={['settings', 'cloudStorage', 'feishu', 'campaign_subtable_map']}><Input.TextArea autoSize={{ minRows: 2, maxRows: 5 }} placeholder={'项目名称=tbl_xxx\n或 {"项目名称":"tbl_xxx"}'} /></Form.Item>
+      {unresolvedMappings.length > 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`无法匹配旧项目映射：${unresolvedMappings.map((item) => item.key).join('、')}。子表 ID 已带入下方，请重新选择系统项目后保存。`} />}
+      <Form.Item label="项目子表映射" name={['settings', 'cloudStorage', 'feishu', 'campaign_subtable_map']}>
+        <FeishuSubtableMappings campaigns={campaigns} loadError={campaignLoadError} />
+      </Form.Item>
       <Form.Item label="同步备注" name={['settings', 'cloudStorage', 'feishu', 'notes']}><Input /></Form.Item>
       <SaveSectionButton />
     </>
