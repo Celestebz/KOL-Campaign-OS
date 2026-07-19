@@ -65,12 +65,25 @@ async function ensureForeignKey(queryInterface, tableName, columnName, options) 
   const foreignKeys = await queryInterface.getForeignKeyReferencesForTable(tableName);
   const existing = foreignKeys.find(key => key.columnName === columnName);
   if (existing) {
-    if (existing.referencedTableName !== options.references.table) {
-      throw new Error(
-        `Existing foreign key for ${tableName}.${columnName} does not reference ${options.references.table}.`
-      );
+    const [rules] = await queryInterface.sequelize.query(
+      `SELECT UPDATE_RULE AS update_rule, DELETE_RULE AS delete_rule
+       FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+       WHERE CONSTRAINT_SCHEMA = DATABASE()
+         AND TABLE_NAME = ?
+         AND CONSTRAINT_NAME = ?`,
+      { replacements: [tableName, existing.constraintName] }
+    );
+    const rule = rules[0] || {};
+    const expectedUpdate = String(options.onUpdate || 'NO ACTION').toUpperCase();
+    const expectedDelete = String(options.onDelete || 'NO ACTION').toUpperCase();
+    const matches = existing.referencedTableName === options.references.table
+      && existing.referencedColumnName === options.references.field
+      && String(rule.update_rule || '').toUpperCase() === expectedUpdate
+      && String(rule.delete_rule || '').toUpperCase() === expectedDelete;
+    if (matches) {
+      return;
     }
-    return;
+    await queryInterface.removeConstraint(tableName, existing.constraintName);
   }
   await queryInterface.addConstraint(tableName, {
     fields: [columnName],
@@ -88,6 +101,50 @@ async function migrateLegacyRawCandidateColumn(queryInterface) {
       'raw_candidate_id',
       'latest_raw_candidate_id'
     );
+  }
+}
+
+async function normalizeCampaignProductRole(queryInterface, DataTypes) {
+  await queryInterface.sequelize.query(
+    `UPDATE campaign_products
+     SET role = 'hero'
+     WHERE role IS NULL OR TRIM(role) = '' OR role = 'primary'`
+  );
+  const columns = await queryInterface.describeTable('campaign_products');
+  if (columns.role.allowNull || columns.role.defaultValue !== 'hero') {
+    await queryInterface.changeColumn('campaign_products', 'role', {
+      type: DataTypes.STRING(50),
+      allowNull: false,
+      defaultValue: 'hero'
+    });
+  }
+}
+
+async function normalizeRawCandidateProductFitColumns(queryInterface, DataTypes) {
+  const columns = await queryInterface.describeTable('raw_candidate_product_fits');
+  if (!columns.latest_raw_candidate_id.allowNull) {
+    await queryInterface.changeColumn('raw_candidate_product_fits', 'latest_raw_candidate_id', {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    });
+  }
+
+  await queryInterface.sequelize.query(
+    `UPDATE raw_candidate_product_fits
+     SET analysis_version = 1
+     WHERE analysis_version IS NULL
+        OR TRIM(CAST(analysis_version AS CHAR)) NOT REGEXP '^[0-9]+$'
+        OR CAST(analysis_version AS UNSIGNED) < 1`
+  );
+  const refreshed = await queryInterface.describeTable('raw_candidate_product_fits');
+  const isInteger = /INT/i.test(refreshed.analysis_version.type);
+  const hasDefaultOne = Number(refreshed.analysis_version.defaultValue) === 1;
+  if (!isInteger || refreshed.analysis_version.allowNull || !hasDefaultOne) {
+    await queryInterface.changeColumn('raw_candidate_product_fits', 'analysis_version', {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 1
+    });
   }
 }
 
@@ -136,7 +193,7 @@ async function backfillCampaignProducts(queryInterface) {
     await queryInterface.sequelize.query(
       `INSERT INTO campaign_products
          (campaign_id, product_id, role, priority, status, created_at, updated_at)
-       VALUES (?, ?, 'primary', 0, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       VALUES (?, ?, 'hero', 0, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        ON DUPLICATE KEY UPDATE campaign_products.updated_at = campaign_products.updated_at`,
       { replacements: [campaign.id, product.id] }
     );
@@ -209,7 +266,7 @@ module.exports = {
       id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
       campaign_id: { type: DataTypes.INTEGER, allowNull: false },
       product_id: { type: DataTypes.INTEGER, allowNull: false },
-      role: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'primary' },
+      role: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'hero' },
       priority: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
       campaign_brief: DataTypes.TEXT,
       status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'active' },
@@ -232,7 +289,7 @@ module.exports = {
       matched_persona: DataTypes.STRING(255),
       evidence_summary: DataTypes.TEXT,
       decision_status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'pending' },
-      analysis_version: DataTypes.STRING(100),
+      analysis_version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
       created_at: createdAt,
       updated_at: updatedAt
     });
@@ -261,6 +318,9 @@ module.exports = {
     await ensureTable(queryInterface, 'finder_tasks', {
       campaign_product_id: DataTypes.INTEGER
     });
+
+    await normalizeCampaignProductRole(queryInterface, DataTypes);
+    await normalizeRawCandidateProductFitColumns(queryInterface, DataTypes);
 
     await removeIndexIfPresent(queryInterface, 'products', 'uq_products_brand_name');
     await backfillCatalogHashes(queryInterface);
@@ -333,6 +393,7 @@ module.exports = {
     await ensureForeignKey(queryInterface, 'raw_candidate_product_fits', 'latest_raw_candidate_id', {
       name: 'fk_raw_candidate_product_fits_latest_candidate',
       references: { table: 'raw_candidates', field: 'id' },
+      onUpdate: 'CASCADE',
       onDelete: 'SET NULL'
     });
     await ensureForeignKey(queryInterface, 'raw_candidate_product_fits', 'existing_customer_id', {

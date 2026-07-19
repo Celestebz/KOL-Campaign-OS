@@ -304,12 +304,19 @@ test('multi-product migration preserves legacy campaign data', async () => {
     [campaign.id, product.id]
   );
   assert.equal(campaignProduct.status, 'active');
+  assert.equal(campaignProduct.role, 'hero');
 
   const duplicateCampaignProduct = await dbOperations.get(
     'SELECT * FROM campaign_products WHERE campaign_id = ?',
     [duplicateCampaign.id]
   );
   assert.equal(duplicateCampaignProduct.product_id, product.id);
+  assert.equal(duplicateCampaignProduct.role, 'hero');
+
+  const primaryRole = await dbOperations.get(
+    "SELECT COUNT(*) AS count FROM campaign_products WHERE role = 'primary'"
+  );
+  assert.equal(Number(primaryRole.count), 0, 'migration must not produce the unsupported primary role');
 
   const accentedCampaignProduct = await dbOperations.get(
     'SELECT * FROM campaign_products WHERE campaign_id = ?',
@@ -331,6 +338,115 @@ test('multi-product migration preserves legacy campaign data', async () => {
 
   const preserved = await models.Campaign.findByPk(campaign.id);
   assert.equal(preserved.product, 'Test');
+});
+
+test('multi-product migration upgrades legacy raw candidate product fits safely', async () => {
+  await resetTestDatabase();
+  await baselineMigration.up(sequelize.getQueryInterface(), Sequelize);
+
+  const queryInterface = sequelize.getQueryInterface();
+  const campaign = await models.Campaign.create({
+    name: 'Legacy Upgrade Campaign',
+    brand: 'Test',
+    product: 'Test'
+  });
+  const rawCandidate = await models.RawCandidate.create({
+    campaign_id: campaign.id,
+    platform: 'youtube',
+    kol_name: 'Legacy Upgrade Creator'
+  });
+
+  await queryInterface.createTable('products', {
+    id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+    brand: { type: Sequelize.STRING(255), allowNull: false, defaultValue: '' },
+    name: { type: Sequelize.STRING(255), allowNull: false },
+    created_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP') },
+    updated_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP') }
+  });
+  await queryInterface.addIndex('products', ['brand', 'name'], {
+    name: 'uq_products_brand_name',
+    unique: true
+  });
+  const productInsert = await dbOperations.run(
+    `INSERT INTO products (brand, name, created_at, updated_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    ['Test', 'Test']
+  );
+
+  await queryInterface.createTable('campaign_products', {
+    id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+    campaign_id: { type: Sequelize.INTEGER, allowNull: false },
+    product_id: { type: Sequelize.INTEGER, allowNull: false },
+    status: { type: Sequelize.STRING(50), allowNull: false, defaultValue: 'active' },
+    created_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP') },
+    updated_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP') }
+  });
+  await queryInterface.addIndex('campaign_products', ['campaign_id', 'product_id'], {
+    name: 'uq_campaign_products_campaign_product',
+    unique: true
+  });
+  const campaignProductInsert = await dbOperations.run(
+    `INSERT INTO campaign_products
+       (campaign_id, product_id, status, created_at, updated_at)
+     VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [campaign.id, productInsert.id]
+  );
+
+  await queryInterface.createTable('raw_candidate_product_fits', {
+    id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+    raw_candidate_id: { type: Sequelize.INTEGER, allowNull: false },
+    campaign_product_id: { type: Sequelize.INTEGER, allowNull: false },
+    identity_key_hash: { type: Sequelize.CHAR(64), allowNull: false },
+    analysis_version: { type: Sequelize.STRING(100), allowNull: true },
+    created_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP') },
+    updated_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.literal('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP') }
+  });
+  await queryInterface.addConstraint('raw_candidate_product_fits', {
+    fields: ['raw_candidate_id'],
+    type: 'foreign key',
+    name: 'fk_raw_candidate_product_fits_candidate',
+    references: { table: 'raw_candidates', field: 'id' },
+    onUpdate: 'CASCADE',
+    onDelete: 'CASCADE'
+  });
+  await dbOperations.run(
+    `INSERT INTO raw_candidate_product_fits
+       (raw_candidate_id, campaign_product_id, identity_key_hash, analysis_version, created_at, updated_at)
+     VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [rawCandidate.id, campaignProductInsert.id, 'a'.repeat(64)]
+  );
+
+  await multiProductMigration.up(queryInterface, Sequelize);
+
+  const rawFitColumns = await queryInterface.describeTable('raw_candidate_product_fits');
+  assert.equal(rawFitColumns.raw_candidate_id, undefined);
+  assert.equal(rawFitColumns.latest_raw_candidate_id.allowNull, true);
+  assert.match(rawFitColumns.analysis_version.type, /INT/i);
+  assert.equal(rawFitColumns.analysis_version.allowNull, false);
+  assert.equal(Number(rawFitColumns.analysis_version.defaultValue), 1);
+
+  const foreignKeyRule = await dbOperations.get(
+    `SELECT rc.DELETE_RULE AS delete_rule, rc.UPDATE_RULE AS update_rule
+     FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+     JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+       ON kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
+      AND kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
+      AND kcu.TABLE_NAME = rc.TABLE_NAME
+     WHERE rc.CONSTRAINT_SCHEMA = DATABASE()
+       AND rc.TABLE_NAME = 'raw_candidate_product_fits'
+       AND kcu.COLUMN_NAME = 'latest_raw_candidate_id'`
+  );
+  assert.equal(foreignKeyRule.delete_rule, 'SET NULL');
+  assert.equal(foreignKeyRule.update_rule, 'CASCADE');
+
+  const upgradedFit = await dbOperations.get(
+    `SELECT analysis_version, analysis_version + 1 AS next_analysis_version
+     FROM raw_candidate_product_fits
+     WHERE latest_raw_candidate_id = ?`,
+    [rawCandidate.id]
+  );
+  assert.equal(upgradedFit.analysis_version, 1);
+  assert.equal(upgradedFit.next_analysis_version, 2);
 });
 
 async function startMockAiServer() {

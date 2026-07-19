@@ -13,7 +13,7 @@ module.exports = (sequelize, DataTypes) => {
     matched_persona: DataTypes.STRING(255),
     evidence_summary: DataTypes.TEXT,
     decision_status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'pending' },
-    analysis_version: DataTypes.STRING(100)
+    analysis_version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 }
   }, {
     tableName: 'raw_candidate_product_fits',
     timestamps: true,

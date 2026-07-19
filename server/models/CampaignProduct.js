@@ -3,7 +3,7 @@ module.exports = (sequelize, DataTypes) => {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     campaign_id: { type: DataTypes.INTEGER, allowNull: false },
     product_id: { type: DataTypes.INTEGER, allowNull: false },
-    role: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'primary' },
+    role: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'hero' },
     priority: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     campaign_brief: DataTypes.TEXT,
     status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'active' }
