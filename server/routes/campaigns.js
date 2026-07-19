@@ -5,6 +5,11 @@ const router = express.Router();
 
 const CAMPAIGN_PRODUCT_ROLES = new Set(['hero', 'secondary', 'test']);
 const CAMPAIGN_PRODUCT_STATUSES = new Set(['planned', 'active', 'paused', 'completed', 'archived']);
+const MYSQL_SIGNED_INT_MAX = 2147483647;
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
 
 function parsePathId(value) {
   if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
@@ -20,7 +25,10 @@ function parseBodyId(value) {
 }
 
 function isNonNegativeIntegerNumber(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
+    && value <= MYSQL_SIGNED_INT_MAX;
 }
 
 function isForeignKeyConstraintError(error) {
@@ -134,6 +142,10 @@ router.post('/:id/products', async (req, res) => {
     const role = req.body.role === undefined ? 'hero' : req.body.role;
     const status = req.body.status === undefined ? 'active' : req.body.status;
     const priority = req.body.priority === undefined ? 0 : req.body.priority;
+    if (hasOwn(req.body, 'campaign_brief') && typeof req.body.campaign_brief !== 'string') {
+      return res.status(400).json({ success: false, error: 'Campaign Product campaign_brief must be a string' });
+    }
+    const campaignBrief = hasOwn(req.body, 'campaign_brief') ? req.body.campaign_brief.trim() : null;
     const validationError = validateCampaignProductValues(role, status);
     if (validationError) {
       return res.status(400).json({ success: false, error: validationError });
@@ -167,7 +179,7 @@ router.post('/:id/products', async (req, res) => {
        SELECT ?, p.id, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
        FROM products p
        WHERE p.id = ? AND p.status = 'active'`,
-      [campaignId, role, priority, req.body.campaign_brief ?? null, status, productId]
+      [campaignId, role, priority, campaignBrief, status, productId]
     );
     const created = await getCampaignProduct(campaignId, result.id);
     if (!created) {
@@ -220,52 +232,50 @@ router.put('/:campaignId/products/:campaignProductId', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign Product not found' });
     }
 
-    const role = req.body.role === undefined ? current.role : req.body.role;
-    const status = req.body.status === undefined ? current.status : req.body.status;
-    const priority = req.body.priority === undefined ? current.priority : req.body.priority;
-    const validationError = validateCampaignProductValues(role, status);
-    if (validationError) {
-      return res.status(400).json({ success: false, error: validationError });
+    if (hasOwn(req.body, 'role') && !CAMPAIGN_PRODUCT_ROLES.has(req.body.role)) {
+      return res.status(400).json({ success: false, error: 'Invalid Campaign Product role' });
     }
-    if (!isNonNegativeIntegerNumber(priority)) {
+    if (hasOwn(req.body, 'status') && !CAMPAIGN_PRODUCT_STATUSES.has(req.body.status)) {
+      return res.status(400).json({ success: false, error: 'Invalid Campaign Product status' });
+    }
+    if (hasOwn(req.body, 'priority') && !isNonNegativeIntegerNumber(req.body.priority)) {
       return res.status(400).json({ success: false, error: 'Campaign Product priority must be a non-negative integer number' });
     }
-    if (current.status === 'archived' && status !== 'archived') {
-      return res.status(409).json({ success: false, error: 'Archived Campaign Product cannot be restored' });
+    if (hasOwn(req.body, 'campaign_brief') && typeof req.body.campaign_brief !== 'string') {
+      return res.status(400).json({ success: false, error: 'Campaign Product campaign_brief must be a string' });
     }
 
-    const result = await dbOperations.run(
-      `UPDATE campaign_products SET
-         role = ?, priority = ?, campaign_brief = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE campaign_id = ? AND id = ? AND status = ?`,
-      [
-        role,
-        priority,
-        req.body.campaign_brief === undefined ? current.campaign_brief : req.body.campaign_brief,
-        status,
-        campaignId,
-        campaignProductId,
-        current.status
-      ]
-    );
+    const assignments = [];
+    const values = [];
+    const requestedValues = {};
+    for (const field of ['role', 'priority', 'campaign_brief', 'status']) {
+      if (!hasOwn(req.body, field)) continue;
+      const value = field === 'campaign_brief' ? req.body[field].trim() : req.body[field];
+      assignments.push(`${field} = ?`);
+      values.push(value);
+      requestedValues[field] = value;
+    }
+
+    let result = { changes: 0 };
+    if (assignments.length > 0) {
+      result = await dbOperations.run(
+        `UPDATE campaign_products SET
+         ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+         WHERE campaign_id = ? AND id = ? AND status <> 'archived'`,
+        [...values, campaignId, campaignProductId]
+      );
+    }
     const updated = await getCampaignProduct(campaignId, campaignProductId);
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Campaign Product not found' });
     }
-    if (updated.status === 'archived' && status !== 'archived') {
-      return res.status(409).json({ success: false, error: 'Archived Campaign Product cannot be restored' });
-    }
-    const expectedBrief = req.body.campaign_brief === undefined
-      ? current.campaign_brief
-      : req.body.campaign_brief;
-    const matchesUpdate = updated.role === role
-      && Number(updated.priority) === priority
-      && updated.campaign_brief === expectedBrief
-      && updated.status === status;
-    if (!matchesUpdate) {
-      const error = result.changes === 0
-        ? 'Campaign Product changed concurrently before update'
-        : 'Campaign Product changed concurrently after update';
+    const matchesRequestedValues = Object.entries(requestedValues).every(([field, value]) => (
+      field === 'priority' ? Number(updated[field]) === value : updated[field] === value
+    ));
+    if (result.changes === 0 && !matchesRequestedValues) {
+      const error = updated.status === 'archived'
+        ? 'Archived Campaign Product cannot be restored or changed'
+        : 'Campaign Product changed concurrently before update';
       return res.status(409).json({ success: false, error });
     }
     res.json({ success: true, data: toCampaignProduct(updated), message: 'Campaign Product updated' });

@@ -9,8 +9,12 @@ const PRODUCT_COLUMNS = `
   id, brand, name, sku, category, product_url, description, selling_points, status
 `;
 
-function cleanText(value) {
-  return String(value ?? '').trim();
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function isString(value) {
+  return typeof value === 'string';
 }
 
 function validateStatus(status) {
@@ -42,13 +46,17 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const brand = cleanText(req.body.brand);
-    const name = cleanText(req.body.name);
+    if (!isString(req.body.name) || !req.body.name.trim()) {
+      return res.status(400).json({ success: false, error: 'Product name must be a non-empty string' });
+    }
+    if (hasOwn(req.body, 'brand') && !isString(req.body.brand)) {
+      return res.status(400).json({ success: false, error: 'Product brand must be a string' });
+    }
+
+    const brand = hasOwn(req.body, 'brand') ? req.body.brand.trim() : '';
+    const name = req.body.name.trim();
     const status = req.body.status === undefined ? 'active' : req.body.status;
 
-    if (!name) {
-      return res.status(400).json({ success: false, error: 'Product name is required' });
-    }
     if (!validateStatus(status)) {
       return res.status(400).json({ success: false, error: 'Invalid Product status' });
     }
@@ -101,8 +109,15 @@ router.put('/:id', async (req, res) => {
     if (id === null) {
       return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
     }
-    if (Object.prototype.hasOwnProperty.call(req.body, 'status')) {
+    if (hasOwn(req.body, 'status')) {
       return res.status(400).json({ success: false, error: 'Product status can only be changed through archive' });
+    }
+
+    if (hasOwn(req.body, 'name') && (!isString(req.body.name) || !req.body.name.trim())) {
+      return res.status(400).json({ success: false, error: 'Product name must be a non-empty string' });
+    }
+    if (hasOwn(req.body, 'brand') && !isString(req.body.brand)) {
+      return res.status(400).json({ success: false, error: 'Product brand must be a string' });
     }
 
     const product = await getProduct(id);
@@ -110,38 +125,39 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Product not found' });
     }
 
-    const brand = req.body.brand === undefined ? product.brand : cleanText(req.body.brand);
-    const name = req.body.name === undefined ? product.name : cleanText(req.body.name);
-    if (!name) {
-      return res.status(400).json({ success: false, error: 'Product name is required' });
+    const assignments = [];
+    const values = [];
+    const mutableFields = ['brand', 'name', 'sku', 'category', 'product_url', 'description', 'selling_points'];
+
+    for (const field of mutableFields) {
+      if (!hasOwn(req.body, field)) continue;
+      assignments.push(`${field} = ?`);
+      values.push(field === 'brand' || field === 'name' ? req.body[field].trim() : req.body[field]);
     }
 
-    const catalogHash = catalogKeyHash(brand, name);
-    const duplicate = await dbOperations.get(
-      'SELECT id FROM products WHERE catalog_key_hash = ? AND id != ?',
-      [catalogHash, id]
-    );
-    if (duplicate) {
-      return res.status(409).json({ success: false, error: 'A matching Product already exists' });
+    if (hasOwn(req.body, 'brand') || hasOwn(req.body, 'name')) {
+      const brand = hasOwn(req.body, 'brand') ? req.body.brand.trim() : product.brand;
+      const name = hasOwn(req.body, 'name') ? req.body.name.trim() : product.name;
+      const catalogHash = catalogKeyHash(brand, name);
+      const duplicate = await dbOperations.get(
+        'SELECT id FROM products WHERE catalog_key_hash = ? AND id != ?',
+        [catalogHash, id]
+      );
+      if (duplicate) {
+        return res.status(409).json({ success: false, error: 'A matching Product already exists' });
+      }
+      assignments.push('catalog_key_hash = ?');
+      values.push(catalogHash);
     }
 
-    await dbOperations.run(
-      `UPDATE products SET
-         brand = ?, name = ?, sku = ?, category = ?, product_url = ?, description = ?,
-         selling_points = ?, catalog_key_hash = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [
-        brand,
-        name,
-        req.body.sku === undefined ? product.sku : req.body.sku,
-        req.body.category === undefined ? product.category : req.body.category,
-        req.body.product_url === undefined ? product.product_url : req.body.product_url,
-        req.body.description === undefined ? product.description : req.body.description,
-        req.body.selling_points === undefined ? product.selling_points : req.body.selling_points,
-        catalogHash,
-        id
-      ]
-    );
+    if (assignments.length > 0) {
+      await dbOperations.run(
+        `UPDATE products SET
+         ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [...values, id]
+      );
+    }
     const updated = await getProduct(id);
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Product not found' });

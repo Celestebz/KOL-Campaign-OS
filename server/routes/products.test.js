@@ -96,6 +96,41 @@ test('Product API validates required name and allowed status values', async () =
     .expect(400);
 });
 
+test('Product create and update require string name and brand values', async () => {
+  for (const name of [true, false, {}, [], 42]) {
+    await supertest(app)
+      .post('/api/products')
+      .send({ brand: 'Vivatrees', name })
+      .expect(400);
+  }
+
+  for (const [index, brand] of [null, true, {}, [], 42].entries()) {
+    await supertest(app)
+      .post('/api/products')
+      .send({ brand, name: `Invalid Brand Product ${index}` })
+      .expect(400);
+  }
+
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Strict String Product' })
+    .expect(200);
+
+  for (const name of [null, true, {}, [], 42]) {
+    await supertest(app)
+      .put(`/api/products/${product.body.data.id}`)
+      .send({ name })
+      .expect(400);
+  }
+
+  for (const brand of [null, true, {}, [], 42]) {
+    await supertest(app)
+      .put(`/api/products/${product.body.data.id}`)
+      .send({ brand })
+      .expect(400);
+  }
+});
+
 test('Product API reuses the normalized catalog product across Campaigns', async () => {
   const firstCampaign = await createCampaign('Reuse A');
   const secondCampaign = await createCampaign('Reuse B');
@@ -175,6 +210,38 @@ test('Product API updates fields and moves reuse to the recalculated catalog key
     .send({ brand: 'vivatrees', name: 'original product' })
     .expect(200);
   assert.notEqual(oldKey.body.data.id, original.body.data.id);
+});
+
+test('Product partial update preserves a disjoint field changed after its initial read', async () => {
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Product Disjoint Update', sku: 'INITIAL-SKU' })
+    .expect(200);
+  const originalRun = dbOperations.run;
+  let injected = false;
+
+  dbOperations.run = async (sql, params = []) => {
+    if (!injected && /^\s*UPDATE products SET\b/i.test(sql)) {
+      injected = true;
+      await originalRun(
+        'UPDATE products SET sku = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        ['CONCURRENT-SKU', product.body.data.id]
+      );
+    }
+    return originalRun(sql, params);
+  };
+
+  try {
+    const updated = await supertest(app)
+      .put(`/api/products/${product.body.data.id}`)
+      .send({ description: 'Only this field was submitted' })
+      .expect(200);
+
+    assert.equal(updated.body.data.description, 'Only this field was submitted');
+    assert.equal(updated.body.data.sku, 'CONCURRENT-SKU');
+  } finally {
+    dbOperations.run = originalRun;
+  }
 });
 
 test('Product update validates required name and rejects all direct status changes', async () => {
@@ -297,6 +364,116 @@ test('Campaign Product API validates roles and statuses when updating an associa
   assert.equal(updated.body.data.priority, 7);
   assert.equal(updated.body.data.status, 'paused');
   assert.equal(updated.body.data.campaign_brief, 'Test the niche angle');
+});
+
+test('Campaign Product partial update preserves a disjoint field changed after its initial read', async () => {
+  const campaign = await createCampaign('Campaign Product Disjoint Update');
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Campaign Product Disjoint Update' })
+    .expect(200);
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: product.body.data.id, priority: 0, campaign_brief: 'Initial brief' })
+    .expect(200);
+  const originalRun = dbOperations.run;
+  let injected = false;
+
+  dbOperations.run = async (sql, params = []) => {
+    if (!injected && /^\s*UPDATE campaign_products SET\b/i.test(sql)) {
+      injected = true;
+      await originalRun(
+        'UPDATE campaign_products SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [11, attachment.body.data.id]
+      );
+    }
+    return originalRun(sql, params);
+  };
+
+  try {
+    const updated = await supertest(app)
+      .put(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}`)
+      .send({ campaign_brief: '  Updated brief only  ' })
+      .expect(200);
+
+    assert.equal(updated.body.data.campaign_brief, 'Updated brief only');
+    assert.equal(updated.body.data.priority, 11);
+  } finally {
+    dbOperations.run = originalRun;
+  }
+});
+
+test('Campaign Product priority accepts signed INT max and rejects overflow', async () => {
+  const maxPriority = 2147483647;
+  const overflowPriority = 2147483648;
+  const firstCampaign = await createCampaign('Priority Max Create');
+  const secondCampaign = await createCampaign('Priority Overflow Create');
+  const firstProduct = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Priority Max Product' })
+    .expect(200);
+  const secondProduct = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Priority Overflow Product' })
+    .expect(200);
+
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${firstCampaign.id}/products`)
+    .send({ product_id: firstProduct.body.data.id, priority: maxPriority })
+    .expect(200);
+  assert.equal(attachment.body.data.priority, maxPriority);
+
+  await supertest(app)
+    .post(`/api/campaigns/${secondCampaign.id}/products`)
+    .send({ product_id: secondProduct.body.data.id, priority: overflowPriority })
+    .expect(400);
+
+  await supertest(app)
+    .put(`/api/campaigns/${firstCampaign.id}/products/${attachment.body.data.id}`)
+    .send({ priority: 0 })
+    .expect(200);
+  await supertest(app)
+    .put(`/api/campaigns/${firstCampaign.id}/products/${attachment.body.data.id}`)
+    .send({ priority: maxPriority })
+    .expect(200);
+  await supertest(app)
+    .put(`/api/campaigns/${firstCampaign.id}/products/${attachment.body.data.id}`)
+    .send({ priority: overflowPriority })
+    .expect(400);
+});
+
+test('Campaign Product campaign_brief is trimmed and rejects non-string values before writing', async () => {
+  const product = await supertest(app)
+    .post('/api/products')
+    .send({ brand: 'Vivatrees', name: 'Brief Validation Product' })
+    .expect(200);
+  const campaign = await createCampaign('Brief Trim');
+  const attachment = await supertest(app)
+    .post(`/api/campaigns/${campaign.id}/products`)
+    .send({ product_id: product.body.data.id, campaign_brief: '  Original brief  ' })
+    .expect(200);
+  assert.equal(attachment.body.data.campaign_brief, 'Original brief');
+
+  const updated = await supertest(app)
+    .put(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}`)
+    .send({ campaign_brief: '  Updated brief  ' })
+    .expect(200);
+  assert.equal(updated.body.data.campaign_brief, 'Updated brief');
+
+  for (const [index, campaignBrief] of [null, true, false, 7, {}, []].entries()) {
+    const invalidCampaign = await createCampaign(`Invalid Brief Create ${index}`);
+    await supertest(app)
+      .post(`/api/campaigns/${invalidCampaign.id}/products`)
+      .send({ product_id: product.body.data.id, campaign_brief: campaignBrief })
+      .expect(400);
+  }
+
+  for (const campaignBrief of [null, true, false, 7, {}, []]) {
+    await supertest(app)
+      .put(`/api/campaigns/${campaign.id}/products/${attachment.body.data.id}`)
+      .send({ campaign_brief: campaignBrief })
+      .expect(400);
+  }
 });
 
 test('Product and Campaign Product APIs reject malformed IDs and priorities', async () => {
