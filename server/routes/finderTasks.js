@@ -1,5 +1,7 @@
 const express = require('express');
-const { dbOperations } = require('../database');
+const crypto = require('crypto');
+const { dbOperations, sequelize, Sequelize } = require('../database');
+const { computeUrlHash } = require('../utils/videoUrlNormalizer');
 const {
   buildInstagramReelSearchUrl,
   extractInstagramReels,
@@ -45,6 +47,55 @@ const cancelledTasks = new Set();
 function clean(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
+}
+
+function normalizedPlatform(value, profileUrl = '') {
+  const platform = clean(value).toLowerCase();
+  return TARGET_PLATFORMS.includes(platform) ? platform : detectPlatformFromUrl(profileUrl);
+}
+
+function normalizeProfileIdentity(platform, profileUrl) {
+  let value = clean(profileUrl);
+  if (!value) return '';
+  if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+  try {
+    const parsed = new URL(value);
+    const detectedPlatform = normalizedPlatform(platform, value);
+    let hostname = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    if (detectedPlatform === 'youtube' && (hostname === 'youtube.com' || hostname.endsWith('.youtube.com'))) {
+      hostname = 'www.youtube.com';
+    } else if (detectedPlatform === 'instagram' && (hostname === 'instagram.com' || hostname.endsWith('.instagram.com'))) {
+      hostname = 'www.instagram.com';
+    } else if (detectedPlatform === 'tiktok' && (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com'))) {
+      hostname = 'www.tiktok.com';
+    }
+
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts.length) {
+      const accountPath = parts[0].startsWith('@') || ['user', 'c'].includes(parts[0].toLowerCase());
+      if (detectedPlatform === 'instagram' || detectedPlatform === 'tiktok' || accountPath) {
+        for (let index = 0; index < parts.length; index += 1) parts[index] = parts[index].toLowerCase();
+      }
+    }
+    const pathname = parts.length ? `/${parts.join('/')}` : '';
+    const platformTrailingSlash = detectedPlatform === 'instagram' && pathname ? '/' : '';
+    return `https://${hostname}${pathname}${platformTrailingSlash}`;
+  } catch (error) {
+    return value.toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '');
+  }
+}
+
+function buildCandidateIdentity(platform, profileUrl, authorName) {
+  const normalized = normalizedPlatform(platform, profileUrl) || 'unknown';
+  const normalizedProfileUrl = normalizeProfileIdentity(normalized, profileUrl);
+  const normalizedAuthor = clean(authorName).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
+  const identityKey = normalizedProfileUrl
+    ? `profile:${normalized}:${normalizedProfileUrl}`
+    : `author:${normalized}:${normalizedAuthor || 'unknown'}`;
+  return {
+    identityKey,
+    identityKeyHash: crypto.createHash('sha256').update(identityKey).digest('hex')
+  };
 }
 
 function redactKnownSecrets(value, secrets = []) {
@@ -556,6 +607,11 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
     throw new Error(`${PROVIDER_LABELS[provider] || provider} is not available for Finder evidence analysis`);
   }
   const setting = await getSetting(providerKey('ai', provider), legacyKeysFor('ai', provider));
+  const creatorContext = await resolveExistingCreatorContext(
+    evidence.target_platform || video.platform,
+    evidence.author_profile_url || video.author_profile_url,
+    evidence.author_name || evidence.video_author_name || video.author_name || video.kol_name
+  );
   const systemPrompt = [
     'You are a KOL Finder evidence analyst.',
     'Return valid JSON only. Do not include Markdown, explanations, or chain-of-thought.',
@@ -563,6 +619,7 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
     'Evaluate in two layers: (1) video evidence fit and multi-label evidence_signals, and (2) creator profile / account quality.',
     'Assign zero or more evidence_signals from competitor, category, use_case, feature, community. A video may match multiple signals.',
     'Do not analyze cooperation performance. Do not assume comments are available.',
+    'Existing creator history is advisory context only. It must not auto-approve, auto-reject, or replace current video evidence.',
     'AI score is for ranking only; do not use it as a hard filter to reject candidates.',
     `Enter raw candidates when: (1) hard_filter passes, (2) at least one signal score >= ${MIN_RELEVANT_SIGNAL_SCORE} (competitor, category, use_case, feature, or community), and (3) risk is not high.`,
     'If the above conditions are met, set enter_raw_candidates = true and recommended_status = manual_review (or new if strong).',
@@ -581,9 +638,29 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
         language: strategy.language || '',
         goal: strategy.campaign_goal || ''
       },
+      global_product: {
+        id: strategy.product_id,
+        brand: strategy.product_brand || '',
+        name: strategy.product_name || '',
+        sku: strategy.product_sku || '',
+        category: strategy.product_category || '',
+        product_url: strategy.product_url || '',
+        price: strategy.product_price,
+        currency: strategy.product_currency || '',
+        description: strategy.product_description || '',
+        selling_points: parseJson(strategy.product_selling_points, strategy.product_selling_points || [])
+      },
+      campaign_product: {
+        id: strategy.campaign_product_id,
+        role: strategy.role || '',
+        priority: strategy.priority,
+        campaign_brief: strategy.campaign_brief || '',
+        status: strategy.campaign_product_status || ''
+      },
       product_context: strategy.product_context || {},
       persona_config: strategy.persona_config || {},
-      finder_handoff: strategy.finder_handoff || {}
+      finder_handoff: strategy.finder_handoff || {},
+      existing_creator_context: creatorContext
     }, null, 2),
     '',
     'Video evidence:',
@@ -679,22 +756,153 @@ function buildUrl(baseUrl, path, params = {}) {
   return `${normalizedBase}${normalizedPath}${queryString ? `?${queryString}` : ''}`;
 }
 
-async function getReadyStrategy(strategyId) {
-  const row = await dbOperations.get(`
+async function scopedGet(sql, params, transaction = null) {
+  if (!transaction) return dbOperations.get(sql, params);
+  const rows = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.SELECT,
+    transaction,
+    logging: false
+  });
+  return rows[0] || null;
+}
+
+async function scopedRun(sql, params, transaction = null) {
+  if (!transaction) return dbOperations.run(sql, params);
+  const [result, metadata] = await sequelize.query(sql, {
+    replacements: params,
+    type: Sequelize.QueryTypes.RAW,
+    transaction,
+    logging: false
+  });
+  return {
+    id: /^\s*INSERT\b/i.test(sql) ? (Number(result) || 0) : 0,
+    changes: Number(metadata !== undefined ? metadata : result) || 0
+  };
+}
+
+async function getReadyStrategy(strategyId, { requireActiveProduct = false, transaction = null } = {}) {
+  const row = await scopedGet(`
     SELECT ks.*, c.name as campaign_name, c.brand as campaign_brand, c.product as campaign_product
     FROM kol_strategies ks
     LEFT JOIN campaigns c ON c.id = ks.campaign_id
-    WHERE ks.id = ?
-  `, [strategyId]);
+    WHERE ks.id = ?${transaction ? ' FOR UPDATE' : ''}
+  `, [strategyId], transaction);
   if (!row) throw new Error('Strategy not found');
   if (row.status !== 'ready') throw new Error('Only published Strategy can start Finder');
+  let campaignProduct = null;
+  if (row.campaign_product_id) {
+    campaignProduct = await scopedGet(`
+      SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority,
+        cp.campaign_brief, cp.status AS campaign_product_status,
+        p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
+        p.category AS product_category, p.product_url, p.price AS product_price,
+        p.currency AS product_currency, p.description AS product_description,
+        p.selling_points AS product_selling_points, p.status AS product_status
+      FROM campaign_products cp
+      JOIN products p ON p.id = cp.product_id
+      WHERE cp.id = ? AND cp.campaign_id = ?${transaction ? ' FOR UPDATE' : ''}
+    `, [row.campaign_product_id, row.campaign_id], transaction);
+  }
+  if (requireActiveProduct && !campaignProduct) {
+    throw new Error('Ready Strategy requires a valid Campaign Product binding');
+  }
+  if (requireActiveProduct && campaignProduct.campaign_product_status !== 'active') {
+    throw new Error('Campaign Product must be active before starting Finder');
+  }
+  if (requireActiveProduct && campaignProduct.product_status !== 'active') {
+    throw new Error('Product must be active before starting Finder');
+  }
   return {
     ...row,
+    ...(campaignProduct || {}),
     secondary_platforms: parseJson(row.secondary_platforms, []),
     product_context: parseJson(row.product_context, {}),
     persona_config: parseJson(row.persona_config, {}),
     scoring_weights: parseJson(row.scoring_weights, {}),
     finder_handoff: parseJson(row.finder_handoff, {})
+  };
+}
+
+async function resolveExistingCreatorContext(platform, profileUrl, authorName) {
+  const normalized = normalizedPlatform(platform, profileUrl) || 'unknown';
+  const normalizedProfileUrl = normalizeProfileIdentity(normalized, profileUrl);
+  const normalizedAuthor = clean(authorName).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
+  const customerFields = `c.id AS customer_id, c.name AS customer_name,
+    c.cooperation_status, c.cooperation_risk_category, c.cooperation_risk_reason,
+    c.country_region AS customer_country_region`;
+  let matched = null;
+
+  if (normalizedProfileUrl) {
+    const profileUrlHash = computeUrlHash(normalizedProfileUrl);
+    matched = await dbOperations.get(`
+      SELECT ${customerFields}, kpa.id AS platform_account_id,
+        kpa.platform AS account_platform, kpa.username AS account_username,
+        kpa.profile_url AS account_profile_url, kpa.followers_text AS account_followers
+      FROM kol_platform_accounts kpa
+      JOIN customers c ON c.id = kpa.customer_id
+      WHERE LOWER(kpa.platform) = ?
+        AND (kpa.profile_url_hash = ? OR kpa.profile_url = ?)
+      ORDER BY kpa.id ASC
+      LIMIT 1
+    `, [normalized, profileUrlHash, normalizedProfileUrl]);
+
+    if (!matched) {
+      const platformColumn = normalized === 'youtube'
+        ? 'youtube_url'
+        : normalized === 'instagram'
+          ? 'instagram_url'
+          : normalized === 'tiktok'
+            ? 'tiktok_url'
+            : 'profile_url';
+      matched = await dbOperations.get(`
+        SELECT ${customerFields}, NULL AS platform_account_id,
+          ? AS account_platform, NULL AS account_username,
+          ${platformColumn} AS account_profile_url, NULL AS account_followers
+        FROM customers c
+        WHERE c.profile_url = ? OR c.${platformColumn} = ?
+        ORDER BY c.id ASC
+        LIMIT 1
+      `, [normalized, normalizedProfileUrl, normalizedProfileUrl]);
+    }
+  } else if (normalizedAuthor) {
+    matched = await dbOperations.get(`
+      SELECT ${customerFields}, kpa.id AS platform_account_id,
+        kpa.platform AS account_platform, kpa.username AS account_username,
+        kpa.profile_url AS account_profile_url, kpa.followers_text AS account_followers
+      FROM kol_platform_accounts kpa
+      JOIN customers c ON c.id = kpa.customer_id
+      WHERE LOWER(kpa.platform) = ? AND LOWER(kpa.username) = ?
+      ORDER BY kpa.id ASC
+      LIMIT 1
+    `, [normalized, normalizedAuthor]);
+  }
+
+  if (!matched) return null;
+  const cooperationHistory = await dbOperations.query(`
+    SELECT campaign_id, target_platform, project_status, priority_level,
+      candidate_priority_score, outreach_status, negotiation_status,
+      contract_status, payment_status, content_status, status, updated_at
+    FROM campaign_kols
+    WHERE customer_id = ?
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 20
+  `, [matched.customer_id]);
+  return {
+    customer_id: matched.customer_id,
+    customer_name: matched.customer_name,
+    cooperation_status: matched.cooperation_status,
+    cooperation_risk_category: matched.cooperation_risk_category,
+    cooperation_risk_reason: matched.cooperation_risk_reason,
+    country_region: matched.customer_country_region,
+    platform_account: matched.platform_account_id ? {
+      id: matched.platform_account_id,
+      platform: matched.account_platform,
+      username: matched.account_username,
+      profile_url: matched.account_profile_url,
+      followers: matched.account_followers
+    } : null,
+    cooperation_history: cooperationHistory
   };
 }
 
@@ -897,6 +1105,20 @@ function buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetP
       persona_config: strategy.persona_config,
       scoring_weights: strategy.scoring_weights,
       finder_handoff: strategy.finder_handoff
+    },
+    product: {
+      id: strategy.product_id,
+      name: strategy.product_name || '',
+      brand: strategy.product_brand || '',
+      sku: strategy.product_sku || '',
+      description: strategy.product_description || '',
+      selling_points: parseJson(strategy.product_selling_points, strategy.product_selling_points || [])
+    },
+    campaign_product: {
+      id: strategy.campaign_product_id,
+      role: strategy.role || '',
+      priority: strategy.priority,
+      campaign_brief: strategy.campaign_brief || ''
     },
     discovery: {
       keywords,
@@ -1255,33 +1477,14 @@ async function rawCandidateExists(candidate, strategyId) {
   return dbOperations.get('SELECT * FROM raw_candidates WHERE strategy_id = ? AND platform = ? AND kol_name = ? LIMIT 1', [strategyId, candidate.platform, candidate.kol_name]);
 }
 
-async function masterExists(candidate) {
-  if (candidate.profile_url) {
-    const row = await dbOperations.get(
-      'SELECT * FROM customers WHERE profile_url = ? OR youtube_url = ? OR instagram_url = ? OR tiktok_url = ? LIMIT 1',
-      [candidate.profile_url, candidate.profile_url, candidate.profile_url, candidate.profile_url]
-    );
-    if (row) return row;
-  }
-  if (candidate.email) {
-    const row = await dbOperations.get('SELECT * FROM customers WHERE email = ? LIMIT 1', [candidate.email]);
-    if (row) return row;
-  }
-  if (candidate.kol_name) {
-    return dbOperations.get('SELECT * FROM customers WHERE name = ? LIMIT 1', [candidate.kol_name]);
-  }
-  return null;
-}
-
-async function upsertRawCandidate(candidate, task, provider) {
+async function upsertRawCandidate(candidate, task, provider, creatorContext = null) {
   if (!candidate.kol_name && !candidate.profile_url) {
     return { inserted: false, skipped: true, reason: 'Missing kol_name/profile_url' };
   }
   const existing = await rawCandidateExists(candidate, task.strategy_id);
-  const desiredStatus = ['ignored', 'error', 'manual_review', 'risk_review'].includes(candidate.status) ? candidate.status : '';
-  const master = await masterExists(candidate);
-  const globalRisk = master?.cooperation_status === 'do_not_contact';
-  const status = desiredStatus || (globalRisk ? 'risk_review' : (master ? 'duplicate' : 'new'));
+  const desiredStatus = ['new', 'ignored', 'error', 'manual_review', 'risk_review'].includes(candidate.status) ? candidate.status : '';
+  const globalRisk = creatorContext?.cooperation_status === 'do_not_contact';
+  const status = desiredStatus || 'new';
   const rawData = JSON.stringify({
     provider,
     finder_task_id: task.id,
@@ -1289,11 +1492,12 @@ async function upsertRawCandidate(candidate, task, provider) {
     source_platform: candidate.source_platform,
     target_platform: candidate.target_platform,
     global_cooperation_risk: globalRisk ? {
-      customer_id: master.id,
-      cooperation_status: master.cooperation_status,
-      category: master.cooperation_risk_category || '',
-      reason: master.cooperation_risk_reason || ''
+      customer_id: creatorContext.customer_id,
+      cooperation_status: creatorContext.cooperation_status,
+      category: creatorContext.cooperation_risk_category || '',
+      reason: creatorContext.cooperation_risk_reason || ''
     } : undefined,
+    existing_creator_context: creatorContext || undefined,
     data: candidate.raw_data
   });
   if (existing) {
@@ -1347,9 +1551,9 @@ async function upsertRawCandidate(candidate, task, provider) {
         status,
         status,
         status,
-        master?.cooperation_risk_category || '',
+        creatorContext?.cooperation_risk_category || '',
         status,
-        master?.cooperation_risk_reason || '',
+        creatorContext?.cooperation_risk_reason || '',
         candidate.error_message,
         candidate.ai_score,
         candidate.ai_match_reason,
@@ -1358,7 +1562,7 @@ async function upsertRawCandidate(candidate, task, provider) {
         existing.id
       ]
     );
-    return { inserted: false, duplicate: true, status: existing.status || status };
+    return { inserted: false, duplicate: true, id: existing.id, status: existing.status || status };
   }
   const result = await dbOperations.run(
     `INSERT INTO raw_candidates
@@ -1399,11 +1603,72 @@ async function upsertRawCandidate(candidate, task, provider) {
       candidate.evidence_type,
       candidate.source_query,
       status === 'ignored' ? 'project' : status === 'risk_review' ? 'global' : '',
-      status === 'risk_review' ? master?.cooperation_risk_category || '' : '',
-      status === 'risk_review' ? master?.cooperation_risk_reason || '' : ''
+      status === 'risk_review' ? creatorContext?.cooperation_risk_category || '' : '',
+      status === 'risk_review' ? creatorContext?.cooperation_risk_reason || '' : ''
     ]
   );
   return { inserted: true, id: result.id, status };
+}
+
+async function upsertRawCandidateProductFit(candidate, task, identity, creatorContext, rawCandidateId) {
+  if (!task.campaign_product_id) {
+    throw new Error('Finder task is missing its Campaign Product binding');
+  }
+  const evidence = Array.isArray(candidate.raw_data?.evidence) ? candidate.raw_data.evidence : [];
+  const evidenceSummary = JSON.stringify({
+    identity_key: identity.identityKey,
+    evidence_count: evidence.length,
+    evidence_ids: candidate.raw_data?.evidence_ids || [],
+    analysis_ids: candidate.raw_data?.analysis_ids || [],
+    video_source_ids: candidate.raw_data?.video_source_ids || [],
+    evidence,
+    best_score: candidate.scoring_breakdown?.best_score ?? candidate.ai_score,
+    average_score: candidate.scoring_breakdown?.average_score ?? candidate.ai_score,
+    matched_persona: candidate.matched_persona,
+    recommendation: candidate.ai_match_reason,
+    existing_creator_context: creatorContext || null
+  });
+  const identityStatus = creatorContext ? 'known_kol_new_product_fit' : 'new_kol';
+  await dbOperations.run(
+    `INSERT INTO raw_candidate_product_fits
+     (latest_raw_candidate_id, existing_customer_id, campaign_product_id, platform,
+      identity_key_hash, strategy_id, finder_task_id, identity_status, fit_score,
+      matched_persona, evidence_summary, decision_status, analysis_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1)
+     ON DUPLICATE KEY UPDATE
+      latest_raw_candidate_id = VALUES(latest_raw_candidate_id),
+      existing_customer_id = COALESCE(VALUES(existing_customer_id), existing_customer_id),
+      platform = VALUES(platform),
+      strategy_id = VALUES(strategy_id),
+      finder_task_id = VALUES(finder_task_id),
+      identity_status = 'existing_product_fit_updated',
+      fit_score = VALUES(fit_score),
+      matched_persona = VALUES(matched_persona),
+      evidence_summary = VALUES(evidence_summary),
+      analysis_version = analysis_version + 1,
+      decision_status = CASE
+        WHEN decision_status IN ('approved', 'rejected') THEN decision_status
+        ELSE VALUES(decision_status)
+      END,
+      updated_at = CURRENT_TIMESTAMP`,
+    [
+      rawCandidateId,
+      creatorContext?.customer_id || null,
+      task.campaign_product_id,
+      candidate.platform,
+      identity.identityKeyHash,
+      task.strategy_id,
+      task.id,
+      identityStatus,
+      candidate.ai_score,
+      candidate.matched_persona,
+      evidenceSummary
+    ]
+  );
+  return dbOperations.get(
+    'SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ? AND identity_key_hash = ?',
+    [task.campaign_product_id, identity.identityKeyHash]
+  );
 }
 
 function appendProviderErrorAttempts(attempts, error, fallback) {
@@ -2099,23 +2364,34 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
     const groups = new Map();
     for (const row of rows) {
       const authorName = clean(row.author_name || row.video_author_name || row.kol_name);
-      if (!authorName) continue;
-      if (!clean(row.author_profile_url) && !clean(row.video_url)) continue;
-      const key = clean(row.author_profile_url)
-        ? `profile:${clean(row.author_profile_url).toLowerCase().replace(/\/$/, '')}`
-        : `author:${row.evidence_platform}:${authorName.toLowerCase()}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(row);
+      const profileUrl = clean(row.author_profile_url);
+      if (!authorName && !profileUrl) continue;
+      if (!profileUrl && !clean(row.video_url)) continue;
+      const identity = buildCandidateIdentity(row.target_platform || row.evidence_platform, profileUrl, authorName);
+      if (!groups.has(identity.identityKeyHash)) {
+        groups.set(identity.identityKeyHash, {
+          identity,
+          normalizedProfileUrl: normalizeProfileIdentity(row.target_platform || row.evidence_platform, profileUrl),
+          rows: []
+        });
+      }
+      groups.get(identity.identityKeyHash).rows.push(row);
     }
 
     const inserted = [];
     const skipped = [];
+    const productFits = [];
     for (const evidenceGroup of groups.values()) {
-      const sorted = evidenceGroup.sort((a, b) => Number(b.candidate_priority_score || 0) - Number(a.candidate_priority_score || 0));
+      const sorted = evidenceGroup.rows.sort((a, b) => Number(b.candidate_priority_score || 0) - Number(a.candidate_priority_score || 0));
       const best = sorted[0];
       const averageScore = Math.round(sorted.reduce((sum, item) => sum + Number(item.candidate_priority_score || 0), 0) / sorted.length);
       const recommendedStatus = clean(best.recommended_status) || 'manual_review';
       const matchedPersona = inferPersonaFromEvidence(best, strategy);
+      const creatorContext = await resolveExistingCreatorContext(
+        best.target_platform || best.evidence_platform,
+        evidenceGroup.normalizedProfileUrl,
+        best.author_name || best.video_author_name || best.kol_name
+      );
       const candidate = {
         platform: best.target_platform,
         target_platform: best.target_platform,
@@ -2123,7 +2399,7 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
         discovery_route: 'target_platform_first',
         source_agent: 'video_evidence_finder',
         kol_name: clean(best.author_name || best.video_author_name || best.kol_name),
-        profile_url: clean(best.author_profile_url),
+        profile_url: evidenceGroup.normalizedProfileUrl,
         video_url: clean(best.video_url),
         video_title: clean(best.title || best.video_title),
         evidence_url: clean(best.video_url),
@@ -2169,15 +2445,38 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
           }))
         }
       };
-      const saved = await upsertRawCandidate(candidate, task, 'video_evidence_finder');
+      const saved = await upsertRawCandidate(candidate, task, 'video_evidence_finder', creatorContext);
+      if (saved.id) {
+        productFits.push(await upsertRawCandidateProductFit(
+          candidate,
+          task,
+          evidenceGroup.identity,
+          creatorContext,
+          saved.id
+        ));
+      }
       if (saved.inserted) inserted.push(saved);
       else skipped.push(saved);
     }
     await updateTask(task.id, {
       result_count: Number(task.result_count || 0) + inserted.length,
-      raw_response_summary: JSON.stringify({ stage: 'generate_candidates_from_evidence', inserted: inserted.length, skipped: skipped.length })
+      raw_response_summary: JSON.stringify({
+        stage: 'generate_candidates_from_evidence',
+        inserted: inserted.length,
+        skipped: skipped.length,
+        product_fits: productFits.length
+      })
     });
-    res.json({ success: true, data: { inserted_count: inserted.length, skipped_count: skipped.length, inserted, skipped } });
+    res.json({
+      success: true,
+      data: {
+        inserted_count: inserted.length,
+        skipped_count: skipped.length,
+        product_fit_count: productFits.length,
+        inserted,
+        skipped
+      }
+    });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -2233,7 +2532,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const strategy = await getReadyStrategy(body.strategy_id);
     const targetPlatform = clean(body.target_platform);
     if (!TARGET_PLATFORMS.includes(targetPlatform)) {
       return res.status(400).json({
@@ -2243,32 +2541,45 @@ router.post('/', async (req, res) => {
     }
     const limit = Math.max(1, Math.min(Number(body.limit || 10), 50));
     const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
-    const keywords = discoveryKeywords(strategy);
-    const rawRequest = { strategy_id: strategy.id, target_platform: targetPlatform, limit };
-    const result = await dbOperations.run(
-      'INSERT INTO finder_tasks ' +
-      '(campaign_id, strategy_id, name, platform, keywords, status, search_sources, ' +
-      'discovery_routes, raw_request, notes, source_agent) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        strategy.campaign_id,
-        strategy.id,
-        strategy.name + ' Finder ' + new Date().toLocaleString(),
-        targetPlatform,
-        keywords,
-        'draft',
-        JSON.stringify([searchSource]),
-        JSON.stringify(['target_platform_first']),
-        JSON.stringify(rawRequest),
-        clean(body.notes),
-        'video_evidence_finder'
-      ]
-    );
-    const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [result.id]);
+    const task = await sequelize.transaction(async (transaction) => {
+      const strategy = await getReadyStrategy(body.strategy_id, {
+        requireActiveProduct: true,
+        transaction
+      });
+      const keywords = discoveryKeywords(strategy);
+      const rawRequest = {
+        strategy_id: strategy.id,
+        campaign_product_id: strategy.campaign_product_id,
+        target_platform: targetPlatform,
+        limit
+      };
+      const result = await scopedRun(
+        'INSERT INTO finder_tasks ' +
+        '(campaign_id, campaign_product_id, strategy_id, name, platform, keywords, status, search_sources, ' +
+        'discovery_routes, raw_request, notes, source_agent) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          strategy.campaign_id,
+          strategy.campaign_product_id,
+          strategy.id,
+          strategy.name + ' Finder ' + new Date().toLocaleString(),
+          targetPlatform,
+          keywords,
+          'draft',
+          JSON.stringify([searchSource]),
+          JSON.stringify(['target_platform_first']),
+          JSON.stringify(rawRequest),
+          clean(body.notes),
+          'video_evidence_finder'
+        ],
+        transaction
+      );
+      return scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [result.id], transaction);
+    });
     if (process.env.NODE_ENV !== 'test') {
       setImmediate(() => {
-        processVideoEvidenceTask(result.id, { targetPlatform, limit }).catch((error) => {
-          updateTask(result.id, {
+        processVideoEvidenceTask(task.id, { targetPlatform, limit }).catch((error) => {
+          updateTask(task.id, {
             status: 'failed',
             error_message: error.message,
             finished_at: new Date().toISOString()
@@ -2294,3 +2605,4 @@ router.post('/:id/cancel', async (req, res) => {
 
 module.exports = router;
 module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
+module.exports.buildCandidateIdentity = buildCandidateIdentity;

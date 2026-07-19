@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const test = require('node:test');
 const supertest = require('supertest');
 const path = require('path');
@@ -16,6 +17,7 @@ const finderSubtaskRoutes = require('./finderSubtasks');
 const baselineMigration = require('../migrations/20260707000001-create-v2-core-tables');
 const replaceCyclesMigration = require('../migrations/20260709000001-replace-cycles-with-evidence-signals');
 const multiProductMigration = require('../migrations/20260719000001-add-multi-product-campaign-relations');
+const { computeUrlHash } = require('../utils/videoUrlNormalizer');
 
 async function buildApp() {
   const app = express();
@@ -54,21 +56,50 @@ function safeParseJson(value) {
   }
 }
 
+async function createCampaignProduct(campaignId, {
+  name = 'Finder Catalog Product',
+  brand = 'Test Brand',
+  campaignBrief = 'Finder-specific campaign product brief',
+  status = 'active'
+} = {}) {
+  const product = await models.Product.create({
+    brand,
+    name,
+    sku: `${name.replace(/\W+/g, '-').toUpperCase()}-${campaignId}`,
+    category: 'Audio Gear',
+    description: `${name} global product description`,
+    selling_points: JSON.stringify(['Low latency', 'Studio-quality sound']),
+    status: 'active',
+    catalog_key_hash: crypto.createHash('sha256').update(`${campaignId}:${brand}:${name}`).digest('hex')
+  });
+  const campaignProduct = await models.CampaignProduct.create({
+    campaign_id: campaignId,
+    product_id: product.id,
+    role: 'hero',
+    priority: 7,
+    campaign_brief: campaignBrief,
+    status
+  });
+  return { product, campaignProduct };
+}
+
 async function seedBaseData() {
   const campaign = await models.Campaign.create({
     name: 'Test Campaign',
     brand: 'Test Brand',
     product: 'Test Product'
   });
+  const { product, campaignProduct } = await createCampaignProduct(campaign.id);
   const strategy = await models.KolStrategy.create({
     campaign_id: campaign.id,
+    campaign_product_id: campaignProduct.id,
     name: 'Test Strategy',
     brand: 'Test Brand',
     product: 'Test Product',
     primary_platform: 'youtube',
     status: 'ready'
   });
-  return { campaign, strategy };
+  return { campaign, product, campaignProduct, strategy };
 }
 
 test('migration replaces cycle schema without clearing business data', async () => {
@@ -450,12 +481,14 @@ test('multi-product migration upgrades legacy raw candidate product fits safely'
 });
 
 async function startMockAiServer() {
+  const requests = [];
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       if (req.url === '/chat/completions' && req.method === 'POST') {
         let body = '';
         req.on('data', (chunk) => { body += chunk; });
         req.on('end', () => {
+          requests.push(JSON.parse(body));
           const content = JSON.stringify({
             hard_filter: {
               passed: true,
@@ -510,7 +543,7 @@ async function startMockAiServer() {
       }
     });
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, port: server.address().port });
+      resolve({ server, port: server.address().port, requests });
     });
   });
 }
@@ -594,6 +627,231 @@ test('finder task accepts one target platform and rejects legacy execution field
     assert.equal(response.status, 400);
     assert.match(response.body.error, /Legacy Finder fields are no longer supported/);
   }
+});
+
+test('finder task inherits its campaign product and ignores a conflicting caller product', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { campaign, campaignProduct, strategy } = await seedBaseData();
+  const { campaignProduct: conflictingProduct } = await createCampaignProduct(campaign.id, {
+    name: 'Conflicting Finder Product'
+  });
+
+  const created = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    campaign_product_id: conflictingProduct.id,
+    target_platform: 'youtube'
+  });
+
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.data.campaign_product_id, campaignProduct.id);
+  assert.notEqual(created.body.data.campaign_product_id, conflictingProduct.id);
+  assert.equal(safeParseJson(created.body.data.raw_request).campaign_product_id, campaignProduct.id);
+});
+
+test('finder task rejects an archived campaign product binding', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { campaignProduct, strategy } = await seedBaseData();
+  await campaignProduct.update({ status: 'archived' });
+
+  const response = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    target_platform: 'youtube'
+  });
+
+  assert.equal(response.status, 400);
+  assert.match(response.body.error, /campaign product.*active/i);
+  assert.equal(await models.FinderTask.count(), 0);
+});
+
+test('campaign product context and matched creator history are included in the evidence prompt', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { campaignProduct, product, strategy } = await seedBaseData();
+  const normalizedProfileUrl = 'https://www.youtube.com/@known.creator';
+  const wrongCustomer = await models.Customer.create({
+    name: 'Known Creator',
+    cooperation_status: 'do_not_contact',
+    cooperation_risk_reason: 'Same display name but a different profile'
+  });
+  const matchedCustomer = await models.Customer.create({
+    name: 'Matched Master Creator',
+    cooperation_status: 'available',
+    cooperation_risk_reason: 'Previously delivered on time'
+  });
+  await models.KolPlatformAccount.create({
+    customer_id: matchedCustomer.id,
+    platform: 'youtube',
+    username: 'known.creator',
+    profile_url: normalizedProfileUrl,
+    profile_url_hash: computeUrlHash(normalizedProfileUrl)
+  });
+  const { server: mockServer, port, requests } = await startMockAiServer();
+  await seedMockAiSettings(port);
+
+  try {
+    const taskRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'youtube'
+    });
+    const importRes = await request
+      .post(`/api/finder-tasks/${taskRes.body.data.id}/video-evidence/import`)
+      .send({
+        evidence: [{
+          video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          title: 'Campaign product demo',
+          author_name: 'Known Creator',
+          author_profile_url: 'https://youtube.com/@Known.Creator/?view_as=subscriber'
+        }]
+      });
+    const evidenceId = importRes.body.data.results[0].data.id;
+
+    const analyzed = await request
+      .post(`/api/finder-tasks/${taskRes.body.data.id}/evidence-analysis`)
+      .send({ evidence_ids: [evidenceId] });
+
+    assert.equal(analyzed.status, 200, JSON.stringify(analyzed.body));
+    assert.equal(analyzed.body.data.success_count, 1, JSON.stringify(analyzed.body));
+    const finalPrompt = requests[0].messages.find((message) => message.role === 'user').content;
+    assert.match(finalPrompt, new RegExp(product.name));
+    assert.match(finalPrompt, new RegExp(campaignProduct.campaign_brief));
+    assert.match(finalPrompt, new RegExp(`"customer_id": ${matchedCustomer.id}`));
+    assert.doesNotMatch(finalPrompt, new RegExp(`"customer_id": ${wrongCustomer.id}`));
+  } finally {
+    mockServer.close();
+  }
+});
+
+test('product fit identity normalizes profile variants and repeated discovery preserves a human decision', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { campaignProduct, strategy } = await seedBaseData();
+  const normalizedProfileUrl = 'https://www.youtube.com/@product.creator';
+  const firstIdentity = finderTaskRoutes.buildCandidateIdentity(
+    'YouTube',
+    'https://youtube.com/@Product.Creator/?view_as=subscriber',
+    'Product Creator'
+  );
+  const secondIdentity = finderTaskRoutes.buildCandidateIdentity(
+    'youtube',
+    `${normalizedProfileUrl}/`,
+    'Renamed Creator'
+  );
+  assert.deepEqual(firstIdentity, secondIdentity);
+  assert.match(firstIdentity.identityKeyHash, /^[a-f0-9]{64}$/);
+
+  const wrongCustomer = await models.Customer.create({
+    name: 'Product Creator',
+    cooperation_status: 'do_not_contact',
+    profile_url: 'https://www.youtube.com/@different.creator'
+  });
+  const matchedCustomer = await models.Customer.create({
+    name: 'Master Product Creator',
+    cooperation_status: 'available'
+  });
+  await models.KolPlatformAccount.create({
+    customer_id: matchedCustomer.id,
+    platform: 'youtube',
+    username: 'product.creator',
+    profile_url: normalizedProfileUrl,
+    profile_url_hash: computeUrlHash(normalizedProfileUrl)
+  });
+
+  const taskRes = await request.post('/api/finder-tasks').send({
+    strategy_id: strategy.id,
+    target_platform: 'youtube'
+  });
+  const taskId = taskRes.body.data.id;
+  const importRes = await request
+    .post(`/api/finder-tasks/${taskId}/video-evidence/import`)
+    .send({
+      evidence: [
+        {
+          video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          title: 'First product video',
+          author_name: 'Product Creator',
+          author_profile_url: 'https://youtube.com/@Product.Creator/?view_as=subscriber',
+          source_query: 'first product signal'
+        },
+        {
+          video_url: 'https://www.youtube.com/watch?v=9bZkp7q19f0',
+          title: 'Second product video',
+          author_name: 'Renamed Creator',
+          author_profile_url: `${normalizedProfileUrl}/`,
+          source_query: 'second product signal'
+        }
+      ]
+    });
+  assert.equal(importRes.body.data.inserted, 2, JSON.stringify(importRes.body));
+
+  for (const [index, result] of importRes.body.data.results.entries()) {
+    await models.VideoAiAnalysisResult.create({
+      video_source_id: result.data.video_source_id,
+      analysis_type: 'finder_evidence',
+      analysis_scope_id: result.data.id,
+      status: 'success',
+      model_name: 'test-model',
+      score: 80 + index,
+      summary: `Product evidence ${index + 1}`,
+      extra_data: JSON.stringify({
+        hard_filter: { passed: true, market_language_match: 'certain' },
+        signal_scores: { category_fit: 80 + index },
+        evidence_strength_score: 80 + index,
+        risk: { risk_level: 'low' },
+        candidate_decision: {
+          enter_raw_candidates: true,
+          candidate_priority_score: 80 + index,
+          recommended_status: 'new',
+          reason: `第 ${index + 1} 条产品匹配证据`
+        }
+      })
+    });
+  }
+
+  const firstGeneration = await request
+    .post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`)
+    .send({});
+  assert.equal(firstGeneration.status, 200, JSON.stringify(firstGeneration.body));
+  assert.equal(firstGeneration.body.data.inserted_count, 1);
+  assert.equal(await models.RawCandidate.count(), 1);
+  let fits = await dbOperations.query(
+    'SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ?',
+    [campaignProduct.id]
+  );
+  assert.equal(fits.length, 1);
+  assert.equal(fits[0].existing_customer_id, matchedCustomer.id);
+  assert.notEqual(fits[0].existing_customer_id, wrongCustomer.id);
+  assert.equal(fits[0].identity_status, 'known_kol_new_product_fit');
+  assert.equal(fits[0].decision_status, 'pending');
+  assert.equal(fits[0].analysis_version, 1);
+  assert.equal(safeParseJson(fits[0].evidence_summary).evidence_count, 2);
+
+  await dbOperations.run(
+    "UPDATE raw_candidate_product_fits SET decision_status = 'approved' WHERE id = ?",
+    [fits[0].id]
+  );
+  const secondGeneration = await request
+    .post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`)
+    .send({});
+  assert.equal(secondGeneration.status, 200, JSON.stringify(secondGeneration.body));
+
+  fits = await dbOperations.query(
+    'SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ?',
+    [campaignProduct.id]
+  );
+  assert.equal(fits.length, 1);
+  assert.equal(fits[0].decision_status, 'approved');
+  assert.equal(fits[0].identity_status, 'existing_product_fit_updated');
+  assert.equal(fits[0].analysis_version, 2);
 });
 
 test('video evidence finder uses selected YouTube Maton Gateway provider', async () => {
@@ -1638,12 +1896,14 @@ test('video_source reuse and snapshot TTL across campaigns', async () => {
   // Create two campaigns and strategies
   const campaign1 = await models.Campaign.create({ name: 'Campaign 1', brand: 'Brand', product: 'Product' });
   const campaign2 = await models.Campaign.create({ name: 'Campaign 2', brand: 'Brand', product: 'Product' });
+  const { campaignProduct: campaignProduct1 } = await createCampaignProduct(campaign1.id, { name: 'Campaign 1 Product' });
+  const { campaignProduct: campaignProduct2 } = await createCampaignProduct(campaign2.id, { name: 'Campaign 2 Product' });
   const strategy1 = await models.KolStrategy.create({
-    campaign_id: campaign1.id, name: 'Strategy 1', brand: 'Brand', product: 'Product',
+    campaign_id: campaign1.id, campaign_product_id: campaignProduct1.id, name: 'Strategy 1', brand: 'Brand', product: 'Product',
     primary_platform: 'youtube', status: 'ready'
   });
   const strategy2 = await models.KolStrategy.create({
-    campaign_id: campaign2.id, name: 'Strategy 2', brand: 'Brand', product: 'Product',
+    campaign_id: campaign2.id, campaign_product_id: campaignProduct2.id, name: 'Strategy 2', brand: 'Brand', product: 'Product',
     primary_platform: 'youtube', status: 'ready'
   });
 
