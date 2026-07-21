@@ -138,6 +138,6 @@ npm run install-skills -- --target ~/.agents/skills
 - Finder 目前支持 YouTube 关键词视频、Instagram Reels 和 TikTok Keyword Search
 - Profile URL 只用于作者身份识别，不作为视频证据
 - 候选审批始终由人工完成，Agent 不得自动通过候选
-- 候选池默认保存在本地；已通过 KOL 可配置同步至飞书多维表格
+- 候选池默认保存在本地；已通过 KOL 可配置同步至飞书多维表格，KOL 管理页也支持从飞书 KOL 总表导入回本地
 - 暂不提供 Outreach、多用户权限和桌面安装包
 - 系统不会代替用户自动登录 Instagram、YouTube 或 TikTok
