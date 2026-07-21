@@ -332,15 +332,19 @@ router.post('/feishu/pull', async (req, res) => {
       try {
         const existing = findMatchingCustomer(kol, customers);
         if (existing) {
-          const assignments = IMPORT_COLUMNS.map((column) => `${column} = ?`).join(', ');
+          // Only overwrite with non-empty Feishu values: an empty Feishu field
+          // must never erase data the local record already has.
+          const writable = IMPORT_COLUMNS.filter((column) => kol[column]);
+          const assignments = writable.map((column) => `${column} = ?`).join(', ');
           await dbOperations.run(
-            `UPDATE customers SET ${assignments}, feishu_record_id = ?, sync_status = 'synced',
+            `UPDATE customers SET ${assignments ? `${assignments}, ` : ''}feishu_record_id = ?, sync_status = 'synced',
              last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-            [...IMPORT_COLUMNS.map((column) => kol[column] || null), kol.feishu_record_id, existing.id]
+            [...writable.map((column) => kol[column]), kol.feishu_record_id, existing.id]
           );
           // Keep the in-memory mirror fresh so later records in the same batch
           // match against the just-updated row.
-          Object.assign(existing, kol, { id: existing.id });
+          for (const column of writable) existing[column] = kol[column];
+          existing.feishu_record_id = kol.feishu_record_id;
           summary.updated += 1;
         } else {
           const columns = [...IMPORT_COLUMNS, 'feishu_record_id', 'sync_status'];

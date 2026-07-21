@@ -325,3 +325,41 @@ test('KOL master pull rejects when Feishu is not configured', async () => {
   assert.ok(response.payload.error.includes('App ID'));
   assert.ok(response.payload.error.includes('KOL Master Table ID'));
 });
+
+test('KOL master pull update keeps local values when Feishu fields are empty', async () => {
+  const existing = {
+    id: 21,
+    feishu_record_id: null,
+    creator_id: 'alice01',
+    name: 'Alice',
+    platform: 'YouTube',
+    email: 'keep@example.com',
+    notes: '本地合作备注',
+    country_region: 'UK'
+  };
+  const pages = [{
+    has_more: false,
+    items: [
+      kolMasterRecord('rec_alice', {
+        'KOL名称': 'Alice',
+        '平台': 'YouTube',
+        creator_id: 'alice01',
+        '国家地区': 'US'
+      })
+    ]
+  }];
+
+  const { response, writes } = await runKolMasterPull({ customers: [existing], pages });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.data.updated, 1);
+
+  const update = writes.find((write) => write.sql.startsWith('UPDATE customers'));
+  assert.ok(update, 'expected an UPDATE for the matched customer');
+  assert.ok(!update.sql.includes('email = ?'), 'empty Feishu Email must not overwrite local email');
+  assert.ok(!update.sql.includes('notes = ?'), 'empty Feishu notes must not overwrite local notes');
+  assert.ok(update.sql.includes('country_region = ?'), 'non-empty Feishu fields still update');
+  assert.ok(update.params.includes('US'));
+  assert.ok(!update.params.includes(null), 'no column is written as null');
+  assert.ok(update.params.includes('rec_alice'));
+  assert.equal(update.params.at(-1), 21);
+});

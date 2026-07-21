@@ -70,7 +70,7 @@ GET /open-apis/bitable/v1/apps/{app_token}/tables/{kol_table_id}/records?page_si
 
 本地记录身份字段全空时，第 4 条是最后的兜底；主页链接几乎不会撞车，误合并风险极低。若全部规则都未命中才新建记录——宁可产生可见的重复，也不冒错误覆盖的风险。
 
-- **命中**：只 UPDATE 映射覆盖的列，同时回写 `feishu_record_id`、`sync_status = 'synced'`、`last_synced_at`。未被映射的列保持原值。
+- **命中**：只 UPDATE 映射覆盖的列中**飞书侧非空的字段**（空值不会清掉本地已有数据），同时回写 `feishu_record_id`、`sync_status = 'synced'`、`last_synced_at`。未被映射的列保持原值。
 - **未命中**：INSERT 新记录，映射列 + `feishu_record_id` + `sync_status = 'synced'` + `last_synced_at`。
 - **飞书记录缺少 KOL名称**：跳过并计入 `skipped`（`name` 是必填列）。
 - **单条失败**（如 Email 唯一约束冲突）：捕获错误计入 `errors`，不中断整批导入。
