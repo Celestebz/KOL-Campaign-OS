@@ -1,6 +1,7 @@
 const express = require('express');
 const { dbOperations } = require('../database');
 const { getCampaignKolTableId, missingCampaignSubtableError } = require('../utils/feishuSubtableMapping');
+const { mapFeishuRecordToKol, findMatchingCustomer } = require('../utils/feishuKolImport');
 
 const router = express.Router();
 
@@ -291,6 +292,77 @@ async function syncCampaignKols(config, token, ids = []) {
   }
   return results;
 }
+
+async function listBitableRecords(config, token, tableId) {
+  const records = [];
+  let pageToken = '';
+  do {
+    const suffix = pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : '';
+    const url = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/records?page_size=100${suffix}`;
+    const data = await fetchJson(url, { headers: { Authorization: `Bearer ${token}` } });
+    records.push(...(data.data?.items || []));
+    pageToken = data.data?.has_more ? data.data?.page_token : '';
+  } while (pageToken);
+  return records;
+}
+
+// Columns written by a KOL master import. Unmapped columns (cooperation status,
+// groups, prices, ids) are never touched by updates.
+const IMPORT_COLUMNS = [
+  'name', 'platform', 'creator_id', 'contact_name',
+  'youtube_url', 'youtube_followers', 'instagram_url', 'instagram_followers',
+  'tiktok_url', 'tiktok_followers', 'email', 'country_region', 'creator_type', 'notes'
+];
+
+router.post('/feishu/pull', async (req, res) => {
+  try {
+    const config = await getFeishuConfig();
+    requireFeishuConfig(config);
+    const token = await getTenantAccessToken(config);
+    const records = await listBitableRecords(config, token, config.kol_table_id);
+    const customers = await dbOperations.query('SELECT * FROM customers');
+    const summary = { fetched: records.length, created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
+
+    for (const record of records) {
+      const kol = mapFeishuRecordToKol(record);
+      if (!kol.name) {
+        summary.skipped += 1;
+        continue;
+      }
+      try {
+        const existing = findMatchingCustomer(kol, customers);
+        if (existing) {
+          const assignments = IMPORT_COLUMNS.map((column) => `${column} = ?`).join(', ');
+          await dbOperations.run(
+            `UPDATE customers SET ${assignments}, feishu_record_id = ?, sync_status = 'synced',
+             last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+            [...IMPORT_COLUMNS.map((column) => kol[column] || null), kol.feishu_record_id, existing.id]
+          );
+          // Keep the in-memory mirror fresh so later records in the same batch
+          // match against the just-updated row.
+          Object.assign(existing, kol, { id: existing.id });
+          summary.updated += 1;
+        } else {
+          const columns = [...IMPORT_COLUMNS, 'feishu_record_id', 'sync_status'];
+          const placeholders = columns.map(() => '?').join(', ');
+          const result = await dbOperations.run(
+            `INSERT INTO customers (${columns.join(', ')}, last_synced_at) VALUES (${placeholders}, CURRENT_TIMESTAMP)`,
+            [...IMPORT_COLUMNS.map((column) => kol[column] || null), kol.feishu_record_id, 'synced']
+          );
+          customers.push({ ...kol, id: result?.id });
+          summary.created += 1;
+        }
+      } catch (error) {
+        summary.failed += 1;
+        summary.errors.push({ record_id: kol.feishu_record_id, error: error.message });
+      }
+    }
+
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
 
 router.post('/feishu/push', async (req, res) => {
   try {
