@@ -92,6 +92,43 @@ test('findMatchingCustomer matches name and platform when ids are absent', () =>
   assert.equal(findMatchingCustomer(kol, matchingCustomers).id, 3);
 });
 
+test('findMatchingCustomer matches by unique email before name and platform', () => {
+  const customers = [
+    { id: 5, feishu_record_id: null, creator_id: '', email: 'dup@example.com', name: 'Other', platform: null },
+    { id: 6, feishu_record_id: null, creator_id: '', email: null, name: 'Dup', platform: 'YouTube' }
+  ];
+  const kol = { feishu_record_id: 'rec_new', creator_id: 'kol_9', name: 'Dup', platform: 'YouTube', email: 'dup@example.com' };
+  assert.equal(findMatchingCustomer(kol, customers).id, 5);
+});
+
+test('findMatchingCustomer ignores empty email when matching by email', () => {
+  const customers = [
+    { id: 7, feishu_record_id: null, creator_id: '', email: null, name: 'NoMail', platform: null }
+  ];
+  const kol = { feishu_record_id: 'rec_new', creator_id: '', name: 'NoMail', platform: '', email: '' };
+  assert.equal(findMatchingCustomer(kol, customers), null);
+});
+
+test('findMatchingCustomer matches by any shared profile URL', () => {
+  const customers = [
+    { id: 8, feishu_record_id: null, creator_id: null, email: null, platform: null, name: 'Old Name', youtube_url: 'https://youtube.com/@alice/', instagram_url: '', tiktok_url: null },
+    { id: 9, feishu_record_id: null, creator_id: null, email: null, platform: null, name: 'Someone', youtube_url: '', instagram_url: null, tiktok_url: 'https://tiktok.com/@someone' }
+  ];
+  const kol = {
+    feishu_record_id: 'rec_new', creator_id: '', email: '', name: 'Alice', platform: 'YouTube',
+    youtube_url: 'https://YouTube.com/@alice', instagram_url: '', tiktok_url: ''
+  };
+  assert.equal(findMatchingCustomer(kol, customers).id, 8);
+});
+
+test('findMatchingCustomer ignores empty profile URLs when matching', () => {
+  const customers = [
+    { id: 10, feishu_record_id: null, creator_id: null, email: null, platform: null, name: 'NoUrl', youtube_url: '', instagram_url: null, tiktok_url: undefined }
+  ];
+  const kol = { feishu_record_id: 'rec_new', creator_id: '', email: '', name: 'NoUrl', platform: '', youtube_url: '', instagram_url: '', tiktok_url: '' };
+  assert.equal(findMatchingCustomer(kol, customers), null);
+});
+
 test('findMatchingCustomer never matches by name alone when platform is empty', () => {
   const kol = { feishu_record_id: 'rec_new', creator_id: '', name: 'Bob', platform: '' };
   assert.equal(findMatchingCustomer(kol, matchingCustomers), null);

@@ -64,7 +64,11 @@ GET /open-apis/bitable/v1/apps/{app_token}/tables/{kol_table_id}/records?page_si
 
 1. `feishu_record_id` 等于飞书 `record_id`；
 2. 两边 `creator_id` 均非空且相等；
-3. `name` 和 `platform` 同时相等（`platform` 为空时只按名称匹配视为不可靠，不参与匹配）。
+3. 两边 `email` 均非空且相等（`customers.email` 有唯一约束，是可靠身份键；比较忽略大小写）；
+4. 任一组非空主页链接相同（`youtube_url` / `instagram_url` / `tiktok_url`，比较忽略大小写和末尾斜杠）；
+5. `name` 和 `platform` 同时相等（`platform` 为空时只按名称匹配视为不可靠，不参与匹配）。
+
+本地记录身份字段全空时，第 4 条是最后的兜底；主页链接几乎不会撞车，误合并风险极低。若全部规则都未命中才新建记录——宁可产生可见的重复，也不冒错误覆盖的风险。
 
 - **命中**：只 UPDATE 映射覆盖的列，同时回写 `feishu_record_id`、`sync_status = 'synced'`、`last_synced_at`。未被映射的列保持原值。
 - **未命中**：INSERT 新记录，映射列 + `feishu_record_id` + `sync_status = 'synced'` + `last_synced_at`。
