@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, message, Modal, Popconfirm, Select, Space, Spin, Statistic, Table, Tag, Upload } from 'antd';
 import {
+  CloudDownloadOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
@@ -40,6 +41,7 @@ const Customers = () => {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingKol, setEditingKol] = useState(null);
   const [searchText, setSearchText] = useState('');
@@ -249,6 +251,25 @@ const Customers = () => {
     window.location.href = '/api/customers/template/download';
   };
 
+  const handleFeishuPull = async () => {
+    setPulling(true);
+    try {
+      const response = await axios.post('/api/sync/feishu/pull');
+      const result = response.data.data || {};
+      const text = `从飞书导入完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，跳过 ${result.skipped || 0}，失败 ${result.failed || 0}`;
+      if (result.failed > 0) {
+        message.warning(text);
+      } else {
+        message.success(text);
+      }
+      fetchKols();
+    } catch (error) {
+      message.warning(error.response?.data?.error || '从飞书导入失败，本地数据未变化');
+    } finally {
+      setPulling(false);
+    }
+  };
+
   const handleImport = async (file) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -386,6 +407,7 @@ const Customers = () => {
           <Upload accept=".xlsx,.xls,.csv" showUploadList={false} beforeUpload={handleImport}>
             <Button icon={<UploadOutlined />} loading={importing}>批量导入</Button>
           </Upload>
+          <Button icon={<CloudDownloadOutlined />} loading={pulling} onClick={handleFeishuPull}>从飞书导入</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>新增 KOL</Button>
         </Space>
       </Card>
