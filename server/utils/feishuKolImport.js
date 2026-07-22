@@ -20,27 +20,36 @@ function feishuFieldToText(value) {
 }
 
 const FIELD_MAP = {
-  name: 'KOL名称',
-  platform: '平台',
-  creator_id: 'creator_id',
-  contact_name: '联系人',
-  youtube_url: 'YouTube主页',
-  youtube_followers: 'YouTube粉丝量',
-  instagram_url: 'Instagram主页',
-  instagram_followers: 'Instagram粉丝量',
-  tiktok_url: 'TikTok主页',
-  tiktok_followers: 'TikTok粉丝量',
-  email: 'Email',
-  country_region: '国家地区',
-  creator_type: '内容类型',
-  notes: '备注'
+  name: ['KOL名称'],
+  platform: ['平台', '主平台'],
+  creator_id: ['creator_id'],
+  contact_name: ['联系人'],
+  youtube_url: ['YouTube主页'],
+  youtube_followers: ['YouTube粉丝量'],
+  instagram_url: ['Instagram主页'],
+  instagram_followers: ['Instagram粉丝量'],
+  tiktok_url: ['TikTok主页'],
+  tiktok_followers: ['TikTok粉丝量'],
+  email: ['邮箱', 'Email'],
+  country_region: ['国家/地区', '国家地区'],
+  creator_type: ['内容类目', '内容类型'],
+  notes: ['备注']
 };
 
 function mapFeishuRecordToKol(record) {
   const fields = record?.fields || {};
   const kol = { feishu_record_id: record?.record_id || '' };
-  for (const [column, fieldName] of Object.entries(FIELD_MAP)) {
-    kol[column] = feishuFieldToText(fields[fieldName]);
+  for (const [column, fieldNames] of Object.entries(FIELD_MAP)) {
+    kol[column] = fieldNames.map((fieldName) => feishuFieldToText(fields[fieldName])).find(Boolean) || '';
+  }
+  const profileUrl = feishuFieldToText(fields['平台主页链接']) || feishuFieldToText(fields['主主页链接']);
+  const followers = feishuFieldToText(fields['粉丝数']) || feishuFieldToText(fields['主平台粉丝数']);
+  const platform = kol.platform.toLowerCase();
+  if (profileUrl && ['youtube', 'instagram', 'tiktok'].includes(platform)) {
+    kol[`${platform}_url`] = profileUrl;
+  }
+  if (followers && ['youtube', 'instagram', 'tiktok'].includes(platform)) {
+    kol[`${platform}_followers`] = followers;
   }
   return kol;
 }

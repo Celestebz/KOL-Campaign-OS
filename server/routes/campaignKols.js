@@ -39,8 +39,25 @@ const EDITABLE_FIELDS = [
   'owner',
   'best_evidence_url',
   'evidence_summary',
-  'project_override'
+  'project_override',
+  'shipping_address',
+  'expected_publish_at',
+  'content_format',
+  'estimated_total_cost_usd',
+  'median_views_30d_snapshot',
+  'expected_views',
+  'estimated_cpm',
+  'budget_approval_status',
+  'shipping_date',
+  'tracking_number',
+  'cooperation_platforms'
 ];
+
+const PROJECT_STATUSES = new Set([
+  'pending_confirmation', 'pending_shipping', 'shipped', 'delivered',
+  'content_preparation', 'pending_publish', 'published', 'cancelled'
+]);
+const PRIORITY_LEVELS = new Set(['t1', 't2', 't3', 't4']);
 
 const CAMPAIGN_KOL_PRODUCT_STATUSES = {
   fit_status: new Set(['pending', 'approved', 'rejected']),
@@ -49,7 +66,7 @@ const CAMPAIGN_KOL_PRODUCT_STATUSES = {
   content_status: new Set(['pending', 'draft', 'review', 'published'])
 };
 
-const JSON_FIELDS = new Set(['evidence_summary', 'project_override']);
+const JSON_FIELDS = new Set(['evidence_summary', 'project_override', 'cooperation_platforms']);
 
 function normalizeJsonField(value) {
   if (value === undefined || value === null) return value;
@@ -59,6 +76,14 @@ function normalizeJsonField(value) {
   } catch (error) {
     return String(value);
   }
+}
+
+async function markCustomerSyncPending(customerId) {
+  if (!customerId) return;
+  await dbOperations.run(
+    "UPDATE customers SET sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [customerId]
+  );
 }
 
 router.get('/', async (req, res) => {
@@ -75,7 +100,15 @@ router.get('/', async (req, res) => {
         k.tiktok_url, k.tiktok_followers, k.video_price as default_video_price,
         k.price_rmb as default_price_rmb, k.rating,
         kpa.platform as platform_account_platform, kpa.profile_url as platform_account_url,
-        kpa.username as platform_account_username, kpa.followers_text as platform_account_followers
+        kpa.username as platform_account_username, kpa.followers_text as platform_account_followers,
+        (SELECT p.sku FROM campaign_kol_products ckp
+         JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+         JOIN products p ON p.id = cp.product_id
+         WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_sku,
+        (SELECT p.name FROM campaign_kol_products ckp
+         JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+         JOIN products p ON p.id = cp.product_id
+         WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_name
       FROM campaign_kols ck
       JOIN campaigns c ON c.id = ck.campaign_id
       JOIN customers k ON k.id = ck.customer_id
@@ -140,7 +173,7 @@ router.get('/:id/products', async (req, res) => {
     if (campaignKolId === null) {
       return res.status(400).json({ success: false, error: 'Campaign KOL id must be a positive integer' });
     }
-    const campaignKol = await dbOperations.get('SELECT id, campaign_id FROM campaign_kols WHERE id = ?', [campaignKolId]);
+    const campaignKol = await dbOperations.get('SELECT id, campaign_id, customer_id FROM campaign_kols WHERE id = ?', [campaignKolId]);
     if (!campaignKol) {
       return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
     }
@@ -171,7 +204,7 @@ router.put('/:id/products/:campaignProductId', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Campaign KOL and Campaign Product ids must be positive integers' });
     }
 
-    const campaignKol = await dbOperations.get('SELECT id, campaign_id FROM campaign_kols WHERE id = ?', [campaignKolId]);
+    const campaignKol = await dbOperations.get('SELECT id, campaign_id, customer_id FROM campaign_kols WHERE id = ?', [campaignKolId]);
     if (!campaignKol) {
       return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
     }
@@ -213,6 +246,7 @@ router.put('/:id/products/:campaignProductId', async (req, res) => {
       `UPDATE campaign_kol_products SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [...values, current.id]
     );
+    await markCustomerSyncPending(campaignKol.customer_id);
     const updated = await dbOperations.get('SELECT * FROM campaign_kol_products WHERE id = ?', [current.id]);
     res.json({ success: true, data: normalizeCampaignKolProduct(updated), message: 'Campaign KOL Product updated' });
   } catch (error) {
@@ -326,13 +360,14 @@ router.post('/', async (req, res) => {
         clean(req.body.quoted_price || customer.video_price),
         clean(req.body.exchange_rate || customer.exchange_rate),
         clean(req.body.price_rmb || customer.price_rmb),
-        clean(req.body.project_status) || 'candidate',
+        clean(req.body.project_status) || 'pending_confirmation',
         clean(req.body.owner),
         clean(req.body.notes),
         'sync_pending'
       ]
     );
     const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [result.id]);
+    await markCustomerSyncPending(customerId);
     res.json({ success: true, data: row, message: 'Campaign KOL added' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -348,12 +383,26 @@ router.patch('/:id', async (req, res) => {
     const updates = {};
     for (const field of EDITABLE_FIELDS) {
       if (req.body[field] !== undefined) {
+        if (field === 'project_status' && !PROJECT_STATUSES.has(req.body[field])) {
+          return res.status(400).json({ success: false, error: 'Invalid project_status' });
+        }
+        if (field === 'priority_level' && !PRIORITY_LEVELS.has(req.body[field])) {
+          return res.status(400).json({ success: false, error: 'Invalid priority_level' });
+        }
         updates[field] = JSON_FIELDS.has(field) ? normalizeJsonField(req.body[field]) : req.body[field];
       }
     }
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ success: false, error: 'No editable fields provided' });
+    }
+
+    if (updates.estimated_total_cost_usd !== undefined || updates.expected_views !== undefined) {
+      const total = Number(updates.estimated_total_cost_usd ?? row.estimated_total_cost_usd);
+      const views = Number(updates.expected_views ?? row.expected_views);
+      updates.estimated_cpm = Number.isFinite(total) && Number.isFinite(views) && views > 0
+        ? Number(((total / views) * 1000).toFixed(2))
+        : null;
     }
 
     const fields = Object.keys(updates);
@@ -365,6 +414,7 @@ router.patch('/:id', async (req, res) => {
        updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [...values, id]
     );
+    await markCustomerSyncPending(row.customer_id);
     const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
     res.json({ success: true, data: updated, message: 'Campaign KOL updated' });
   } catch (error) {

@@ -64,3 +64,16 @@ test('project history uses compatibility fields when v2 fields are empty', () =>
     updated_at: null
   });
 });
+
+test('evidence summaries and completed cooperation statuses are normalized for the KOL view', () => {
+  assert.equal(
+    customersRoute.parseEvidenceSummary(JSON.stringify({ summary: 'Relevant workshop evidence' })),
+    'Relevant workshop evidence'
+  );
+  assert.equal(customersRoute.isHistoricalCooperation({ project_status: 'confirmed' }), true);
+  assert.equal(customersRoute.isHistoricalCooperation({ content_status: 'published' }), true);
+  assert.equal(customersRoute.isHistoricalCooperation({ project_status: 'candidate' }), false);
+  assert.equal(customersRoute.isActiveProject({ project_status: 'negotiating' }), true);
+  assert.equal(customersRoute.isActiveProject({ project_status: 'published' }), false);
+  assert.equal(customersRoute.projectStatusLabel('confirmed'), '已确认');
+});

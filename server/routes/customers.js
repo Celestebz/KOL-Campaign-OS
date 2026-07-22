@@ -60,6 +60,151 @@ function toProjectHistory(row) {
   };
 }
 
+function parseEvidenceSummary(value) {
+  if (!value) return '';
+  if (typeof value === 'object') {
+    return value.summary || value.reason || value.recommendation || value.evidence_summary || JSON.stringify(value);
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed.summary || parsed.reason || parsed.recommendation || parsed.evidence_summary || value;
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function isHistoricalCooperation(row) {
+  return ['confirmed', 'published'].includes(row.project_status)
+    || row.assignment_status === 'completed'
+    || row.content_status === 'published';
+}
+
+function platformLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ({ youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', twitter: 'X', x: 'X' })[normalized]
+    || String(value || '').trim();
+}
+
+function projectStatusLabel(value) {
+  return ({
+    candidate: '候选', to_contact: '待联系', contacted: '已联系', replied: '已回复',
+    no_reply: '未回复', negotiating: '沟通中', confirmed: '已确认', published: '已发布',
+    completed: '已完成', not_fit: '不合适', cancelled: '已取消', archived: '已归档'
+  })[value] || value || '候选';
+}
+
+function isActiveProject(row) {
+  return !['published', 'completed', 'not_fit', 'cancelled', 'archived'].includes(row.project_status);
+}
+
+async function attachKolInsights(customers) {
+  if (!customers.length) return customers;
+  const ids = customers.map((customer) => customer.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const fits = await dbOperations.query(
+    `SELECT COALESCE(rc.approved_customer_id, rcpf.existing_customer_id) customer_id,
+       rcpf.id, rcpf.platform, rcpf.fit_score, rcpf.matched_persona, rcpf.evidence_summary,
+       rcpf.decision_status, rcpf.identity_status, rcpf.updated_at,
+       rc.evidence_url, rc.video_url, rc.ai_match_reason, rc.status candidate_status,
+       p.sku product_sku, p.name product_name, p.category product_category
+     FROM raw_candidate_product_fits rcpf
+     LEFT JOIN raw_candidates rc ON rc.id = rcpf.latest_raw_candidate_id
+     JOIN campaign_products cp ON cp.id = rcpf.campaign_product_id
+     JOIN products p ON p.id = cp.product_id
+     WHERE COALESCE(rc.approved_customer_id, rcpf.existing_customer_id) IN (${placeholders})
+     ORDER BY rcpf.updated_at DESC, rcpf.id DESC`,
+    ids
+  );
+  const projectRows = await dbOperations.query(
+    `SELECT ck.customer_id, ck.id campaign_kol_id, ck.campaign_id, ck.project_status, ck.updated_at,
+       c.name campaign_name, ck.owner, ckp.assignment_status, ckp.content_status, ckp.result_summary,
+       p.sku product_sku, p.name product_name
+     FROM campaign_kols ck
+     JOIN campaigns c ON c.id = ck.campaign_id
+     LEFT JOIN campaign_kol_products ckp ON ckp.campaign_kol_id = ck.id
+     LEFT JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+     LEFT JOIN products p ON p.id = cp.product_id
+     WHERE ck.customer_id IN (${placeholders})
+     ORDER BY ck.updated_at DESC, ck.id DESC`,
+    ids
+  );
+
+  const fitsByCustomer = new Map();
+  for (const fit of fits) {
+    const key = Number(fit.customer_id);
+    if (!fitsByCustomer.has(key)) fitsByCustomer.set(key, []);
+    fitsByCustomer.get(key).push(fit);
+  }
+  const projectsByCustomer = new Map();
+  for (const row of projectRows) {
+    const key = Number(row.customer_id);
+    if (!projectsByCustomer.has(key)) projectsByCustomer.set(key, []);
+    projectsByCustomer.get(key).push(row);
+  }
+
+  return customers.map((customer) => {
+    const customerFits = fitsByCustomer.get(Number(customer.id)) || [];
+    const latestFit = customerFits[0] || null;
+    const customerProjects = projectsByCustomer.get(Number(customer.id)) || [];
+    const historicalRows = customerProjects.filter(isHistoricalCooperation);
+    const historicalCampaignIds = new Set(historicalRows.map((row) => row.campaign_kol_id));
+    const historicalSkus = Array.from(new Set(historicalRows
+      .map((row) => row.product_sku || row.product_name)
+      .filter(Boolean)));
+    const latestHistory = historicalRows[0] || null;
+    const accounts = Array.isArray(customer.platform_accounts) ? customer.platform_accounts : [];
+    const primaryAccount = accounts.find((account) => (
+      String(account.platform || '').toLowerCase() === String(latestFit?.platform || '').toLowerCase()
+    )) || accounts[0] || null;
+    const coveredPlatforms = Array.from(new Set(accounts.map((account) => platformLabel(account.platform)).filter(Boolean)));
+    const activeRows = customerProjects.filter(isActiveProject);
+    const activeProjects = Array.from(activeRows.reduce((map, row) => {
+      const key = row.campaign_id || row.campaign_kol_id;
+      const current = map.get(key) || { ...row, skus: [] };
+      const sku = row.product_sku || row.product_name;
+      if (sku && !current.skus.includes(sku)) current.skus.push(sku);
+      map.set(key, current);
+      return map;
+    }, new Map()).values());
+    return {
+      ...customer,
+      covered_platforms: coveredPlatforms,
+      primary_platform: platformLabel(primaryAccount?.platform),
+      primary_account_name: primaryAccount?.username || null,
+      primary_profile_url: primaryAccount?.profile_url || null,
+      primary_followers: primaryAccount?.followers_count ?? primaryAccount?.followers_text ?? null,
+      content_category: latestFit?.matched_persona || latestFit?.product_category || null,
+      current_product_fit_id: latestFit?.id || null,
+      current_target_sku: latestFit?.product_sku || latestFit?.product_name || null,
+      current_product_name: latestFit?.product_name || null,
+      current_fit_score: latestFit?.fit_score ?? null,
+      current_fit_reason: parseEvidenceSummary(latestFit?.evidence_summary)
+        || latestFit?.ai_match_reason || null,
+      current_evidence_url: latestFit?.evidence_url || latestFit?.video_url || null,
+      current_fit_decision: ['approved', 'duplicate'].includes(latestFit?.candidate_status)
+        ? 'approved'
+        : latestFit?.decision_status || null,
+      identity_status: latestFit?.identity_status || null,
+      historical_cooperation_count: historicalCampaignIds.size,
+      historical_cooperation_skus: historicalSkus,
+      latest_cooperation_project: latestHistory?.campaign_name || null,
+      latest_cooperation_review: latestHistory?.result_summary || null,
+      developer: customerProjects[0]?.owner || null,
+      repurpose_recommended: null,
+      active_project_count: activeProjects.length,
+      active_project_summary: activeProjects.map((row) => {
+        const sku = row.skus.length ? `｜${row.skus.join('、')}` : '';
+        return `${row.campaign_name}｜${projectStatusLabel(row.project_status)}${sku}`;
+      }).join('；'),
+      latest_project_updated_at: activeProjects[0]?.updated_at || null,
+      avg_views_30d: null,
+      median_views_30d: null,
+      posts_30d: null,
+      engagement_rate_30d: null
+    };
+  });
+}
+
 async function attachPlatformAccounts(customers) {
   if (!customers.length) return customers;
   const placeholders = customers.map(() => '?').join(',');
@@ -413,7 +558,8 @@ router.get('/', async (req, res) => {
 
     sql += ' ORDER BY c.created_at DESC';
     const customers = await dbOperations.query(sql, params);
-    res.json({ success: true, data: await attachPlatformAccounts(customers) });
+    const withAccounts = await attachPlatformAccounts(customers);
+    res.json({ success: true, data: await attachKolInsights(withAccounts) });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -619,7 +765,8 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'KOL 不存在' });
     }
 
-    const [data] = await attachPlatformAccounts([customer]);
+    const [withAccounts] = await attachPlatformAccounts([customer]);
+    const [data] = await attachKolInsights([withAccounts]);
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -629,3 +776,9 @@ router.get('/:id', async (req, res) => {
 module.exports = router;
 module.exports.mergePlatformAccounts = mergePlatformAccounts;
 module.exports.toProjectHistory = toProjectHistory;
+module.exports.attachPlatformAccounts = attachPlatformAccounts;
+module.exports.attachKolInsights = attachKolInsights;
+module.exports.parseEvidenceSummary = parseEvidenceSummary;
+module.exports.isHistoricalCooperation = isHistoricalCooperation;
+module.exports.isActiveProject = isActiveProject;
+module.exports.projectStatusLabel = projectStatusLabel;

@@ -42,6 +42,46 @@ const feishuConfigRow = {
   })
 };
 
+test('migratedKolFields fills new master fields without overwriting existing values', () => {
+  const { migratedKolFields } = require('./sync');
+  const updates = migratedKolFields({
+    平台: 'YouTube',
+    YouTube主页: { link: 'https://youtube.com/@alice', text: 'Alice' },
+    Instagram主页: { link: 'https://instagram.com/alice', text: 'Alice' },
+    主平台粉丝数: 12300,
+    主平台近30天平均曝光: 5000,
+    主平台互动率: 0.032,
+    Email: 'old@example.com',
+    邮箱: 'keep@example.com'
+  });
+  assert.equal(updates.主平台, 'YouTube');
+  assert.deepEqual(updates.平台主页链接, { link: 'https://youtube.com/@alice', text: 'Alice' });
+  assert.equal(updates.平台账号名, 'alice');
+  assert.equal(updates.粉丝数, 12300);
+  assert.equal(updates.近30天平均曝光, 5000);
+  assert.equal(updates.互动率, 0.032);
+  assert.deepEqual(updates.覆盖平台, ['YouTube', 'Instagram']);
+  assert.equal(updates.邮箱, undefined);
+});
+
+test('migratedKolFields never replaces populated new master fields', () => {
+  const { migratedKolFields } = require('./sync');
+  const updates = migratedKolFields({
+    平台: 'YouTube',
+    主平台: 'TikTok',
+    主页链接: { link: 'https://youtube.com/@old', text: 'Old' },
+    平台主页链接: { link: 'https://tiktok.com/@new', text: 'New' },
+    主平台粉丝数: 100,
+    粉丝数: 200,
+    覆盖平台: ['TikTok']
+  });
+  assert.equal(updates.主平台, undefined);
+  assert.equal(updates.平台主页链接, undefined);
+  assert.equal(updates.粉丝数, undefined);
+  assert.equal(updates.覆盖平台, undefined);
+  assert.equal(updates.平台账号名, 'new');
+});
+
 function buildCampaignKolRow(overrides = {}) {
   return {
     id: 7,
@@ -49,12 +89,15 @@ function buildCampaignKolRow(overrides = {}) {
     customer_id: 11,
     raw_candidate_id: 21,
     feishu_record_id: null,
-    status: 'candidate',
+    project_status: 'pending_confirmation',
+    priority_level: 't2',
+    final_fee: '1000',
     quoted_price: '150.5',
     exchange_rate: '9.1',
     price_rmb: '1369.55',
     owner: 'Celeste',
     notes: '重点推荐',
+    project_notes: '第一版项目备注',
     campaign_name: 'Lobster Co',
     kol_name: 'Alice',
     contact_name: 'Alice Manager',
@@ -90,6 +133,12 @@ async function runCampaignKolPush(rows, { recordHandler } = {}) {
     if (String(url).includes('/tenant_access_token/')) {
       return { ok: true, text: async () => JSON.stringify({ code: 0, tenant_access_token: 'tenant-token' }) };
     }
+    if (String(url).includes('/fields') && !options.method) {
+      const schema = require('./sync').PROJECT_TRACKING_FIELD_SCHEMA;
+      return { ok: true, text: async () => JSON.stringify({ code: 0, data: { items: schema.map((field, index) => ({
+        field_id: `fld_${index}`, field_name: field.field_name, type: field.type, property: field.property
+      })) } }) };
+    }
     if (recordHandler) return recordHandler(String(url), options, calls);
     return { ok: true, text: async () => JSON.stringify({ code: 0, data: { record: { record_id: 'rec_created' } } }) };
   };
@@ -112,29 +161,147 @@ function pushedFields(calls, index = 0) {
   return JSON.parse(recordCalls[index].options.body).fields;
 }
 
+test('KOL master mapping uses the new business-facing Feishu headers', () => {
+  const fields = require('./sync').kolFields({
+    name: 'Alice', email: 'alice@example.com', country_region: 'US',
+    cooperation_status: 'available', content_category: 'Garden tools',
+    current_target_sku: 'TMB-1401', current_fit_score: 91,
+    current_fit_reason: 'Strong lawn-care evidence', current_fit_decision: 'approved',
+    identity_status: 'known_kol_new_product_fit', current_evidence_url: 'https://youtube.com/watch?v=1',
+    covered_platforms: ['YouTube', 'Instagram'], primary_platform: 'YouTube',
+    primary_account_name: '@alice', primary_profile_url: 'https://youtube.com/@alice', primary_followers: 12300,
+    active_project_count: 2, active_project_summary: 'Summer Garden｜沟通中｜TMB-1401',
+    latest_project_updated_at: '2026-07-21T00:00:00.000Z',
+    historical_cooperation_count: 2, historical_cooperation_skus: ['CTA-7004', 'TSA-0512'],
+    latest_cooperation_project: 'Summer Garden', developer: 'Crush',
+    updated_at: '2026-07-22T00:00:00.000Z',
+    platform_accounts: [{
+      platform: 'youtube', profile_url: 'https://youtube.com/@alice', followers_count: 12300
+    }]
+  });
+  assert.equal(fields['KOL名称'], 'Alice');
+  assert.equal(fields['本次目标SKU'], 'TMB-1401');
+  assert.equal(fields['当前SKU匹配分'], 91);
+  assert.equal(fields['历史合作次数'], 2);
+  assert.equal(fields['历史合作SKU'], 'CTA-7004、TSA-0512');
+  assert.equal(fields['识别状态'], '已有 KOL · 新产品匹配');
+  assert.equal(fields['主平台'], 'YouTube');
+  assert.deepEqual(fields['覆盖平台'], ['YouTube', 'Instagram']);
+  assert.equal(fields['平台账号名'], '@alice');
+  assert.equal(fields['粉丝数'], 12300);
+  assert.equal(fields['进行中项目数'], 2);
+  assert.deepEqual(fields['平台主页链接'], {
+    link: 'https://youtube.com/@alice', text: 'https://youtube.com/@alice'
+  });
+  assert.deepEqual(fields['代表证据'], {
+    link: 'https://youtube.com/watch?v=1', text: 'https://youtube.com/watch?v=1'
+  });
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '账号Handle'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '近30天中位曝光'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '项目状态'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '推荐内容角度'), false);
+});
+
+test('KOL field initializer creates only missing fields and is idempotent by name and type', async () => {
+  const syncRoute = require('./sync');
+  assert.equal(syncRoute.KOL_MASTER_FIELD_SCHEMA.length, 31);
+  const missing = syncRoute.KOL_MASTER_FIELD_SCHEMA.at(-1);
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (!options.method) {
+      return { ok: true, text: async () => JSON.stringify({
+        code: 0,
+        data: { items: syncRoute.KOL_MASTER_FIELD_SCHEMA.slice(0, -1).map((field) => ({ ...field, field_id: `fld_${field.field_name}` })) }
+      }) };
+    }
+    return { ok: true, text: async () => JSON.stringify({
+      code: 0, data: { field: { ...missing, field_id: 'fld_created' } }
+    }) };
+  };
+  try {
+    const summary = await syncRoute.ensureKolMasterFields({
+      base_url: 'https://open.feishu.cn', app_token: 'base', kol_table_id: 'tbl'
+    }, 'token');
+    assert.deepEqual(summary.created, ['最后更新时间']);
+    assert.equal(summary.existing.length, 30);
+    assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('KOL field initializer reports type conflicts without modifying the field', async () => {
+  const syncRoute = require('./sync');
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, text: async () => JSON.stringify({
+    code: 0, data: { items: [{ field_id: 'fld_bad', field_name: '粉丝数', type: 1 }] }
+  }) });
+  try {
+    await assert.rejects(
+      syncRoute.ensureKolMasterFields({ base_url: 'https://open.feishu.cn', app_token: 'base', kol_table_id: 'tbl' }, 'token'),
+      /粉丝数/
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('campaign KOL push sends hyperlinks as link/text objects and numbers as numbers', async () => {
   const { response, calls } = await runCampaignKolPush([buildCampaignKolRow()]);
   assert.equal(response.statusCode, 200);
   assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
 
   const fields = pushedFields(calls);
-  assert.deepEqual(fields['YouTube主页'], {
-    link: 'https://youtube.com/@alice',
-    text: 'https://youtube.com/@alice'
-  });
-  assert.deepEqual(fields['Instagram主页'], {
-    link: 'https://instagram.com/alice',
-    text: 'https://instagram.com/alice'
-  });
-  assert.equal(fields['YouTube粉丝量'], 12300);
-  assert.equal(fields['Instagram粉丝量'], 8900);
-  assert.equal(fields['项目报价'], 150.5);
-  assert.equal(fields['汇率'], 9.1);
-  assert.equal(fields['价格RMB'], 1369.55);
-  assert.equal(fields['项目状态'], 'candidate');
+  assert.equal(fields['粉丝数'], 12300);
+  assert.equal(fields['KOL合作费'], 1000);
+  assert.equal(fields['优先级'], 'T2');
+  assert.equal(fields['项目状态'], '待确认');
   assert.equal(typeof fields['项目状态'], 'string');
-  assert.equal(fields['KOL名称'], 'Alice');
-  assert.equal(fields['Email'], 'alice@example.com');
+  assert.equal(fields['达人名称'], 'Alice');
+  assert.equal(fields['邮箱'], 'alice@example.com');
+  assert.equal(fields['备注'], '第一版项目备注');
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '推荐原因'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '项目备注'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '联系状态'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '回复状态'), false);
+});
+
+test('campaign KOL push updates Feishu notes from the latest project notes', async () => {
+  const { response, calls } = await runCampaignKolPush([buildCampaignKolRow({
+    feishu_record_id: 'rec_existing',
+    project_notes: '修改后的项目备注'
+  })]);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+
+  const fields = pushedFields(calls);
+  assert.equal(fields['备注'], '修改后的项目备注');
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '推荐原因'), false);
+});
+
+test('campaign KOL push translates every project status to Chinese', async () => {
+  const statuses = {
+    pending_confirmation: '待确认',
+    pending_shipping: '待发货',
+    shipped: '已发货',
+    delivered: '已签收',
+    content_preparation: '内容准备中',
+    pending_publish: '待上线',
+    published: '已上线',
+    cancelled: '已取消'
+  };
+  const rows = Object.keys(statuses).map((project_status, index) => buildCampaignKolRow({
+    id: 100 + index,
+    project_status
+  }));
+  const { response, calls } = await runCampaignKolPush(rows);
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+
+  Object.values(statuses).forEach((label, index) => {
+    assert.equal(pushedFields(calls, index)['项目状态'], label);
+  });
 });
 
 test('campaign KOL push omits empty hyperlink and number fields from the payload', async () => {
@@ -154,15 +321,11 @@ test('campaign KOL push omits empty hyperlink and number fields from the payload
   assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
 
   const fields = pushedFields(calls);
-  for (const name of [
-    'YouTube主页', 'Instagram主页', 'TikTok主页',
-    'YouTube粉丝量', 'Instagram粉丝量', 'TikTok粉丝量',
-    '项目报价', '汇率', '价格RMB'
-  ]) {
+  for (const name of ['粉丝数', '总预计成本', '近30天中位曝光', '预计合作曝光', '预估CPM']) {
     assert.equal(Object.prototype.hasOwnProperty.call(fields, name), false, `${name} should be omitted`);
   }
-  assert.equal(fields['项目状态'], 'candidate');
-  assert.equal(fields['KOL名称'], 'Alice');
+  assert.equal(fields['项目状态'], '待确认');
+  assert.equal(fields['达人名称'], 'Alice');
 });
 
 test('campaign KOL push omits non-numeric values instead of sending NaN', async () => {
@@ -175,10 +338,8 @@ test('campaign KOL push omits non-numeric values instead of sending NaN', async 
   assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
 
   const fields = pushedFields(calls);
-  assert.equal(Object.prototype.hasOwnProperty.call(fields, 'YouTube粉丝量'), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(fields, '项目报价'), false);
-  assert.equal(fields['Instagram粉丝量'], 8900);
-  assert.equal(fields['汇率'], 9.1);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '粉丝数'), false);
+  assert.equal(fields['KOL合作费'], 1000);
 });
 
 test('campaign KOL push recreates a record when its saved record id belongs to an old table', async () => {

@@ -447,7 +447,7 @@ const KolStrategy = () => {
     { title: '品牌', dataIndex: 'brand', key: 'brand', width: 120, render: (v) => v || '-' },
     { title: '品类', dataIndex: 'category', key: 'category', width: 140, render: (v) => v || '-' },
     { title: '市场/语言', key: 'market', width: 160, render: (_, r) => [r.target_market, r.language].filter(Boolean).join(' / ') || '-' },
-    { title: '主平台', dataIndex: 'primary_platform', key: 'primary_platform', width: 110, render: (v) => v ? <Tag>{v}</Tag> : '-' },
+    { title: '平台', dataIndex: 'primary_platform', key: 'primary_platform', width: 110, render: (v) => v ? <Tag>{v}</Tag> : '-' },
     { title: '目标', dataIndex: 'campaign_goal', key: 'campaign_goal', width: 160, render: (v) => v || '-' },
     { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusLabel[v] || statusLabel.draft}</Tag> },
     {
@@ -591,7 +591,7 @@ const KolStrategy = () => {
           </Row>
           <Row gutter={16}>
             <Col span={6}><Form.Item label="语言" name="language"><Input placeholder="English / Spanish..." /></Form.Item></Col>
-            <Col span={6}><Form.Item label="主平台" name="primary_platform"><Select allowClear options={platformOptions} /></Form.Item></Col>
+            <Col span={6}><Form.Item label="平台" name="primary_platform"><Select allowClear options={platformOptions} /></Form.Item></Col>
             <Col span={12}><Form.Item label="次平台" name="secondary_platforms"><Select mode="multiple" allowClear options={platformOptions} /></Form.Item></Col>
           </Row>
 

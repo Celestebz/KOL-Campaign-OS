@@ -75,3 +75,27 @@ test('shows the backend error when the pull request fails', async () => {
   await waitFor(() => expect(message.warning).toHaveBeenCalledWith('Feishu Bitable is not configured: App ID'));
   expect(message.success).not.toHaveBeenCalled();
 });
+
+test('pushes pending KOL records to Feishu from the management page', async () => {
+  axios.post.mockResolvedValue({
+    data: { success: true, data: { success_count: 4, failed_count: 0, results: [] } }
+  });
+  render(<Customers />);
+  expect(await screen.findByText('Alice')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: /同步待处理到飞书/ }));
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/sync/feishu/push', {
+    scope: 'kols', ids: []
+  }));
+  await waitFor(() => expect(message.success).toHaveBeenCalledWith('同步到飞书完成：新建字段 0，KOL成功 4，失败 0'));
+});
+
+test('initializes missing Feishu fields from the KOL management page', async () => {
+  axios.post.mockResolvedValue({
+    data: { success: true, data: { created: ['主页链接'], existing: ['KOL名称'], conflicts: [] } }
+  });
+  render(<Customers />);
+  expect(await screen.findByText('Alice')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: /检查\/初始化飞书字段/ }));
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/sync/feishu/ensure-kol-fields'));
+  await waitFor(() => expect(message.success).toHaveBeenCalledWith('飞书字段检查完成：新建 1，已存在 1'));
+});

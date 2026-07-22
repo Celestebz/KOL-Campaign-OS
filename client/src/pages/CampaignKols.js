@@ -7,26 +7,33 @@ import { describeSyncResult } from './campaignKolSyncResult';
 const { TextArea } = Input;
 
 const statusOptions = [
-  { value: 'candidate', label: '候选' },
-  { value: 'to_contact', label: '待联系' },
-  { value: 'contacted', label: '已联系' },
-  { value: 'no_reply', label: '没回复' },
-  { value: 'negotiating', label: '沟通中' },
-  { value: 'confirmed', label: '已确定' },
-  { value: 'published', label: '已发布' },
-  { value: 'not_fit', label: '不合适' }
+  { value: 'pending_confirmation', label: '待确认' },
+  { value: 'pending_shipping', label: '待发货' },
+  { value: 'shipped', label: '已发货' },
+  { value: 'delivered', label: '已签收' },
+  { value: 'content_preparation', label: '内容准备中' },
+  { value: 'pending_publish', label: '待上线' },
+  { value: 'published', label: '已上线' },
+  { value: 'cancelled', label: '已取消' }
 ];
 
 const statusColor = {
-  candidate: 'blue',
-  to_contact: 'cyan',
-  contacted: 'geekblue',
-  no_reply: 'default',
-  negotiating: 'orange',
-  confirmed: 'green',
+  pending_confirmation: 'blue',
+  pending_shipping: 'gold',
+  shipped: 'cyan',
+  delivered: 'geekblue',
+  content_preparation: 'orange',
+  pending_publish: 'purple',
   published: 'purple',
-  not_fit: 'red'
+  cancelled: 'red'
 };
+
+const priorityOptions = [
+  { value: 't1', label: 'T1｜优先联系' },
+  { value: 't2', label: 'T2｜中等优先' },
+  { value: 't3', label: 'T3｜候补' },
+  { value: 't4', label: 'T4｜不建议继续' }
+];
 
 const currencyOptions = [
   { value: 'GBP', label: 'GBP（£ 英镑）' },
@@ -40,6 +47,9 @@ const cooperationTypeOptions = [
   { value: 'product_exchange', label: '产品置换' },
   { value: 'other', label: '其他' }
 ];
+
+const platformOptions = ['YouTube', 'Instagram', 'TikTok', 'Facebook', 'X']
+  .map((value) => ({ value, label: value }));
 
 const assignmentStatusOptions = [
   { value: 'active', label: '进行中' },
@@ -81,6 +91,16 @@ const formatFee = (value, currency) => {
     return `${value}${code ? ` ${code}` : ''}`;
   }
   return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: code }).format(number);
+};
+
+const parsePlatforms = (value, fallback = []) => {
+  let values = fallback;
+  if (Array.isArray(value)) values = value;
+  else if (value) {
+    try { values = JSON.parse(value); } catch (error) { values = fallback; }
+  }
+  const labels = { youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', x: 'X', twitter: 'X' };
+  return values.map((item) => labels[String(item).toLowerCase()] || item).filter(Boolean);
 };
 
 const CampaignKols = () => {
@@ -138,6 +158,9 @@ const CampaignKols = () => {
     setEditing(record);
     const values = { ...record };
     values.currency = normalizeCurrency(values.currency);
+    values.expected_publish_at = values.expected_publish_at ? String(values.expected_publish_at).slice(0, 10) : undefined;
+    values.shipping_date = values.shipping_date ? String(values.shipping_date).slice(0, 10) : undefined;
+    values.cooperation_platforms = parsePlatforms(values.cooperation_platforms, [values.platform_account_platform].filter(Boolean));
     if (values.project_override && typeof values.project_override === 'object') {
       values.project_override = JSON.stringify(values.project_override, null, 2);
     }
@@ -298,9 +321,16 @@ const CampaignKols = () => {
         : '-'
     )},
     { title: '合作方式', dataIndex: 'cooperation_type', key: 'cooperation_type', width: 120, render: (v) => <Tag>{cooperationTypeLabel(v)}</Tag> },
-    { title: '合作费用', dataIndex: 'final_fee', key: 'final_fee', width: 130, render: (v, r) => r.cooperation_type === 'product_exchange' ? '现金 0' : formatFee(v || r.price_rmb, r.currency || (r.price_rmb ? 'CNY' : null)) },
-    { title: '状态', dataIndex: 'project_status', key: 'project_status', width: 110, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusOptions.find((item) => item.value === v)?.label || v || '-'}</Tag> },
+    { title: '合作平台', dataIndex: 'cooperation_platforms', key: 'cooperation_platforms', width: 180, render: (v, r) => {
+      const values = parsePlatforms(v, [r.platform_account_platform].filter(Boolean));
+      return values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-';
+    } },
+    { title: '合作SKU', dataIndex: 'product_sku', key: 'product_sku', width: 120, render: (v, r) => v || r.product_name || '-' },
+    { title: '优先级', dataIndex: 'priority_level', key: 'priority_level', width: 150, render: (v) => priorityOptions.find((item) => item.value === v)?.label || v || '-' },
+    { title: 'KOL合作费', dataIndex: 'final_fee', key: 'final_fee', width: 140, render: (v, r) => r.cooperation_type === 'product_exchange' ? '现金 0' : formatFee(v || r.price_rmb, r.currency || 'USD') },
+    { title: '项目状态', dataIndex: 'project_status', key: 'project_status', width: 120, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusOptions.find((item) => item.value === v)?.label || v || '-'}</Tag> },
     { title: '跟进人', dataIndex: 'owner', key: 'owner', width: 100, render: (v) => v || '-' },
+    { title: '物流单号', dataIndex: 'tracking_number', key: 'tracking_number', width: 150, render: (v) => v || '-' },
     { title: '合作发布视频', dataIndex: 'published_video_count', key: 'published_video_count', width: 130, render: (v) => `${v || 0} 条` },
     { title: '同步', dataIndex: 'sync_status', key: 'sync_status', width: 120, render: (v) => <Tag>{v || 'sync_pending'}</Tag> },
     { title: '项目备注', dataIndex: 'project_notes', key: 'project_notes', width: 220, ellipsis: true, render: (v, r) => v || r.notes || '-' },
@@ -372,9 +402,12 @@ const CampaignKols = () => {
             </Descriptions>
             <Descriptions title="当前项目" bordered column={2} size="small">
               <Descriptions.Item label="项目">{detailRow.campaign_name || '-'}</Descriptions.Item>
-              <Descriptions.Item label="状态">{detailRow.project_status || '-'}</Descriptions.Item>
+              <Descriptions.Item label="项目状态">{statusOptions.find((item) => item.value === detailRow.project_status)?.label || detailRow.project_status || '-'}</Descriptions.Item>
               <Descriptions.Item label="合作方式">{cooperationTypeLabel(detailRow.cooperation_type)}</Descriptions.Item>
-              <Descriptions.Item label="合作费用">{formatFee(detailRow.final_fee || detailRow.price_rmb, detailRow.currency || (detailRow.price_rmb ? 'CNY' : null))}</Descriptions.Item>
+              <Descriptions.Item label="合作平台">{parsePlatforms(detailRow.cooperation_platforms, [detailRow.platform_account_platform].filter(Boolean)).join('、') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="KOL合作费">{formatFee(detailRow.final_fee || detailRow.price_rmb, detailRow.currency || 'USD')}</Descriptions.Item>
+              <Descriptions.Item label="优先级">{priorityOptions.find((item) => item.value === detailRow.priority_level)?.label || detailRow.priority_level || '-'}</Descriptions.Item>
+              <Descriptions.Item label="物流单号">{detailRow.tracking_number || '-'}</Descriptions.Item>
               <Descriptions.Item label="跟进人">{detailRow.owner || '-'}</Descriptions.Item>
               <Descriptions.Item label="项目备注">{detailRow.project_notes || detailRow.notes || '-'}</Descriptions.Item>
             </Descriptions>
@@ -432,10 +465,13 @@ const CampaignKols = () => {
       <Modal title="编辑 KOL 合作" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>
         <Form form={form} layout="vertical">
           <Space align="start" style={{ width: '100%' }}>
+            <Form.Item label="合作平台" name="cooperation_platforms">
+              <Select mode="multiple" allowClear options={platformOptions} style={{ width: 260 }} placeholder="可多选" />
+            </Form.Item>
             <Form.Item label="合作方式" name="cooperation_type" initialValue="paid_product">
               <Select options={cooperationTypeOptions} style={{ width: 190 }} />
             </Form.Item>
-            <Form.Item label="合作费用" name="final_fee">
+            <Form.Item label="KOL合作费" name="final_fee">
               <InputNumber min={0} precision={2} disabled={cooperationType === 'product_exchange'} style={{ width: 200 }} placeholder="0.00" />
             </Form.Item>
             <Form.Item label="币种" name="currency">
@@ -443,11 +479,57 @@ const CampaignKols = () => {
             </Form.Item>
           </Space>
           <Space align="start" style={{ width: '100%' }}>
-            <Form.Item label="状态" name="project_status">
+            <Form.Item label="项目状态" name="project_status">
               <Select options={statusOptions} style={{ width: 170 }} />
+            </Form.Item>
+            <Form.Item label="优先级" name="priority_level">
+              <Select options={priorityOptions} style={{ width: 190 }} />
             </Form.Item>
             <Form.Item label="跟进人" name="owner">
               <Input style={{ width: 170 }} />
+            </Form.Item>
+          </Space>
+          <Form.Item label="收货地址" name="shipping_address">
+            <TextArea rows={2} />
+          </Form.Item>
+          <Form.Item label="交付内容" name="deliverables">
+            <TextArea rows={3} placeholder="例如：展示产品安装、核心卖点和折扣码" />
+          </Form.Item>
+          <Space align="start" style={{ width: '100%' }} wrap>
+            <Form.Item label="内容形式" name="content_format">
+              <Input style={{ width: 220 }} placeholder="例如：2×Reels + 3×Stories" />
+            </Form.Item>
+            <Form.Item label="预计上线时间" name="expected_publish_at">
+              <Input type="date" style={{ width: 180 }} />
+            </Form.Item>
+            <Form.Item label="预算审批状态" name="budget_approval_status">
+              <Select allowClear style={{ width: 170 }} options={[
+                { value: 'pending', label: '待审批' },
+                { value: 'approved', label: '已通过' },
+                { value: 'rejected', label: '未通过' }
+              ]} />
+            </Form.Item>
+          </Space>
+          <Space align="start" style={{ width: '100%' }} wrap>
+            <Form.Item label="总预计成本" name="estimated_total_cost_usd">
+              <InputNumber min={0} precision={2} style={{ width: 180 }} />
+            </Form.Item>
+            <Form.Item label="近30天中位曝光" name="median_views_30d_snapshot" extra="保存入项时的数据快照">
+              <InputNumber min={0} precision={0} style={{ width: 180 }} />
+            </Form.Item>
+            <Form.Item label="预计合作曝光" name="expected_views">
+              <InputNumber min={0} precision={0} style={{ width: 180 }} />
+            </Form.Item>
+            <Form.Item label="预估CPM" name="estimated_cpm">
+              <InputNumber min={0} precision={2} disabled style={{ width: 150 }} />
+            </Form.Item>
+          </Space>
+          <Space align="start" style={{ width: '100%' }} wrap>
+            <Form.Item label="发货日期" name="shipping_date">
+              <Input type="date" style={{ width: 180 }} />
+            </Form.Item>
+            <Form.Item label="物流单号" name="tracking_number">
+              <Input style={{ width: 260 }} />
             </Form.Item>
           </Space>
           <Form.Item label="合作发布视频" name="published_video_urls" extra="每行一条链接；系统会自动识别平台并同步到视频数据，保存时不会自动抓取。">

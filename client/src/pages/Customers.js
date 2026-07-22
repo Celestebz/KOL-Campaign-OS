@@ -2,11 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, message, Modal, Popconfirm, Select, Space, Spin, Statistic, Table, Tag, Upload } from 'antd';
 import {
   CloudDownloadOutlined,
+  CloudUploadOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SettingOutlined,
   UploadOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
@@ -42,6 +44,8 @@ const Customers = () => {
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [pulling, setPulling] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [initializingFields, setInitializingFields] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingKol, setEditingKol] = useState(null);
   const [searchText, setSearchText] = useState('');
@@ -270,6 +274,39 @@ const Customers = () => {
     }
   };
 
+  const handleFeishuPush = async () => {
+    setPushing(true);
+    try {
+      const response = await axios.post('/api/sync/feishu/push', {
+        scope: 'kols',
+        ids: selectedRowKeys
+      });
+      const result = response.data.data || {};
+      const createdFields = result.field_summary?.created?.length || 0;
+      const text = `同步到飞书完成：新建字段 ${createdFields}，KOL成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}`;
+      if (result.failed_count > 0) message.warning(text);
+      else message.success(text);
+      await fetchKols();
+    } catch (error) {
+      message.warning(error.response?.data?.error || '同步到飞书失败');
+    } finally {
+      setPushing(false);
+    }
+  };
+
+  const handleEnsureFeishuFields = async () => {
+    setInitializingFields(true);
+    try {
+      const response = await axios.post('/api/sync/feishu/ensure-kol-fields');
+      const result = response.data.data || {};
+      message.success(`飞书字段检查完成：新建 ${result.created?.length || 0}，已存在 ${result.existing?.length || 0}`);
+    } catch (error) {
+      message.warning(error.response?.data?.error || '飞书字段初始化失败');
+    } finally {
+      setInitializingFields(false);
+    }
+  };
+
   const handleImport = async (file) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -358,6 +395,44 @@ const Customers = () => {
     }
   ];
 
+  const decisionLabel = (value) => ({ pending: '待审核', approved: '已通过', rejected: '不通过' })[value] || value || '-';
+  const identityLabel = (value) => ({
+    new: '新 KOL', new_kol: '新 KOL',
+    existing: '已有 KOL · 新产品匹配', known_kol_new_product_fit: '已有 KOL · 新产品匹配',
+    existing_product_fit_updated: '已有匹配 · 证据已更新', unresolved: '待识别'
+  })[value] || value || '-';
+  const syncLabel = (value) => ({ synced: '已同步', sync_pending: '待同步', sync_failed: '同步失败' })[value] || '待同步';
+  const syncColor = (value) => ({ synced: 'green', sync_failed: 'red', sync_pending: 'orange' })[value] || 'orange';
+  const kolColumns = [
+    columns[0],
+    { title: '邮箱', dataIndex: 'email', key: 'email', width: 210, render: (value) => value || '-' },
+    { title: '国家/地区', dataIndex: 'country_region', key: 'country_region', width: 110, render: (value) => value || '-' },
+    { title: '内容类目', dataIndex: 'content_category', key: 'content_category', width: 150, render: (value) => value || '-' },
+    { title: '主平台', dataIndex: 'primary_platform', key: 'primary_platform', width: 105, render: (value) => value || '-' },
+    { title: '粉丝数', dataIndex: 'primary_followers', key: 'primary_followers', width: 125, align: 'right', render: (value) => value ?? '-' },
+    { title: '近30天平均曝光', dataIndex: 'avg_views_30d', key: 'avg_views_30d', width: 155, align: 'right', render: (value) => value ?? '-' },
+    { title: '近30天中位曝光', dataIndex: 'median_views_30d', key: 'median_views_30d', width: 155, align: 'right', render: (value) => value ?? '-' },
+    { title: '近30天作品数', dataIndex: 'posts_30d', key: 'posts_30d', width: 140, align: 'right', render: (value) => value ?? '-' },
+    { title: '互动率', dataIndex: 'engagement_rate_30d', key: 'engagement_rate_30d', width: 105, align: 'right', render: (value) => value ?? '-' },
+    { title: '合作状态', key: 'cooperation_status', width: 125, render: (_, record) => record.cooperation_status === 'do_not_contact' ? <Tag color="red">不建议合作</Tag> : <Tag color="green">可合作</Tag> },
+    { title: '本次目标 SKU', dataIndex: 'current_target_sku', key: 'current_target_sku', width: 135, render: (value) => value || '-' },
+    { title: '匹配分', dataIndex: 'current_fit_score', key: 'current_fit_score', width: 90, align: 'right', render: (value) => value ?? '-' },
+    { title: 'SKU审核', dataIndex: 'current_fit_decision', key: 'current_fit_decision', width: 110, render: (value) => <Tag color={value === 'approved' ? 'green' : value === 'rejected' ? 'red' : 'gold'}>{decisionLabel(value)}</Tag> },
+    { title: '识别状态', dataIndex: 'identity_status', key: 'identity_status', width: 180, render: (value) => identityLabel(value) },
+    { title: '进行中项目数', dataIndex: 'active_project_count', key: 'active_project_count', width: 125, align: 'right', render: (value) => value || 0 },
+    { title: '进行中项目及进度', dataIndex: 'active_project_summary', key: 'active_project_summary', width: 300, ellipsis: true, render: (value) => value || '-' },
+    { title: '最近项目更新时间', dataIndex: 'latest_project_updated_at', key: 'latest_project_updated_at', width: 170, render: (value) => value || '-' },
+    { title: '历史合作次数', dataIndex: 'historical_cooperation_count', key: 'historical_cooperation_count', width: 125, align: 'right', render: (value) => value || 0 },
+    { title: '历史合作 SKU', dataIndex: 'historical_cooperation_skus', key: 'historical_cooperation_skus', width: 190, render: (values = []) => values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-' },
+    { title: '最近合作项目', dataIndex: 'latest_cooperation_project', key: 'latest_cooperation_project', width: 170, render: (value) => value || '-' },
+    { title: '开发人', dataIndex: 'developer', key: 'developer', width: 110, render: (value) => value || '-' },
+    { title: '覆盖平台', dataIndex: 'covered_platforms', key: 'covered_platforms', width: 190, render: (values = []) => values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-' },
+    { title: '平台账号名', dataIndex: 'primary_account_name', key: 'primary_account_name', width: 150, render: (value) => value || '-' },
+    { title: '平台主页链接', dataIndex: 'primary_profile_url', key: 'primary_profile_url', width: 130, render: (value) => value ? <a href={value} target="_blank" rel="noreferrer">打开主页</a> : '-' },
+    { title: '飞书同步', dataIndex: 'sync_status', key: 'sync_status', width: 110, render: (value) => <Tag color={syncColor(value)}>{syncLabel(value)}</Tag> },
+    columns[columns.length - 1]
+  ];
+
   return (
     <div>
       <div className="page-header">
@@ -397,7 +472,7 @@ const Customers = () => {
             style={{ width: 190 }}
             options={cooperationStatusOptions}
           />
-          <Select allowClear placeholder="平台" value={selectedPlatform} onChange={setSelectedPlatform}
+          <Select allowClear placeholder="覆盖平台" value={selectedPlatform} onChange={setSelectedPlatform}
             style={{ width: 140 }} options={filterOptions.platforms.map((value) => ({ value, label: value }))} />
           <Select allowClear showSearch placeholder="国家地区" value={selectedCountry} onChange={setSelectedCountry}
             style={{ width: 160 }} options={filterOptions.countries.map((value) => ({ value, label: value }))} />
@@ -408,6 +483,10 @@ const Customers = () => {
             <Button icon={<UploadOutlined />} loading={importing}>批量导入</Button>
           </Upload>
           <Button icon={<CloudDownloadOutlined />} loading={pulling} onClick={handleFeishuPull}>从飞书导入</Button>
+          <Button icon={<SettingOutlined />} loading={initializingFields} onClick={handleEnsureFeishuFields}>检查/初始化飞书字段</Button>
+          <Button icon={<CloudUploadOutlined />} loading={pushing} onClick={handleFeishuPush}>
+            {selectedRowKeys.length ? `同步选中 ${selectedRowKeys.length} 个到飞书` : '同步待处理到飞书'}
+          </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>新增 KOL</Button>
         </Space>
       </Card>
@@ -431,7 +510,7 @@ const Customers = () => {
 
       <Card className="content-card">
         <Table
-          columns={columns}
+          columns={kolColumns}
           dataSource={kols}
           rowKey="id"
           loading={loading}
@@ -443,7 +522,7 @@ const Customers = () => {
           onChange={(_, __, ___, extra) => {
             setCurrentPageKolIds((extra.currentDataSource || []).map((item) => item.id));
           }}
-          scroll={{ x: 1900 }}
+          scroll={{ x: 2500 }}
           pagination={{ defaultPageSize: 20, showSizeChanger: true }}
         />
       </Card>
@@ -463,9 +542,45 @@ const Customers = () => {
               <Descriptions.Item label="默认报价">{drawerKol.video_price || drawerKol.price_rmb || '-'}</Descriptions.Item>
               <Descriptions.Item label="合作状态">{cooperationStatusLabel(drawerKol.cooperation_status)}</Descriptions.Item>
               <Descriptions.Item label="风险">{cooperationRiskLabel(drawerKol.cooperation_risk_category)}</Descriptions.Item>
+              <Descriptions.Item label="覆盖平台">{drawerKol.covered_platforms?.join('、') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="平台账号名">{drawerKol.primary_account_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="备注">{drawerKol.notes || '-'}</Descriptions.Item>
             </Descriptions>
             <div><h3>平台账号</h3>{accountLinks(drawerKol.platform_accounts)}</div>
+            <div>
+              <h3>项目进度汇总</h3>
+              <Descriptions bordered column={2} size="small">
+                <Descriptions.Item label="进行中项目数">{drawerKol.active_project_count || 0}</Descriptions.Item>
+                <Descriptions.Item label="最近更新时间">{drawerKol.latest_project_updated_at || '-'}</Descriptions.Item>
+                <Descriptions.Item label="进行中项目及进度" span={2}>{drawerKol.active_project_summary || '-'}</Descriptions.Item>
+              </Descriptions>
+            </div>
+            <div>
+              <h3>当前 SKU 匹配</h3>
+              <Descriptions bordered column={2} size="small">
+                <Descriptions.Item label="本次目标 SKU">{drawerKol.current_target_sku || '-'}</Descriptions.Item>
+                <Descriptions.Item label="匹配分">{drawerKol.current_fit_score ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="审核结果">{decisionLabel(drawerKol.current_fit_decision)}</Descriptions.Item>
+                <Descriptions.Item label="识别状态">{identityLabel(drawerKol.identity_status)}</Descriptions.Item>
+                <Descriptions.Item label="匹配理由" span={2}>{drawerKol.current_fit_reason || '-'}</Descriptions.Item>
+                <Descriptions.Item label="代表证据" span={2}>
+                  {drawerKol.current_evidence_url ? <a href={drawerKol.current_evidence_url} target="_blank" rel="noreferrer">查看视频证据</a> : '-'}
+                </Descriptions.Item>
+              </Descriptions>
+            </div>
+            <div>
+              <h3>历史合作汇总</h3>
+              <Descriptions bordered column={2} size="small">
+                <Descriptions.Item label="历史合作次数">{drawerKol.historical_cooperation_count || 0}</Descriptions.Item>
+                <Descriptions.Item label="最近合作项目">{drawerKol.latest_cooperation_project || '-'}</Descriptions.Item>
+                <Descriptions.Item label="历史合作 SKU" span={2}>
+                  {drawerKol.historical_cooperation_skus?.length
+                    ? <Space wrap>{drawerKol.historical_cooperation_skus.map((sku) => <Tag key={sku}>{sku}</Tag>)}</Space>
+                    : '-'}
+                </Descriptions.Item>
+                <Descriptions.Item label="最近合作评价" span={2}>{drawerKol.latest_cooperation_review || '-'}</Descriptions.Item>
+              </Descriptions>
+            </div>
             <div>
               <h3>项目历史</h3>
               {projectHistory.length ? <Table size="small" rowKey="id" pagination={false} dataSource={projectHistory}

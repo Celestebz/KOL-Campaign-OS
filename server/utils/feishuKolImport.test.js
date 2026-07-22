@@ -71,6 +71,26 @@ test('mapFeishuRecordToKol tolerates missing fields', () => {
   assert.equal(kol.feishu_record_id, 'rec2');
 });
 
+test('mapFeishuRecordToKol accepts the new KOL master headers', () => {
+  const kol = mapFeishuRecordToKol({
+    record_id: 'rec_new_headers',
+    fields: {
+      'KOL名称': 'Garden Alice',
+      '平台': 'Instagram',
+      '主页链接': { link: 'https://instagram.com/gardenalice', text: '打开主页' },
+      '粉丝数': 519285,
+      '邮箱': 'alice@example.com',
+      '国家/地区': 'US',
+      '内容类目': '园艺'
+    }
+  });
+  assert.equal(kol.instagram_url, 'https://instagram.com/gardenalice');
+  assert.equal(kol.instagram_followers, '519285');
+  assert.equal(kol.email, 'alice@example.com');
+  assert.equal(kol.country_region, 'US');
+  assert.equal(kol.creator_type, '园艺');
+});
+
 const matchingCustomers = [
   { id: 1, feishu_record_id: 'rec_keep', creator_id: 'other', name: 'Alice', platform: 'YouTube' },
   { id: 2, feishu_record_id: null, creator_id: 'alice01', name: 'Renamed', platform: 'TikTok' },

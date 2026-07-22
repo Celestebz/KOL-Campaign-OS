@@ -10,8 +10,8 @@ module.exports = (sequelize, DataTypes) => {
     target_platform: DataTypes.STRING(100),
     source: DataTypes.STRING(255),
 
-    project_status: { type: DataTypes.STRING(50), defaultValue: 'candidate' },
-    priority_level: { type: DataTypes.STRING(50), defaultValue: 'normal' },
+    project_status: { type: DataTypes.STRING(50), defaultValue: 'pending_confirmation' },
+    priority_level: { type: DataTypes.STRING(50), defaultValue: 't2' },
     candidate_priority_score: DataTypes.INTEGER,
 
     quoted_fee: DataTypes.STRING(255),
@@ -19,6 +19,17 @@ module.exports = (sequelize, DataTypes) => {
     currency: DataTypes.STRING(50),
     cooperation_type: { type: DataTypes.STRING(50), defaultValue: 'paid_product' },
     deliverables: DataTypes.TEXT,
+    shipping_address: DataTypes.TEXT,
+    expected_publish_at: DataTypes.DATE,
+    content_format: DataTypes.TEXT,
+    estimated_total_cost_usd: DataTypes.DECIMAL(15, 2),
+    median_views_30d_snapshot: DataTypes.BIGINT,
+    expected_views: DataTypes.BIGINT,
+    estimated_cpm: DataTypes.DECIMAL(15, 2),
+    budget_approval_status: DataTypes.STRING(50),
+    shipping_date: DataTypes.DATE,
+    tracking_number: DataTypes.STRING(255),
+    cooperation_platforms: DataTypes.TEXT,
 
     contact_email_override: DataTypes.STRING(255),
     contact_name_override: DataTypes.STRING(255),
