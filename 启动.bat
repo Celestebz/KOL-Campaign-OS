@@ -20,7 +20,7 @@ if not exist "node_modules" goto :InstallDependencies
 if not exist "server\node_modules" goto :InstallDependencies
 if not exist "client\node_modules" goto :InstallDependencies
 
-goto :StartService
+goto :StartDatabase
 
 :InstallDependencies
 echo [INFO] Dependencies are missing. Installing packages...
