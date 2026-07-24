@@ -1,5 +1,7 @@
 # KOL 邮件外联与回复追踪设计
 
+> **已废弃（2026-07-24）**：模板变量方案被《邮件审批台 P1 开发方案》（`2026-07-24-email-approval-desk-p1-design.md`）取代。AI 个性化起草 + 人工审批取代了通用模板填变量。本文仅留作历史记录。
+
 日期：2026-07-24
 
 ## 背景
@@ -91,7 +93,7 @@ kol-campaign-os 已管理 Campaign 与 KOL 的完整合作流程（`campaign_kol
 | ai_status | STRING | `pending` / `success` / `failed` |
 | confirm_status | STRING | `pending` / `confirmed` / `ignored`，默认 `pending` |
 
-**campaign_kols 复用现有字段**：`outreach_status` 取值扩展为 `not_contacted`（待联系）/ `contacted`（已联系）/ `replied`（已回复）/ `interested`（有意向）/ `rejected`（已拒绝），不加新列。
+**campaign_kols 复用现有字段**：`outreach_status` 取值扩展为 `not_contacted`（待联系）/ `contacted`（已联系）/ `replied`（已回复）/ `interested`（有意向）/ `rejected`（已拒绝）。另新增一列 `last_reply_summary`（LONGTEXT，确认回复时写入），因为飞书同步查询是 `SELECT ck.*`，加列即可让最近回复摘要零 SQL 改动进入同步行，由 `campaignKolFields` 映射到飞书。
 
 ## 发送流程
 
@@ -142,8 +144,7 @@ kol-campaign-os 已管理 Campaign 与 KOL 的完整合作流程（`campaign_kol
 ## 前端
 
 - **CampaignKols 页**：工具栏加"发邮件"按钮与发送弹窗（模板选择、逐封预览编辑、发送结果展示）；列表 `outreach_status` 列展示新状态值。
-- **邮件中心页**（新页面，路由 `/emails`）：三个标签页——发送记录 / 回复待确认 / 模板管理。
-- **Settings 页**：新增"邮箱配置"区块（SMTP/IMAP/账号/授权码/默认抄送/轮询间隔/测试连接按钮）。
+- **邮件中心页**（新页面，路由 `/emails`）：四个标签页——发送记录 / 回复待确认 / 模板管理 / 邮箱配置（SMTP/IMAP/账号/授权码/默认抄送/轮询间隔/测试连接按钮，自包含组件直调 `/api/emails/settings`，不改动现有 Settings 页架构）。
 
 ## 错误处理
 
@@ -154,8 +155,8 @@ kol-campaign-os 已管理 Campaign 与 KOL 的完整合作流程（`campaign_kol
 
 ## 测试
 
-- `server/routes/emails.test.js`（supertest，按现有测试惯例）：模板 CRUD、预览变量替换、发送（mock nodemailer）、无地址失败、确认/忽略回复的状态流转。
-- `server/services/replyTracker.test.js`：mock IMAP 源，验证 In-Reply-To 精确匹配、发件人兜底匹配、未匹配不标已读。
+- `server/routes/emails.test.js`：遵循 `settings.test.js` 惯例（node:test，`findHandler`/`callHandler` + monkey-patch `dbOperations`），覆盖模板 CRUD、预览变量替换、发送（patch `services/mailer`）、无地址失败、确认/忽略回复的状态流转。
+- `server/utils/emailVariables.test.js`、`server/utils/replyMatching.test.js`：纯函数测试（变量替换、收件人优先级、In-Reply-To 精确匹配、发件人兜底匹配）。IMAP 轮询与飞书写入不做单元测试，与仓库现有惯例一致。
 - `server/utils/llm.test.js`：验证抽取后接口与 videos.js 原行为一致（以现有 videos 测试通过为准）。
 
 ## 依赖与迁移
