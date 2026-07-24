@@ -6,6 +6,7 @@ import {
   DashboardOutlined,
   FileTextOutlined,
   LogoutOutlined,
+  MailOutlined,
   PlayCircleOutlined,
   ProductOutlined,
   ProfileOutlined,
@@ -24,6 +25,7 @@ import Records from './pages/Records';
 import Settings from './pages/Settings';
 import RawCandidates from './pages/RawCandidates';
 import CampaignKols from './pages/CampaignKols';
+import Emails from './pages/Emails';
 import KolStrategy from './pages/KolStrategy';
 import Products from './pages/Products';
 import Campaigns from './pages/Campaigns';
@@ -68,6 +70,7 @@ function App() {
     { key: '/finder', icon: <SearchOutlined />, label: 'KOL 寻找' },
     { key: '/customers', icon: <UserOutlined />, label: 'KOL 管理' },
     { key: '/campaign-kols', icon: <TeamOutlined />, label: 'KOL 合作' },
+    { key: '/emails', icon: <MailOutlined />, label: '邮件中心' },
     { key: '/send', icon: <PlayCircleOutlined />, label: '视频数据' },
     { key: '/records', icon: <BarChartOutlined />, label: '分析记录' },
     { key: '/templates', icon: <FileTextOutlined />, label: 'AI Prompt 模板' },
@@ -123,6 +126,7 @@ function App() {
             <Route path="/finder" element={<RawCandidates />} />
             <Route path="/customers" element={<Customers />} />
             <Route path="/campaign-kols" element={<CampaignKols />} />
+            <Route path="/emails" element={<Emails />} />
             <Route path="/send" element={<VideoAnalysis />} />
             <Route path="/records" element={<Records />} />
             <Route path="/templates" element={<Templates />} />

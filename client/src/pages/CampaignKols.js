@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Space, Spin, Table, Tag } from 'antd';
-import { DeleteOutlined, EditOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber, List, message, Modal, Popconfirm, Select, Space, Spin, Table, Tag } from 'antd';
+import { DeleteOutlined, EditOutlined, MailOutlined, ReloadOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { describeSyncResult } from './campaignKolSyncResult';
+import { USE_MOCK, getEmailTemplates, previewEmail, sendEmails, generateDrafts } from './emailApi';
 
 const { TextArea } = Input;
 
@@ -109,6 +110,15 @@ const CampaignKols = () => {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [emailTemplates, setEmailTemplates] = useState([]);
+  const [emailTemplateId, setEmailTemplateId] = useState();
+  const [emailPreviewTo, setEmailPreviewTo] = useState('');
+  const [emailSubject, setEmailSubject] = useState('');
+  const [emailContent, setEmailContent] = useState('');
+  const [emailCc, setEmailCc] = useState('');
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailResult, setEmailResult] = useState(null);
   const [filters, setFilters] = useState({});
   const [editing, setEditing] = useState(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -287,6 +297,77 @@ const CampaignKols = () => {
     );
   };
 
+  const openEmailModal = async () => {
+    if (!selectedRowKeys.length) {
+      message.warning('请先勾选要发送的 KOL');
+      return;
+    }
+    setEmailResult(null);
+    setEmailPreviewTo('');
+    setEmailSubject('');
+    setEmailContent('');
+    setEmailCc('');
+    setEmailTemplateId(undefined);
+    setEmailModalOpen(true);
+    try {
+      setEmailTemplates(await getEmailTemplates());
+    } catch (error) {
+      message.error('获取邮件模板失败');
+    }
+  };
+
+  const handlePreviewEmail = async (templateId) => {
+    try {
+      const kol = rows.find((r) => r.id === selectedRowKeys[0]) || null;
+      const preview = await previewEmail({ campaignKolId: selectedRowKeys[0], templateId, kol });
+      setEmailPreviewTo(preview.to || '');
+      setEmailSubject(preview.subject || '');
+      setEmailContent(preview.body_html || '');
+    } catch (error) {
+      message.error(error.response?.data?.error || error.message || '预览失败');
+    }
+  };
+
+  const handleSendEmails = async () => {
+    setEmailSending(true);
+    setEmailResult(null);
+    try {
+      const result = await sendEmails({
+        campaignKolIds: selectedRowKeys,
+        templateId: emailTemplateId,
+        customSubject: emailSubject || undefined,
+        customContent: emailContent || undefined,
+        overrideCc: emailCc || undefined
+      });
+      setEmailResult(result);
+      if (result.failed === 0) message.success(`全部发送成功（${result.success} 封）`);
+      else message.warning(`成功 ${result.success} 封，失败 ${result.failed} 封`);
+      if (!USE_MOCK) fetchRows();
+    } catch (error) {
+      message.error(error.response?.data?.error || '发送失败');
+    } finally {
+      setEmailSending(false);
+    }
+  };
+
+  const handleAiDraft = async () => {
+    if (!selectedRowKeys.length) {
+      message.warning('请先勾选要起草的 KOL');
+      return;
+    }
+    try {
+      const result = await generateDrafts({
+        campaign_id: rows.find((r) => r.id === selectedRowKeys[0])?.campaign_id,
+        customer_ids: selectedRowKeys,
+        kind: 'first_touch'
+      });
+      const okCount = (result?.results || []).filter((r) => r.ok).length;
+      message.success(`已生成 ${okCount} 条 AI 草稿，请到「邮件中心 → 审批台」审阅`);
+    } catch (error) {
+      message.error('AI 起草失败');
+    }
+  };
+
   const columns = [
     { title: '项目/产品', dataIndex: 'campaign_name', key: 'campaign_name', width: 150, fixed: 'left' },
     {
@@ -321,6 +402,11 @@ const CampaignKols = () => {
         : '-'
     )},
     { title: '合作方式', dataIndex: 'cooperation_type', key: 'cooperation_type', width: 120, render: (v) => <Tag>{cooperationTypeLabel(v)}</Tag> },
+    { title: '外联状态', dataIndex: 'outreach_status', key: 'outreach_status', width: 110, render: (v) => {
+      const labels = { not_contacted: '待联系', contacted: '已联系', replied: '已回复', interested: '有意向', rejected: '已拒绝' };
+      const colors = { contacted: 'blue', replied: 'gold', interested: 'green', rejected: 'red' };
+      return v ? <Tag color={colors[v] || 'default'}>{labels[v] || v}</Tag> : '-';
+    } },
     { title: '合作平台', dataIndex: 'cooperation_platforms', key: 'cooperation_platforms', width: 180, render: (v, r) => {
       const values = parsePlatforms(v, [r.platform_account_platform].filter(Boolean));
       return values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-';
@@ -369,6 +455,8 @@ const CampaignKols = () => {
           <Input.Search allowClear placeholder="搜索 KOL、Email、国家、备注、视频链接" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchRows} style={{ width: 320 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchRows}>刷新</Button>
           <Button icon={<SyncOutlined />} loading={syncing} onClick={syncSelected}>{selectedRowKeys.length ? '同步选中到飞书项目子表' : '同步待同步到飞书项目子表'}</Button>
+          <Button icon={<MailOutlined />} onClick={openEmailModal} disabled={!selectedRowKeys.length}>发邮件</Button>
+          <Button type="primary" icon={<RobotOutlined />} onClick={handleAiDraft} disabled={!selectedRowKeys.length}>AI 起草邮件</Button>
           <Popconfirm title="确定删除选中的项目 KOL？" onConfirm={batchDelete}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
           </Popconfirm>
@@ -460,6 +548,65 @@ const CampaignKols = () => {
             <Input placeholder="可选" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`发邮件给 ${selectedRowKeys.length} 位 KOL`}
+        open={emailModalOpen}
+        onCancel={() => setEmailModalOpen(false)}
+        width={720}
+        footer={[
+          <Button key="cancel" onClick={() => setEmailModalOpen(false)}>关闭</Button>,
+          <Button key="send" type="primary" loading={emailSending} onClick={handleSendEmails}
+            disabled={!emailTemplateId && !emailSubject}>
+            发送
+          </Button>
+        ]}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Select
+            style={{ width: '100%' }}
+            placeholder="选择邮件模板"
+            value={emailTemplateId}
+            onChange={(value) => { setEmailTemplateId(value); handlePreviewEmail(value); }}
+            options={emailTemplates.map((t) => ({ value: t.id, label: t.name }))}
+          />
+          {emailSubject !== '' && (
+            <>
+              <div style={{ color: '#888' }}>预览（第一位 KOL：{emailPreviewTo || '无收件人地址'}），修改主题/正文将应用于全部收件人：</div>
+              <Input
+                addonBefore="主题"
+                value={emailSubject}
+                onChange={(e) => setEmailSubject(e.target.value)}
+              />
+              <TextArea
+                rows={8}
+                value={emailContent}
+                onChange={(e) => setEmailContent(e.target.value)}
+              />
+              <Input
+                addonBefore="抄送"
+                placeholder="留空使用默认抄送"
+                value={emailCc}
+                onChange={(e) => setEmailCc(e.target.value)}
+              />
+            </>
+          )}
+          {emailResult && (
+            <>
+              <Divider style={{ margin: '8px 0' }} />
+              <div>发送完成：成功 {emailResult.success} / 失败 {emailResult.failed}（共 {emailResult.total}）</div>
+              {emailResult.errors.length > 0 && (
+                <List
+                  size="small"
+                  header="失败明细"
+                  dataSource={emailResult.errors}
+                  renderItem={(item) => <List.Item>{item.to || `KOL #${item.campaignKolId}`}：{item.error}</List.Item>}
+                />
+              )}
+            </>
+          )}
+        </Space>
       </Modal>
 
       <Modal title="编辑 KOL 合作" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>
