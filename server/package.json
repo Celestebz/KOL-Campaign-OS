@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test routes/*.test.js utils/*.test.js",
+    "test": "node --test routes/*.test.js utils/*.test.js middleware/*.test.js",
     "db:migrate": "node -e \"require('./database').initDatabase().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); })\""
   },
   "dependencies": {

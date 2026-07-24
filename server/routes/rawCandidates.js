@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { dbOperations, sequelize, Sequelize } = require('../database');
 const { buildCandidateIdentity } = require('./finderTasks');
+const { runYoutubeIntakeSnapshot } = require('../services/youtubeIntakeSnapshot');
 
 const router = express.Router();
 const MYSQL_SIGNED_INT_MAX = 2147483647;
@@ -616,7 +617,11 @@ router.post('/batch-approve', async (req, res) => {
     for (const id of ids) {
       try {
         const approved = await approveCandidate(id, req.body);
-        results.push({ id, success: true, ...approved });
+        let youtube_snapshot = null;
+        if (String(approved.platformAccount?.platform || '').toLowerCase() === 'youtube') {
+          try { youtube_snapshot = await runYoutubeIntakeSnapshot(approved.customer.id); } catch (error) { youtube_snapshot = { error: error.message }; }
+        }
+        results.push({ id, success: true, ...approved, youtube_snapshot });
       } catch (error) {
         await dbOperations.run(
           'UPDATE raw_candidates SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
@@ -713,7 +718,11 @@ router.delete('/batch', async (req, res) => {
 router.post('/:id/approve', async (req, res) => {
   try {
     const result = await approveCandidate(req.params.id, req.body);
-    res.json({ success: true, data: result, message: 'Candidate approved' });
+    let youtube_snapshot = null;
+    if (String(result.platformAccount?.platform || '').toLowerCase() === 'youtube') {
+      try { youtube_snapshot = await runYoutubeIntakeSnapshot(result.customer.id); } catch (error) { youtube_snapshot = { error: error.message }; }
+    }
+    res.json({ success: true, data: { ...result, youtube_snapshot }, message: 'Candidate approved' });
   } catch (error) {
     await dbOperations.run(
       'UPDATE raw_candidates SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',

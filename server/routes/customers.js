@@ -4,6 +4,7 @@ const xlsx = require('xlsx');
 const path = require('path');
 const fs = require('fs');
 const { dbOperations } = require('../database');
+const { runYoutubeIntakeSnapshot } = require('../services/youtubeIntakeSnapshot');
 
 const router = express.Router();
 
@@ -79,6 +80,26 @@ function isHistoricalCooperation(row) {
     || row.content_status === 'published';
 }
 
+function selectBestFit(fits = []) {
+  return [...fits].sort((left, right) => {
+    const leftApproved = ['approved', 'duplicate'].includes(left.candidate_status) || left.decision_status === 'approved';
+    const rightApproved = ['approved', 'duplicate'].includes(right.candidate_status) || right.decision_status === 'approved';
+    if (leftApproved !== rightApproved) return rightApproved - leftApproved;
+    const scoreDifference = Number(right.fit_score ?? -1) - Number(left.fit_score ?? -1);
+    if (scoreDifference) return scoreDifference;
+    return new Date(right.updated_at || 0).getTime() - new Date(left.updated_at || 0).getTime();
+  })[0] || null;
+}
+
+function creatorGrade(posts, medianViews, engagementRate) {
+  if (Number(posts || 0) < 3 || medianViews === null || medianViews === undefined || engagementRate === null || engagementRate === undefined) {
+    return '待评估';
+  }
+  if (Number(medianViews) >= 50000 && Number(engagementRate) >= 0.03) return 'A';
+  if (Number(medianViews) >= 15000 && Number(engagementRate) >= 0.015) return 'B';
+  return 'C';
+}
+
 function platformLabel(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return ({ youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', twitter: 'X', x: 'X' })[normalized]
@@ -117,7 +138,8 @@ async function attachKolInsights(customers) {
   );
   const projectRows = await dbOperations.query(
     `SELECT ck.customer_id, ck.id campaign_kol_id, ck.campaign_id, ck.project_status, ck.updated_at,
-       c.name campaign_name, ck.owner, ckp.assignment_status, ckp.content_status, ckp.result_summary,
+       c.name campaign_name, ck.owner, ck.candidate_priority_score, ck.evidence_summary, ck.best_evidence_url,
+       ckp.assignment_status, ckp.content_status, ckp.result_summary,
        p.sku product_sku, p.name product_name
      FROM campaign_kols ck
      JOIN campaigns c ON c.id = ck.campaign_id
@@ -144,8 +166,17 @@ async function attachKolInsights(customers) {
 
   return customers.map((customer) => {
     const customerFits = fitsByCustomer.get(Number(customer.id)) || [];
-    const latestFit = customerFits[0] || null;
     const customerProjects = projectsByCustomer.get(Number(customer.id)) || [];
+    const projectFits = customerProjects
+      .filter((row) => row.product_sku && !isHistoricalCooperation(row))
+      .map((row) => ({
+        ...row,
+        fit_score: row.candidate_priority_score,
+        evidence_url: row.best_evidence_url,
+        decision_status: 'approved',
+        candidate_status: 'approved'
+      }));
+    const latestFit = selectBestFit([...customerFits, ...projectFits]);
     const historicalRows = customerProjects.filter(isHistoricalCooperation);
     const historicalCampaignIds = new Set(historicalRows.map((row) => row.campaign_kol_id));
     const historicalSkus = Array.from(new Set(historicalRows
@@ -197,10 +228,15 @@ async function attachKolInsights(customers) {
         return `${row.campaign_name}｜${projectStatusLabel(row.project_status)}${sku}`;
       }).join('；'),
       latest_project_updated_at: activeProjects[0]?.updated_at || null,
-      avg_views_30d: null,
-      median_views_30d: null,
-      posts_30d: null,
-      engagement_rate_30d: null
+      avg_views_30d: customer.youtube_avg_views_30d ?? null,
+      median_views_30d: customer.youtube_median_views_30d ?? null,
+      posts_30d: customer.youtube_posts_30d ?? null,
+      engagement_rate_30d: customer.youtube_engagement_rate_30d ?? null
+      ,creator_grade: creatorGrade(
+        customer.youtube_posts_30d,
+        customer.youtube_median_views_30d,
+        customer.youtube_engagement_rate_30d
+      )
     };
   });
 }
@@ -678,7 +714,49 @@ router.post('/', async (req, res) => {
     }
 
     const id = await insertKol(data);
-    res.json({ success: true, message: 'KOL 创建成功', data: { id } });
+    let youtube_snapshot = null;
+    if (data.youtube_url || String(data.platform || '').toLowerCase() === 'youtube') {
+      try { youtube_snapshot = await runYoutubeIntakeSnapshot(id); } catch (error) { youtube_snapshot = { error: error.message }; }
+    }
+    res.json({ success: true, message: 'KOL 创建成功', data: { id, youtube_snapshot } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/youtube-snapshot', async (req, res) => {
+  try {
+    const data = await runYoutubeIntakeSnapshot(Number(req.params.id));
+    let feishu_sync = null;
+    try {
+      const { syncRefreshedKolAndCandidates } = require('./sync');
+      feishu_sync = await syncRefreshedKolAndCandidates(Number(req.params.id));
+    } catch (error) {
+      feishu_sync = { error: error.message };
+    }
+    res.json({ success: true, data: { ...data, feishu_sync } });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/:id/youtube-snapshot', async (req, res) => {
+  try {
+    const customer = await dbOperations.get(
+      `SELECT youtube_avg_views_30d avg_views_30d, youtube_median_views_30d median_views_30d,
+       youtube_posts_30d posts_30d, youtube_engagement_rate_30d engagement_rate_30d,
+       youtube_snapshot_status status, youtube_snapshot_error error, youtube_snapshot_updated_at updated_at
+       FROM customers WHERE id = ?`,
+      [req.params.id]
+    );
+    if (!customer) return res.status(404).json({ success: false, error: 'KOL 不存在' });
+    const videos = await dbOperations.query(
+      `SELECT youtube_video_id, title, video_url, published_at, duration_seconds, play_count, like_count,
+       comment_count, is_short, is_live, included_in_aggregate, exclusion_reason, snapshot_at
+       FROM kol_youtube_snapshot_videos WHERE customer_id = ? ORDER BY published_at DESC`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: { ...customer, videos } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -782,3 +860,5 @@ module.exports.parseEvidenceSummary = parseEvidenceSummary;
 module.exports.isHistoricalCooperation = isHistoricalCooperation;
 module.exports.isActiveProject = isActiveProject;
 module.exports.projectStatusLabel = projectStatusLabel;
+module.exports.selectBestFit = selectBestFit;
+module.exports.creatorGrade = creatorGrade;

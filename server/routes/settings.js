@@ -44,17 +44,33 @@ function providerKey(scope, provider) {
   return `${scope}.${provider}`;
 }
 
+function isMaskedSecret(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return text === SECRET_MASK
+    || /^[*•]{6,}$/.test(text)
+    || /^(â€¢){2,}$/.test(text);
+}
+
+function hasUsableSecret(value) {
+  const text = String(value || '').trim();
+  return Boolean(text) && !isMaskedSecret(text);
+}
+
 function isConfigured(row) {
-  return Boolean(row?.api_key || row?.base_url || row?.model || row?.extra_config);
+  return Boolean(hasUsableSecret(row?.api_key) || row?.base_url || row?.model);
+}
+
+function isPlatformConfigured(row) {
+  return Boolean(hasUsableSecret(row?.api_key) || row?.base_url);
+}
+
+function isAiConfigured(row) {
+  return Boolean(hasUsableSecret(row?.api_key) && row?.base_url && row?.model);
 }
 
 function maskSecret(value) {
   return value ? SECRET_MASK : '';
-}
-
-function isMaskedSecret(value) {
-  const text = String(value || '').trim();
-  return text === SECRET_MASK || /^(\*|•){6,}$/.test(text);
 }
 
 function preserveSecret(nextValue, currentValue = '') {
@@ -345,15 +361,15 @@ router.get('/health/config', async (req, res) => {
       const fallbackStatus = [];
       for (const fb of (platformConfig?.fallbacks || [])) {
         const fbRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey(platform, fb)]);
-        fallbackStatus.push({ provider: fb, configured: isConfigured(fbRow) });
+        fallbackStatus.push({ provider: fb, configured: isPlatformConfigured(fbRow) });
       }
       const missing = [];
-      if (!isConfigured(primaryRow)) {
+      if (!isPlatformConfigured(primaryRow)) {
         missing.push(`${primary} provider config (api_key/base_url)`);
       }
       platforms[platform] = {
         primary,
-        configured: isConfigured(primaryRow),
+        configured: isPlatformConfigured(primaryRow),
         fallbacks: fallbackStatus,
         missing
       };
@@ -369,23 +385,23 @@ router.get('/health/config', async (req, res) => {
       database: { ok: true },
       ai: {
         active: aiActive,
-        configured: isConfigured(aiRow),
+        configured: isAiConfigured(aiRow),
         required_fields: ['api_key', 'base_url', 'model'],
         missing: []
       },
       platforms,
       external_agent: {
         enabled: Boolean(externalAgentExtra.enabled),
-        token_configured: Boolean(externalAgentRow?.api_key || externalAgentExtra.token),
+        token_configured: hasUsableSecret(externalAgentRow?.api_key) || hasUsableSecret(externalAgentExtra.token),
         missing: []
       },
       feishu: {
-        configured: Boolean(feishuExtra.app_token && feishuRow?.api_key)
+        configured: hasUsableSecret(feishuRow?.api_key) && hasUsableSecret(feishuExtra.app_token)
       }
     };
 
     if (!checks.ai.configured) {
-      if (!aiRow?.api_key) checks.ai.missing.push('api_key');
+      if (!hasUsableSecret(aiRow?.api_key)) checks.ai.missing.push('api_key');
       if (!aiRow?.base_url) checks.ai.missing.push('base_url');
       if (!aiRow?.model) checks.ai.missing.push('model');
     }

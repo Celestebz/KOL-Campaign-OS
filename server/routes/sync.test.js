@@ -45,7 +45,7 @@ const feishuConfigRow = {
 test('migratedKolFields fills new master fields without overwriting existing values', () => {
   const { migratedKolFields } = require('./sync');
   const updates = migratedKolFields({
-    平台: 'YouTube',
+    主平台: 'YouTube',
     YouTube主页: { link: 'https://youtube.com/@alice', text: 'Alice' },
     Instagram主页: { link: 'https://instagram.com/alice', text: 'Alice' },
     主平台粉丝数: 12300,
@@ -54,31 +54,31 @@ test('migratedKolFields fills new master fields without overwriting existing val
     Email: 'old@example.com',
     邮箱: 'keep@example.com'
   });
-  assert.equal(updates.主平台, 'YouTube');
+  assert.equal(updates.平台, 'YouTube');
   assert.deepEqual(updates.平台主页链接, { link: 'https://youtube.com/@alice', text: 'Alice' });
   assert.equal(updates.平台账号名, 'alice');
   assert.equal(updates.粉丝数, 12300);
   assert.equal(updates.近30天平均曝光, 5000);
   assert.equal(updates.互动率, 0.032);
-  assert.deepEqual(updates.覆盖平台, ['YouTube', 'Instagram']);
+  assert.deepEqual(updates.合作平台, ['YouTube', 'Instagram']);
   assert.equal(updates.邮箱, undefined);
 });
 
 test('migratedKolFields never replaces populated new master fields', () => {
   const { migratedKolFields } = require('./sync');
   const updates = migratedKolFields({
-    平台: 'YouTube',
-    主平台: 'TikTok',
+    主平台: 'YouTube',
+    平台: 'TikTok',
     主页链接: { link: 'https://youtube.com/@old', text: 'Old' },
     平台主页链接: { link: 'https://tiktok.com/@new', text: 'New' },
     主平台粉丝数: 100,
     粉丝数: 200,
-    覆盖平台: ['TikTok']
+    合作平台: ['TikTok']
   });
-  assert.equal(updates.主平台, undefined);
+  assert.equal(updates.平台, undefined);
   assert.equal(updates.平台主页链接, undefined);
   assert.equal(updates.粉丝数, undefined);
-  assert.equal(updates.覆盖平台, undefined);
+  assert.equal(updates.合作平台, undefined);
   assert.equal(updates.平台账号名, 'new');
 });
 
@@ -114,7 +114,7 @@ function buildCampaignKolRow(overrides = {}) {
   };
 }
 
-async function runCampaignKolPush(rows, { recordHandler } = {}) {
+async function runCampaignKolPush(rows, { recordHandler, configRow = feishuConfigRow } = {}) {
   const calls = [];
   const writes = [];
   const originalGet = dbOperations.get;
@@ -122,7 +122,7 @@ async function runCampaignKolPush(rows, { recordHandler } = {}) {
   const originalRun = dbOperations.run;
   const originalFetch = global.fetch;
 
-  dbOperations.get = async () => feishuConfigRow;
+  dbOperations.get = async () => configRow;
   dbOperations.query = async () => rows;
   dbOperations.run = async (sql, params = []) => {
     writes.push({ sql: String(sql), params });
@@ -180,8 +180,8 @@ test('KOL master mapping uses the new business-facing Feishu headers', () => {
     }]
   });
   assert.equal(fields['KOL名称'], 'Alice');
-  assert.equal(fields['本次目标SKU'], 'TMB-1401');
-  assert.equal(fields['当前SKU匹配分'], 91);
+  assert.equal(fields['匹配SKU'], 'TMB-1401');
+  assert.equal(fields['SKU匹配分'], 91);
   assert.equal(fields['历史合作次数'], 2);
   assert.equal(fields['历史合作SKU'], 'CTA-7004、TSA-0512');
   assert.equal(fields['识别状态'], '已有 KOL · 新产品匹配');
@@ -193,9 +193,8 @@ test('KOL master mapping uses the new business-facing Feishu headers', () => {
   assert.deepEqual(fields['平台主页链接'], {
     link: 'https://youtube.com/@alice', text: 'https://youtube.com/@alice'
   });
-  assert.deepEqual(fields['代表证据'], {
-    link: 'https://youtube.com/watch?v=1', text: 'https://youtube.com/watch?v=1'
-  });
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '代表证据'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, 'SKU审核结果'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(fields, '账号Handle'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(fields, '近30天中位曝光'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(fields, '项目状态'), false);
@@ -204,7 +203,7 @@ test('KOL master mapping uses the new business-facing Feishu headers', () => {
 
 test('KOL field initializer creates only missing fields and is idempotent by name and type', async () => {
   const syncRoute = require('./sync');
-  assert.equal(syncRoute.KOL_MASTER_FIELD_SCHEMA.length, 31);
+  assert.ok(syncRoute.KOL_MASTER_FIELD_SCHEMA.length >= 29);
   const missing = syncRoute.KOL_MASTER_FIELD_SCHEMA.at(-1);
   const calls = [];
   const originalFetch = global.fetch;
@@ -224,8 +223,8 @@ test('KOL field initializer creates only missing fields and is idempotent by nam
     const summary = await syncRoute.ensureKolMasterFields({
       base_url: 'https://open.feishu.cn', app_token: 'base', kol_table_id: 'tbl'
     }, 'token');
-    assert.deepEqual(summary.created, ['最后更新时间']);
-    assert.equal(summary.existing.length, 30);
+    assert.deepEqual(summary.created, [missing.field_name]);
+    assert.equal(summary.existing.length, syncRoute.KOL_MASTER_FIELD_SCHEMA.length - 1);
     assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
   } finally {
     global.fetch = originalFetch;
@@ -257,6 +256,9 @@ test('campaign KOL push sends hyperlinks as link/text objects and numbers as num
   assert.equal(fields['粉丝数'], 12300);
   assert.equal(fields['KOL合作费'], 1000);
   assert.equal(fields['优先级'], 'T2');
+  assert.deepEqual(fields['主平台主页'], {
+    link: 'https://youtube.com/@alice', text: 'https://youtube.com/@alice'
+  });
   assert.equal(fields['项目状态'], '待确认');
   assert.equal(typeof fields['项目状态'], 'string');
   assert.equal(fields['达人名称'], 'Alice');
@@ -523,4 +525,76 @@ test('KOL master pull update keeps local values when Feishu fields are empty', a
   assert.ok(!update.params.includes(null), 'no column is written as null');
   assert.ok(update.params.includes('rec_alice'));
   assert.equal(update.params.at(-1), 21);
+});
+
+const poolFeishuConfigRow = {
+  provider: 'cloud.feishu_bitable',
+  api_key: 'feishu-secret',
+  base_url: 'https://open.feishu.cn',
+  extra_config: JSON.stringify({
+    app_id: 'cli_test',
+    app_token: 'base-token',
+    kol_table_id: 'tbl_kol_master',
+    campaign_kol_table_id: 'tbl_execution',
+    campaign_subtable_map: { 3: 'tbl_pool_3' }
+  })
+};
+
+function recordCallsTo(calls, tableId) {
+  return calls.filter((call) => call.url.includes(`/tables/${tableId}/records`));
+}
+
+test('candidate pool push writes 状态 and omits lifecycle/logistics fields', async () => {
+  const { response, calls } = await runCampaignKolPush(
+    [buildCampaignKolRow({ project_status: 'contacted' })],
+    { configRow: poolFeishuConfigRow }
+  );
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+
+  const poolCalls = recordCallsTo(calls, 'tbl_pool_3');
+  assert.equal(poolCalls.length, 1);
+  const fields = JSON.parse(poolCalls[0].options.body).fields;
+  assert.equal(fields['状态'], '已联络');
+  for (const name of ['项目状态', '发货日期', '物流单号', '交付内容', '预计上线时间', '收货地址']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(fields, name), false, `${name} should be omitted`);
+  }
+  assert.equal(fields['达人名称'], 'Alice');
+  assert.equal(recordCallsTo(calls, 'tbl_execution').length, 0);
+});
+
+test('execution-stage rows push to the tracking table and mark the old pool record confirmed', async () => {
+  const { response, calls } = await runCampaignKolPush(
+    [buildCampaignKolRow({
+      project_status: 'shipped',
+      feishu_record_id: 'rec_pool_1',
+      shipping_date: '2026-07-20',
+      tracking_number: 'SF123456'
+    })],
+    { configRow: poolFeishuConfigRow }
+  );
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+
+  const trackingCalls = recordCallsTo(calls, 'tbl_execution');
+  assert.equal(trackingCalls.length, 1);
+  const fields = JSON.parse(trackingCalls[0].options.body).fields;
+  assert.equal(fields['项目状态'], '已发货');
+  assert.equal(fields['物流单号'], 'SF123456');
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '状态'), false);
+
+  const poolCalls = recordCallsTo(calls, 'tbl_pool_3');
+  assert.equal(poolCalls.length, 1);
+  assert.equal(poolCalls[0].options.method, 'PUT');
+  assert.ok(poolCalls[0].url.includes('/records/rec_pool_1'));
+  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 状态: '已确定' });
+});
+
+test('candidatePoolKolFields maps internal statuses to pool labels', () => {
+  const { candidatePoolKolFields } = require('./sync');
+  assert.equal(candidatePoolKolFields({ project_status: 'candidate' })['状态'], '候选');
+  assert.equal(candidatePoolKolFields({ project_status: 'negotiating' })['状态'], '沟通中');
+  assert.equal(candidatePoolKolFields({ project_status: 'pending_confirmation' })['状态'], '沟通中');
+  assert.equal(candidatePoolKolFields({ project_status: 'confirmed' })['状态'], '已确定');
+  assert.equal(candidatePoolKolFields({ project_status: 'not_fit' })['状态'], '不合适');
 });

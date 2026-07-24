@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
-import { Layout, Menu } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { Button, Layout, Menu, Spin } from 'antd';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import {
   BarChartOutlined,
   DashboardOutlined,
   FileTextOutlined,
+  LogoutOutlined,
   PlayCircleOutlined,
   ProductOutlined,
   ProfileOutlined,
@@ -26,13 +27,38 @@ import CampaignKols from './pages/CampaignKols';
 import KolStrategy from './pages/KolStrategy';
 import Products from './pages/Products';
 import Campaigns from './pages/Campaigns';
+import Login from './pages/Login';
 
 const { Header, Sider, Content } = Layout;
 
 function App() {
   const [collapsed, setCollapsed] = useState(false);
+  const [authState, setAuthState] = useState('loading'); // 'loading' | 'authed' | 'guest'
+  const [authRequired, setAuthRequired] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/auth/me')
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        setAuthRequired(Boolean(data.authRequired));
+        setAuthState(data.authenticated ? 'authed' : 'guest');
+      })
+      .catch(() => {
+        if (!cancelled) setAuthState('guest');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    setAuthState('guest');
+  };
 
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
@@ -48,6 +74,18 @@ function App() {
     { key: '/settings', icon: <SettingOutlined />, label: 'API 设置' }
   ];
 
+  if (authState === 'loading') {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  if (authState === 'guest') {
+    return <Login onSuccess={() => setAuthState('authed')} />;
+  }
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark">
@@ -61,10 +99,20 @@ function App() {
         />
       </Sider>
       <Layout>
-        <Header style={{ padding: 0, background: '#fff' }}>
+        <Header style={{ padding: 0, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ padding: '0 24px', fontSize: 18, fontWeight: 700 }}>
             KOL Campaign OS
           </div>
+          {authRequired && (
+            <Button
+              type="text"
+              icon={<LogoutOutlined />}
+              onClick={handleLogout}
+              style={{ marginRight: 16 }}
+            >
+              退出登录
+            </Button>
+          )}
         </Header>
         <Content style={{ margin: '0 16px' }}>
           <Routes>

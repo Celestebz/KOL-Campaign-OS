@@ -20,11 +20,9 @@ const KOL_MASTER_FIELD_SCHEMA = [
   { field_name: '近30天作品数', type: 2 },
   { field_name: '互动率', type: 2 },
   { field_name: '合作状态', type: 3, property: { options: [{ name: '可合作' }, { name: '不建议合作' }] } },
-  { field_name: '本次目标SKU', type: 1 },
-  { field_name: '当前SKU匹配分', type: 2 },
-  { field_name: '当前SKU匹配理由', type: 1 },
-  { field_name: '代表证据', type: 15 },
-  { field_name: 'SKU审核结果', type: 3, property: { options: [{ name: '待审核' }, { name: '已通过' }, { name: '不通过' }] } },
+  { field_name: '匹配SKU', type: 1 },
+  { field_name: 'SKU匹配分', type: 2 },
+  { field_name: 'SKU匹配理由', type: 1 },
   { field_name: '识别状态', type: 3, property: { options: [{ name: '新 KOL' }, { name: '已有 KOL · 新产品匹配' }, { name: '已有匹配 · 证据已更新' }, { name: '待识别' }] } },
   { field_name: '进行中项目数', type: 2 },
   { field_name: '进行中项目及进度', type: 1 },
@@ -40,6 +38,11 @@ const KOL_MASTER_FIELD_SCHEMA = [
   { field_name: '平台账号名', type: 1 },
   { field_name: '平台主页链接', type: 15 },
   { field_name: '最后更新时间', type: 5 }
+  ,{ field_name: 'YouTube数据更新时间', type: 5 }
+  ,{ field_name: 'YouTube抓取状态', type: 3, property: { options: [{ name: '待抓取' }, { name: '抓取中' }, { name: '成功' }, { name: '部分成功' }, { name: '失败' }] } }
+  ,{ field_name: '抓取失败原因', type: 1 }
+  ,{ field_name: '数据口径', type: 1 }
+  ,{ field_name: '达人等级', type: 3, property: { options: [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: '待评估' }] } }
 ];
 
 const OBSOLETE_KOL_MASTER_FIELDS = [
@@ -51,7 +54,7 @@ const OBSOLETE_KOL_MASTER_FIELDS = [
   '项目报价', '汇率', '价格RMB',
   '跟进人', '联系状态', '回复状态',
   '推荐原因', '推荐内容角度', '项目备注',
-  '来源RawCandidate', '创建时间'
+  '来源RawCandidate', '创建时间', '代表证据', 'SKU审核结果'
 ];
 
 const KOL_FIELD_RENAMES = {
@@ -63,7 +66,10 @@ const KOL_FIELD_RENAMES = {
   主平台互动率: '互动率',
   合作平台: '覆盖平台',
   主平台账号名: '平台账号名',
-  主主页链接: '平台主页链接'
+  主主页链接: '平台主页链接',
+  本次目标SKU: '匹配SKU',
+  当前SKU匹配分: 'SKU匹配分',
+  当前SKU匹配理由: 'SKU匹配理由'
 };
 
 const PROJECT_TRACKING_FIELD_SCHEMA = [
@@ -79,6 +85,7 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
     field_name: '合作平台', aliases: ['平台'], type: 4, accepted_types: [4], convert_alias_type: true,
     property: { options: [{ name: 'YouTube' }, { name: 'Instagram' }, { name: 'TikTok' }, { name: 'Facebook' }, { name: 'X' }] }
   },
+  { field_name: '主平台主页', aliases: [], type: 15, accepted_types: [15] },
   { field_name: '合作方式', aliases: [], type: 1, accepted_types: [1, 3] },
   { field_name: '收货地址', aliases: [], type: 1, accepted_types: [1] },
   { field_name: '交付内容', aliases: [], type: 1, accepted_types: [1] },
@@ -88,6 +95,10 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
   { field_name: '总预计成本', aliases: ['总预计成本USD'], type: 2, accepted_types: [2], property: { formatter: '0.00', currency_code: 'USD' } },
   { field_name: '粉丝数', aliases: [], type: 2, accepted_types: [2] },
   { field_name: '近30天中位曝光', aliases: [], type: 2, accepted_types: [2] },
+  { field_name: '近30天作品数', aliases: [], type: 2, accepted_types: [2] },
+  { field_name: '近30天平均曝光', aliases: [], type: 2, accepted_types: [2] },
+  { field_name: '互动率', aliases: [], type: 2, accepted_types: [2], property: { formatter: '0.00%' } },
+  { field_name: '数据更新时间', aliases: [], type: 5, accepted_types: [5] },
   { field_name: '预计合作曝光', aliases: [], type: 2, accepted_types: [2] },
   { field_name: '预估CPM', aliases: [], type: 2, accepted_types: [2] },
   { field_name: '预算审批状态', aliases: [], type: 3, accepted_types: [3], property: { options: [{ name: '待审批' }, { name: '已通过' }, { name: '未通过' }] } },
@@ -103,6 +114,59 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
   { field_name: '发货日期', aliases: [], type: 5, accepted_types: [5] },
   { field_name: '物流单号', aliases: [], type: 1, accepted_types: [1] },
   { field_name: '达人系统编号', aliases: [], type: 1, accepted_types: [1] }
+];
+
+// Statuses at or after the shipping stage sync to the project tracking table
+// (campaign_kol_table_id); earlier stages sync to the campaign's candidate pool
+// subtable from campaign_subtable_map.
+const EXECUTION_STATUSES = new Set([
+  'pending_shipping', 'shipped', 'delivered', 'content_preparation',
+  'pending_publish', 'published', 'cancelled'
+]);
+
+const CANDIDATE_POOL_STATUS_LABELS = {
+  candidate: '候选',
+  to_contact: '候选',
+  contacted: '已联络',
+  replied: '已回复',
+  no_reply: '没回复',
+  negotiating: '沟通中',
+  pending_confirmation: '沟通中',
+  confirmed: '已确定',
+  not_fit: '不合适'
+};
+
+// Mirrors the candidate pool table curated by the user in Feishu. The system
+// only adds missing fields/options here; it never recreates the logistics and
+// lifecycle fields the user removed (项目状态/发货日期/物流单号/交付内容/预计上线时间/收货地址).
+const CANDIDATE_POOL_FIELD_SCHEMA = [
+  { field_name: '达人名称', type: 1 },
+  { field_name: '国家地区', type: 1 },
+  { field_name: '邮箱', type: 1, ui_type: 'Email' },
+  { field_name: '主平台主页', type: 15 },
+  { field_name: '状态', type: 3, property: { options: [{ name: '候选' }, { name: '已联络' }, { name: '已回复' }, { name: '没回复' }, { name: '沟通中' }, { name: '已确定' }, { name: '不合适' }] } },
+  { field_name: '合作SKU', type: 1 },
+  { field_name: '合作平台', type: 4, property: { options: [{ name: 'YouTube' }, { name: 'Instagram' }, { name: 'TikTok' }, { name: 'Facebook' }, { name: 'X' }] } },
+  { field_name: '粉丝数', type: 2 },
+  { field_name: '近30天作品数', type: 2 },
+  { field_name: '近30天平均曝光', type: 2 },
+  { field_name: '近30天中位曝光', type: 2 },
+  { field_name: '互动率', type: 2 },
+  { field_name: '优先级', type: 3, property: { options: [{ name: 'T1' }, { name: 'T2' }, { name: 'T3' }, { name: 'T4' }] } },
+  { field_name: 'KOL合作费', type: 2, property: { formatter: '0.00', currency_code: 'USD' } },
+  { field_name: '汇率', type: 2 },
+  { field_name: '价格RMB', type: 2, property: { formatter: '0.00', currency_code: 'CNY' } },
+  { field_name: '备注', type: 1 },
+  { field_name: '预估CPM', type: 2 },
+  { field_name: '总预计成本', type: 2 },
+  { field_name: '预算审批状态', type: 3, property: { options: [{ name: '待审批' }, { name: '已通过' }, { name: '未通过' }] } },
+  { field_name: '合作方式', type: 1 },
+  { field_name: '达人系统编号', type: 1 },
+  { field_name: '创建时间', type: 5 },
+  { field_name: '数据更新时间', type: 5 },
+  { field_name: '内容形式', type: 1 },
+  { field_name: '预计合作曝光', type: 2 },
+  { field_name: '跟进人', type: 1 }
 ];
 
 function parseJson(value, fallback = {}) {
@@ -248,13 +312,33 @@ async function renameBitableField(config, token, tableId, field, fieldName) {
   });
 }
 
-async function renameKolMasterFields(config, token) {
-  const current = await listBitableFields(config, token, config.kol_table_id);
+async function renameKolMasterFields(config, token, fieldRenames = KOL_FIELD_RENAMES) {
+  let current = await listBitableFields(config, token, config.kol_table_id);
   const byName = new Map(current.map((field) => [String(field.field_name || '').trim(), field]));
-  const summary = { renamed: [], already_named: [], missing: [], failed: [] };
-  for (const [oldName, newName] of Object.entries(KOL_FIELD_RENAMES)) {
+  const summary = { renamed: [], merged: [], deleted_duplicates: [], already_named: [], missing: [], failed: [] };
+  for (const [oldName, newName] of Object.entries(fieldRenames)) {
     if (byName.has(newName)) {
-      summary.already_named.push(newName);
+      const oldField = byName.get(oldName);
+      if (!oldField) {
+        summary.already_named.push(newName);
+        continue;
+      }
+      try {
+        const records = await listBitableRecords(config, token, config.kol_table_id);
+        const updates = [];
+        for (const record of records) {
+          const oldValue = record.fields?.[oldName];
+          const newValue = record.fields?.[newName];
+          if (!fieldHasValue(oldValue) || fieldHasValue(newValue)) continue;
+          updates.push({ record_id: record.record_id, fields: { [newName]: oldValue } });
+        }
+        await batchUpdateBitableRecords(config, token, config.kol_table_id, updates);
+        await deleteBitableField(config, token, config.kol_table_id, oldField.field_id);
+        summary.merged.push({ from: oldName, to: newName, copied: updates.length });
+        summary.deleted_duplicates.push(oldName);
+      } catch (error) {
+        summary.failed.push({ from: oldName, to: newName, error: error.message });
+      }
       continue;
     }
     const field = byName.get(oldName);
@@ -270,8 +354,9 @@ async function renameKolMasterFields(config, token) {
       summary.failed.push({ from: oldName, to: newName, error: error.message });
     }
   }
-  const remaining = await listBitableFields(config, token, config.kol_table_id);
-  summary.remaining_old_names = remaining.map((field) => field.field_name).filter((name) => KOL_FIELD_RENAMES[name]);
+  current = await listBitableFields(config, token, config.kol_table_id);
+  const remaining = current;
+  summary.remaining_old_names = remaining.map((field) => field.field_name).filter((name) => fieldRenames[name]);
   return summary;
 }
 
@@ -543,6 +628,56 @@ async function ensureProjectTrackingFields(config, token, tableId, { backfillPla
   return summary;
 }
 
+// Candidate pool tables are curated by the user in Feishu: only create missing
+// fields and merge missing select options, never delete, rename, or replace.
+async function ensureCandidatePoolFields(config, token, tableId) {
+  if (!tableId) throw new Error('飞书候选池表 ID 未配置');
+  const current = await listBitableFields(config, token, tableId);
+  const byName = new Map(current.map((field) => [String(field.field_name || '').trim(), field]));
+  const summary = { created: [], options_added: [], existing: [], conflicts: [] };
+  for (const definition of CANDIDATE_POOL_FIELD_SCHEMA) {
+    const existing = byName.get(definition.field_name);
+    if (!existing) {
+      await createBitableField(config, token, tableId, definition);
+      summary.created.push(definition.field_name);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      continue;
+    }
+    if (Number(existing.type) !== Number(definition.type)) {
+      summary.conflicts.push({ field_name: definition.field_name, expected_type: definition.type, actual_type: existing.type });
+      continue;
+    }
+    summary.existing.push(definition.field_name);
+    const desiredOptions = definition.property?.options || [];
+    if (desiredOptions.length && [3, 4].includes(Number(existing.type))) {
+      const currentOptions = existing.property?.options || [];
+      const names = new Set(currentOptions.map((option) => option.name));
+      const missing = desiredOptions.filter((option) => !names.has(option.name));
+      if (missing.length) {
+        const url = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/fields/${encodeURIComponent(existing.field_id)}`;
+        await fetchJson(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            field_name: existing.field_name,
+            type: Number(existing.type),
+            property: { ...(existing.property || {}), options: [...currentOptions, ...missing] }
+          })
+        });
+        summary.options_added.push({ field_name: definition.field_name, options: missing.map((option) => option.name) });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    }
+  }
+  if (summary.conflicts.length) {
+    const names = summary.conflicts.map((item) => item.field_name).join('、');
+    const error = new Error(`飞书候选池字段类型冲突：${names}。系统未修改已有字段。`);
+    error.field_summary = summary;
+    throw error;
+  }
+  return summary;
+}
+
 async function pushBitableRecord(config, token, tableId, recordId, fields) {
   const headers = {
     'Content-Type': 'application/json',
@@ -592,6 +727,135 @@ function legacyKolFields(row) {
   };
 }
 
+async function batchUpdateBitableRecords(config, token, tableId, records) {
+  if (!records.length) return;
+  const url = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/records/batch_update`;
+  for (let index = 0; index < records.length; index += 500) {
+    await fetchJson(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ records: records.slice(index, index + 500) })
+    });
+  }
+}
+
+async function batchCreateBitableRecords(config, token, tableId, records) {
+  const url = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/records/batch_create`;
+  const data = await fetchJson(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ records })
+  });
+  return data.data?.records || [];
+}
+
+async function syncKolsBatch(config, token, ids) {
+  if (!ids.length) return [];
+  const rows = await attachKolInsights(await attachPlatformAccounts(await dbOperations.query(
+    `SELECT * FROM customers WHERE id IN (${ids.map(() => '?').join(',')})
+     AND (feishu_record_id IS NULL OR sync_status <> 'synced') ORDER BY id`,
+    ids
+  )));
+  const results = [];
+  for (let offset = 0; offset < rows.length; offset += 100) {
+    const chunk = rows.slice(offset, offset + 100);
+    try {
+      const created = await batchCreateBitableRecords(
+        config, token, config.kol_table_id,
+        chunk.map((row) => ({ fields: kolFields(row) }))
+      );
+      for (let index = 0; index < chunk.length; index += 1) {
+        const row = chunk[index];
+        const recordId = created[index]?.record_id;
+        if (!recordId) {
+          results.push({ type: 'kol', id: row.id, success: false, error: 'Feishu batch response missing record id' });
+          continue;
+        }
+        await dbOperations.run(
+          `UPDATE customers SET feishu_record_id = ?, sync_status = 'synced', last_synced_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [recordId, row.id]
+        );
+        results.push({ type: 'kol', id: row.id, success: true, record_id: recordId });
+      }
+    } catch (error) {
+      for (const row of chunk) {
+        await dbOperations.run("UPDATE customers SET sync_status = 'sync_failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
+        results.push({ type: 'kol', id: row.id, success: false, error: error.message });
+      }
+    }
+  }
+  return results;
+}
+
+async function syncKolsBulk(config, token, ids) {
+  if (!ids.length) return [];
+  const rows = await attachKolInsights(await attachPlatformAccounts(await dbOperations.query(
+    `SELECT * FROM customers WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY id`,
+    ids
+  )));
+  const existing = rows.filter((row) => row.feishu_record_id);
+  const missing = rows.filter((row) => !row.feishu_record_id);
+  const results = [];
+
+  for (let offset = 0; offset < existing.length; offset += 500) {
+    const chunk = existing.slice(offset, offset + 500);
+    try {
+      await batchUpdateBitableRecords(
+        config,
+        token,
+        config.kol_table_id,
+        chunk.map((row) => ({ record_id: row.feishu_record_id, fields: kolFields(row) }))
+      );
+      for (const row of chunk) {
+        await dbOperations.run(
+          `UPDATE customers SET sync_status = 'synced', last_synced_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [row.id]
+        );
+        results.push({ type: 'kol', id: row.id, success: true, record_id: row.feishu_record_id });
+      }
+    } catch (error) {
+      for (const row of chunk) {
+        await dbOperations.run("UPDATE customers SET sync_status = 'sync_failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
+        results.push({ type: 'kol', id: row.id, success: false, error: error.message });
+      }
+    }
+  }
+
+  for (let offset = 0; offset < missing.length; offset += 100) {
+    const chunk = missing.slice(offset, offset + 100);
+    try {
+      const created = await batchCreateBitableRecords(
+        config,
+        token,
+        config.kol_table_id,
+        chunk.map((row) => ({ fields: kolFields(row) }))
+      );
+      for (let index = 0; index < chunk.length; index += 1) {
+        const row = chunk[index];
+        const recordId = created[index]?.record_id;
+        if (!recordId) throw new Error('Feishu batch response missing record id');
+        await dbOperations.run(
+          `UPDATE customers SET feishu_record_id = ?, sync_status = 'synced',
+           last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [recordId, row.id]
+        );
+        results.push({ type: 'kol', id: row.id, success: true, record_id: recordId });
+      }
+    } catch (error) {
+      for (const row of chunk) {
+        await dbOperations.run("UPDATE customers SET sync_status = 'sync_failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
+        results.push({ type: 'kol', id: row.id, success: false, error: error.message });
+      }
+    }
+  }
+  return results;
+}
+
 function setDateTimeField(fields, name, value) {
   if (!value) return;
   const timestamp = new Date(value).getTime();
@@ -619,9 +883,6 @@ function kolFields(row) {
     '主平台': compact(row.primary_platform || account.platform),
     '覆盖平台': Array.isArray(row.covered_platforms) ? row.covered_platforms : [],
     '平台账号名': compact(row.primary_account_name || account.username),
-    '本次目标SKU': compact(row.current_target_sku),
-    '当前SKU匹配理由': compact(row.current_fit_reason),
-    'SKU审核结果': ({ pending: '待审核', approved: '已通过', rejected: '不通过' })[row.current_fit_decision] || compact(row.current_fit_decision),
     '识别状态': ({
       new: '新 KOL', new_kol: '新 KOL',
       existing: '已有 KOL · 新产品匹配', known_kol_new_product_fit: '已有 KOL · 新产品匹配',
@@ -636,18 +897,26 @@ function kolFields(row) {
     '合作状态': row.cooperation_status === 'do_not_contact' ? '不建议合作' : '可合作',
     '风险原因': compact(row.cooperation_risk_reason)
   };
+  const fitApproved = row.current_fit_decision === 'approved';
+  fields['匹配SKU'] = fitApproved ? compact(row.current_target_sku) : null;
+  fields['SKU匹配理由'] = fitApproved ? compact(row.current_fit_reason) : null;
   setHyperlinkField(fields, '平台主页链接', row.primary_profile_url || account.profile_url);
-  setHyperlinkField(fields, '代表证据', row.current_evidence_url);
   setNumberField(fields, '粉丝数', row.primary_followers ?? account.followers_count ?? account.followers_text);
   setNumberField(fields, '近30天平均曝光', row.avg_views_30d);
   setNumberField(fields, '近30天中位曝光', row.median_views_30d);
   setNumberField(fields, '近30天作品数', row.posts_30d);
   setNumberField(fields, '互动率', row.engagement_rate_30d);
-  setNumberField(fields, '当前SKU匹配分', row.current_fit_score);
+  if (fitApproved) setNumberField(fields, 'SKU匹配分', row.current_fit_score);
+  else fields['SKU匹配分'] = null;
   setNumberField(fields, '进行中项目数', row.active_project_count);
   setNumberField(fields, '历史合作次数', row.historical_cooperation_count);
   setDateTimeField(fields, '最近项目更新时间', row.latest_project_updated_at);
   setDateTimeField(fields, '最后更新时间', row.updated_at || row.last_verified_at);
+  setDateTimeField(fields, 'YouTube数据更新时间', row.youtube_snapshot_updated_at);
+  fields['YouTube抓取状态'] = ({ pending: '待抓取', fetching: '抓取中', success: '成功', partial: '部分成功', failed: '失败' })[row.youtube_snapshot_status] || '待抓取';
+  setTextField(fields, '抓取失败原因', row.youtube_snapshot_error);
+  setTextField(fields, '数据口径', '近30天YouTube长视频，不含Shorts和直播');
+  fields['达人等级'] = compact(row.creator_grade) || '待评估';
   return fields;
 }
 
@@ -674,6 +943,11 @@ const CAMPAIGN_KOL_STATUS_LABELS = {
 function campaignKolStatusLabel(status) {
   const normalized = compact(status);
   return CAMPAIGN_KOL_STATUS_LABELS[normalized] || normalized;
+}
+
+function candidatePoolStatusLabel(status) {
+  const normalized = compact(status);
+  return CANDIDATE_POOL_STATUS_LABELS[normalized] || normalized;
 }
 
 function legacyCampaignKolFields(row) {
@@ -715,6 +989,11 @@ function campaignKolFields(row) {
     : parseJson(row.cooperation_platforms, []);
   fields['合作平台'] = (cooperationPlatforms.length ? cooperationPlatforms : [platform])
     .map(normalizePlatform).filter(Boolean);
+  const primaryProfileUrl = row.platform_account_url
+    || (normalizedPlatform === 'instagram' ? row.instagram_url || row.instagram_url_snapshot : '')
+    || (normalizedPlatform === 'tiktok' ? row.tiktok_url || row.tiktok_url_snapshot : '')
+    || row.youtube_url || row.youtube_url_snapshot;
+  setHyperlinkField(fields, '主平台主页', primaryProfileUrl);
   setNumberField(fields, '粉丝数', followers);
   setTextField(fields, '跟进人', row.owner);
   setTextField(fields, '邮箱', row.email || row.email_snapshot);
@@ -732,6 +1011,10 @@ function campaignKolFields(row) {
   setNumberField(fields, 'KOL合作费', row.final_fee || row.quoted_fee || row.quoted_price);
   setNumberField(fields, '总预计成本', row.estimated_total_cost_usd);
   setNumberField(fields, '近30天中位曝光', row.median_views_30d_snapshot);
+  setNumberField(fields, '近30天作品数', row.posts_30d_snapshot);
+  setNumberField(fields, '近30天平均曝光', row.avg_views_30d_snapshot);
+  setNumberField(fields, '互动率', row.engagement_rate_30d_snapshot);
+  setDateTimeField(fields, '数据更新时间', row.youtube_snapshot_updated_at);
   setNumberField(fields, '预计合作曝光', row.expected_views);
   setNumberField(fields, '预估CPM', row.estimated_cpm);
   setTextField(fields, '预算审批状态', row.budget_approval_status);
@@ -741,6 +1024,44 @@ function campaignKolFields(row) {
   setTextField(fields, '物流单号', row.tracking_number);
   setTextField(fields, '达人系统编号', row.customer_id ? `KOL-${row.customer_id}` : '');
   return fields;
+}
+
+// Fields the user removed from the candidate pool table; never written there.
+const CANDIDATE_POOL_OMITTED_FIELDS = ['项目状态', '交付内容', '预计上线时间', '收货地址', '发货日期', '物流单号'];
+
+function candidatePoolKolFields(row) {
+  const fields = campaignKolFields(row);
+  for (const name of CANDIDATE_POOL_OMITTED_FIELDS) delete fields[name];
+  fields['状态'] = candidatePoolStatusLabel(row.project_status);
+  return fields;
+}
+
+function isExecutionStatus(status) {
+  return EXECUTION_STATUSES.has(compact(status));
+}
+
+// Execution-stage rows go to the project tracking table; earlier stages go to
+// the campaign's candidate pool subtable.
+function campaignKolTargetTableId(config, row) {
+  if (isExecutionStatus(row.project_status)) return compact(config.campaign_kol_table_id).trim();
+  return getCampaignKolTableId(config, row);
+}
+
+function isCandidatePoolTable(config, tableId) {
+  if (!tableId) return false;
+  if (compact(config.campaign_kol_table_id).trim() === tableId) return false;
+  return Object.values(config.campaign_subtable_map || {}).includes(tableId);
+}
+
+// Best-effort: when a KOL moves to the execution table, mark its old candidate
+// pool record as confirmed. Callers ignore failures (the old record may be gone).
+async function markCandidatePoolConfirmed(config, token, tableId, recordId) {
+  const url = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`;
+  await fetchJson(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ fields: { 状态: '已确定' } })
+  });
 }
 
 function campaignFields(row) {
@@ -844,22 +1165,36 @@ async function syncCampaignKols(config, token, ids = []) {
   const rows = await dbOperations.query(sql, params);
   const results = [];
 
-  const tableIds = Array.from(new Set(rows.map((row) => getCampaignKolTableId(config, row)).filter(Boolean)));
+  const tableIds = Array.from(new Set(rows.map((row) => campaignKolTargetTableId(config, row)).filter(Boolean)));
   for (const tableId of tableIds) {
-    await ensureProjectTrackingFields(config, token, tableId);
+    if (isCandidatePoolTable(config, tableId)) await ensureCandidatePoolFields(config, token, tableId);
+    else await ensureProjectTrackingFields(config, token, tableId);
   }
 
   for (const row of rows) {
     try {
-      const tableId = getCampaignKolTableId(config, row);
+      const tableId = campaignKolTargetTableId(config, row);
       if (!tableId) throw missingCampaignSubtableError(row);
+      const targetIsPool = isCandidatePoolTable(config, tableId);
       const recordId = await pushBitableRecord(
         config,
         token,
         tableId,
         row.feishu_record_id,
-        campaignKolFields(row)
+        targetIsPool ? candidatePoolKolFields(row) : campaignKolFields(row)
       );
+      // The row moved from the candidate pool to the execution table: mark the
+      // old pool record as confirmed (best effort, the pool record may be gone).
+      if (!targetIsPool && row.feishu_record_id && recordId !== row.feishu_record_id) {
+        const poolTableId = getCampaignKolTableId(config, row);
+        if (poolTableId && isCandidatePoolTable(config, poolTableId)) {
+          try {
+            await markCandidatePoolConfirmed(config, token, poolTableId, row.feishu_record_id);
+          } catch (error) {
+            // best effort
+          }
+        }
+      }
       await dbOperations.run(
         `UPDATE campaign_kols SET feishu_record_id = ?, sync_status = ?, last_synced_at = CURRENT_TIMESTAMP,
          updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
@@ -874,6 +1209,33 @@ async function syncCampaignKols(config, token, ids = []) {
   return results;
 }
 
+async function syncRefreshedKolAndCandidates(customerId) {
+  const id = Number(customerId);
+  if (!id) throw new Error('KOL id is required');
+  const config = await getFeishuConfig();
+  requireFeishuConfig(config);
+  const token = await getTenantAccessToken(config);
+  await ensureKolMasterFields(config, token);
+  const candidateRows = await dbOperations.query(
+    `SELECT id FROM campaign_kols
+     WHERE customer_id = ? AND project_status IN ('candidate', 'pending_confirmation')`,
+    [id]
+  );
+  const [kolResults, candidateResults] = await Promise.all([
+    syncKols(config, token, [id]),
+    candidateRows.length
+      ? syncCampaignKols(config, token, candidateRows.map((row) => row.id))
+      : Promise.resolve([])
+  ]);
+  const results = [...kolResults, ...candidateResults];
+  return {
+    success_count: results.filter((item) => item.success).length,
+    failed_count: results.filter((item) => !item.success).length,
+    candidate_count: candidateRows.length,
+    results
+  };
+}
+
 async function listBitableRecords(config, token, tableId) {
   const records = [];
   let pageToken = '';
@@ -885,6 +1247,30 @@ async function listBitableRecords(config, token, tableId) {
     pageToken = data.data?.has_more ? data.data?.page_token : '';
   } while (pageToken);
   return records;
+}
+
+async function deleteBitableRecord(config, token, tableId, recordId) {
+  const url = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`;
+  await fetchJson(url, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+async function deleteBlankKolMasterRecords(config, token) {
+  const records = await listBitableRecords(config, token, config.kol_table_id);
+  const blank = records.filter((record) => !compact(record.fields?.['KOL名称']).trim());
+  const summary = { scanned: records.length, deleted: [], failed: [] };
+  for (const record of blank) {
+    try {
+      await deleteBitableRecord(config, token, config.kol_table_id, record.record_id);
+      summary.deleted.push(record.record_id);
+    } catch (error) {
+      summary.failed.push({ record_id: record.record_id, error: error.message });
+    }
+  }
+  summary.remaining = (await listBitableRecords(config, token, config.kol_table_id)).length;
+  return summary;
 }
 
 function fieldHasValue(value) {
@@ -933,14 +1319,14 @@ function migratedKolFields(fields = {}) {
 
   copyIfEmpty('邮箱', 'Email');
   copyIfEmpty('国家/地区', '国家地区');
-  copyIfEmpty('主平台', '平台', normalizePlatform);
+  copyIfEmpty('平台', '主平台', normalizePlatform);
   copyIfEmpty('粉丝数', '主平台粉丝数');
   copyIfEmpty('近30天平均曝光', '主平台近30天平均曝光');
   copyIfEmpty('近30天中位曝光', '主平台近30天中位曝光');
   copyIfEmpty('近30天作品数', '主平台近30天作品数');
   copyIfEmpty('互动率', '主平台互动率');
 
-  const platform = normalizePlatform(fields['主平台'] || updates['主平台'] || fields['平台']);
+  const platform = normalizePlatform(fields['平台'] || updates['平台'] || fields['主平台']);
   const platformLinkField = platform === 'Instagram' ? 'Instagram主页'
     : platform === 'TikTok' ? 'TikTok主页'
       : platform === 'YouTube' ? 'YouTube主页' : '';
@@ -955,13 +1341,13 @@ function migratedKolFields(fields = {}) {
     if (accountName) updates['平台账号名'] = accountName;
   }
 
-  if (!fieldHasValue(fields['覆盖平台'])) {
+  if (!fieldHasValue(fields['合作平台'])) {
     const covered = [];
     if (fieldHasValue(fields['YouTube主页'])) covered.push('YouTube');
     if (fieldHasValue(fields['Instagram主页'])) covered.push('Instagram');
     if (fieldHasValue(fields['TikTok主页'])) covered.push('TikTok');
     if (platform && !covered.includes(platform)) covered.push(platform);
-    if (covered.length) updates['覆盖平台'] = covered;
+    if (covered.length) updates['合作平台'] = covered;
   }
   return updates;
 }
@@ -986,7 +1372,7 @@ async function migrateKolMasterRecords(config, token) {
   const verified = await listBitableRecords(config, token, config.kol_table_id);
   summary.verification = verified.reduce((result, record) => {
     const fields = record.fields || {};
-    if (fieldHasValue(fields['平台']) && !fieldHasValue(fields['主平台'])) result.missing_main_platform += 1;
+    if (fieldHasValue(fields['主平台']) && !fieldHasValue(fields['平台'])) result.missing_main_platform += 1;
     if ((fieldHasValue(fields['主页链接']) || fieldHasValue(fields['YouTube主页']) || fieldHasValue(fields['Instagram主页']) || fieldHasValue(fields['TikTok主页']))
       && !fieldHasValue(fields['平台主页链接'])) result.missing_main_profile += 1;
     if (fieldHasValue(fields['主平台粉丝数']) && !fieldHasValue(fields['粉丝数'])) result.missing_main_followers += 1;
@@ -1116,6 +1502,56 @@ router.post('/feishu/migrate-kol-fields', async (req, res) => {
   }
 });
 
+router.post('/feishu/delete-blank-kol-records', async (req, res) => {
+  try {
+    const config = await getFeishuConfig();
+    requireFeishuConfig(config);
+    const token = await getTenantAccessToken(config);
+    const summary = await deleteBlankKolMasterRecords(config, token);
+    res.json({ success: summary.failed.length === 0, data: summary });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/feishu/kol-record-count', async (req, res) => {
+  try {
+    const config = await getFeishuConfig();
+    requireFeishuConfig(config);
+    const token = await getTenantAccessToken(config);
+    const records = await listBitableRecords(config, token, config.kol_table_id);
+    const named = records.filter((record) => compact(record.fields?.['KOL名称']).trim());
+    res.json({ success: true, data: { total: records.length, named: named.length, blank: records.length - named.length } });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/feishu/delete-orphan-kol-records', async (req, res) => {
+  try {
+    const config = await getFeishuConfig();
+    requireFeishuConfig(config);
+    const token = await getTenantAccessToken(config);
+    const records = await listBitableRecords(config, token, config.kol_table_id);
+    const linked = await dbOperations.query("SELECT feishu_record_id FROM customers WHERE COALESCE(feishu_record_id, '') <> ''");
+    const linkedIds = new Set(linked.map((row) => row.feishu_record_id));
+    const orphaned = records.filter((record) => !linkedIds.has(record.record_id));
+    const summary = { scanned: records.length, deleted: [], failed: [] };
+    for (const record of orphaned) {
+      try {
+        await deleteBitableRecord(config, token, config.kol_table_id, record.record_id);
+        summary.deleted.push(record.record_id);
+      } catch (error) {
+        summary.failed.push({ record_id: record.record_id, error: error.message });
+      }
+    }
+    summary.remaining = records.length - summary.deleted.length;
+    res.json({ success: summary.failed.length === 0, data: summary });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 router.post('/feishu/delete-obsolete-kol-fields', async (req, res) => {
   try {
     const config = await getFeishuConfig();
@@ -1133,7 +1569,10 @@ router.post('/feishu/rename-kol-fields', async (req, res) => {
     const config = await getFeishuConfig();
     requireFeishuConfig(config);
     const token = await getTenantAccessToken(config);
-    const summary = await renameKolMasterFields(config, token);
+    const fieldRenames = req.body?.platform_only
+      ? { '平台': '主平台', '合作平台': '覆盖平台' }
+      : KOL_FIELD_RENAMES;
+    const summary = await renameKolMasterFields(config, token, fieldRenames);
     res.json({ success: summary.failed.length === 0 && summary.remaining_old_names.length === 0, data: summary });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -1174,6 +1613,48 @@ router.post('/feishu/push', async (req, res) => {
   }
 });
 
+router.post('/feishu/push-kols-batch', async (req, res) => {
+  try {
+    const config = await getFeishuConfig();
+    requireFeishuConfig(config);
+    const token = await getTenantAccessToken(config);
+    const ids = (req.body.ids || []).map((id) => Number(id)).filter(Boolean);
+    await ensureKolMasterFields(config, token);
+    const results = await syncKolsBatch(config, token, ids);
+    res.json({
+      success: results.every((item) => item.success),
+      data: {
+        success_count: results.filter((item) => item.success).length,
+        failed_count: results.filter((item) => !item.success).length,
+        results
+      }
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/feishu/push-kols-bulk', async (req, res) => {
+  try {
+    const config = await getFeishuConfig();
+    requireFeishuConfig(config);
+    const token = await getTenantAccessToken(config);
+    const ids = (req.body.ids || []).map((id) => Number(id)).filter(Boolean);
+    await ensureKolMasterFields(config, token);
+    const results = await syncKolsBulk(config, token, ids);
+    res.json({
+      success: results.every((item) => item.success),
+      data: {
+        success_count: results.filter((item) => item.success).length,
+        failed_count: results.filter((item) => !item.success).length,
+        results
+      }
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
 module.exports.kolFields = kolFields;
 module.exports.ensureKolMasterFields = ensureKolMasterFields;
@@ -1184,3 +1665,13 @@ module.exports.campaignKolFields = campaignKolFields;
 module.exports.migratedKolFields = migratedKolFields;
 module.exports.OBSOLETE_KOL_MASTER_FIELDS = OBSOLETE_KOL_MASTER_FIELDS;
 module.exports.KOL_FIELD_RENAMES = KOL_FIELD_RENAMES;
+module.exports.syncRefreshedKolAndCandidates = syncRefreshedKolAndCandidates;
+module.exports.syncKolsBulk = syncKolsBulk;
+module.exports.candidatePoolKolFields = candidatePoolKolFields;
+module.exports.candidatePoolStatusLabel = candidatePoolStatusLabel;
+module.exports.ensureCandidatePoolFields = ensureCandidatePoolFields;
+module.exports.CANDIDATE_POOL_FIELD_SCHEMA = CANDIDATE_POOL_FIELD_SCHEMA;
+module.exports.CANDIDATE_POOL_STATUS_LABELS = CANDIDATE_POOL_STATUS_LABELS;
+module.exports.EXECUTION_STATUSES = EXECUTION_STATUSES;
+module.exports.campaignKolTargetTableId = campaignKolTargetTableId;
+module.exports.isCandidatePoolTable = isCandidatePoolTable;

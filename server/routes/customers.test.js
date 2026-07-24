@@ -77,3 +77,18 @@ test('evidence summaries and completed cooperation statuses are normalized for t
   assert.equal(customersRoute.isActiveProject({ project_status: 'published' }), false);
   assert.equal(customersRoute.projectStatusLabel('confirmed'), '已确认');
 });
+
+test('best SKU fit is selected by approval and score instead of recency', () => {
+  const selected = customersRoute.selectBestFit([
+    { product_sku: 'TRA-0429', fit_score: 72, decision_status: 'approved', updated_at: '2026-07-23' },
+    { product_sku: 'TMB-1401', fit_score: 88, decision_status: 'approved', updated_at: '2026-07-20' }
+  ]);
+  assert.equal(selected.product_sku, 'TMB-1401');
+});
+
+test('creator grade follows the approved median-view and engagement thresholds', () => {
+  assert.equal(customersRoute.creatorGrade(5, 50000, 0.03), 'A');
+  assert.equal(customersRoute.creatorGrade(3, 15000, 0.015), 'B');
+  assert.equal(customersRoute.creatorGrade(8, 14999, 0.2), 'C');
+  assert.equal(customersRoute.creatorGrade(2, 100000, 0.1), '待评估');
+});

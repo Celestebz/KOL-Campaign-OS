@@ -56,6 +56,8 @@ const Customers = () => {
   const [filterOptions, setFilterOptions] = useState({ countries: [], platforms: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerKol, setDrawerKol] = useState(null);
+  const [youtubeSnapshot, setYoutubeSnapshot] = useState(null);
+  const [youtubeRefreshing, setYoutubeRefreshing] = useState(false);
   const [projectHistory, setProjectHistory] = useState([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [drawerError, setDrawerError] = useState('');
@@ -125,13 +127,15 @@ const Customers = () => {
     setDrawerError('');
     setDrawerLoading(true);
     try {
-      const [detail, history] = await Promise.all([
+      const [detail, history, snapshot] = await Promise.all([
         axios.get(`/api/customers/${record.id}`),
-        axios.get(`/api/customers/${record.id}/project-history`)
+        axios.get(`/api/customers/${record.id}/project-history`),
+        axios.get(`/api/customers/${record.id}/youtube-snapshot`)
       ]);
       if (requestId !== drawerRequest.current) return;
       setDrawerKol(detail.data.data);
       setProjectHistory(history.data.data || []);
+      setYoutubeSnapshot(snapshot.data.data || null);
     } catch (error) {
       if (requestId === drawerRequest.current) setDrawerError('详情加载失败，请稍后重试');
     } finally {
@@ -274,6 +278,31 @@ const Customers = () => {
     }
   };
 
+  const refreshYoutubeSnapshot = async () => {
+    if (!drawerKol) return;
+    setYoutubeRefreshing(true);
+    try {
+      const refreshResponse = await axios.post(`/api/customers/${drawerKol.id}/youtube-snapshot`);
+      const [snapshot] = await Promise.all([
+        axios.get(`/api/customers/${drawerKol.id}/youtube-snapshot`),
+        fetchKols()
+      ]);
+      setYoutubeSnapshot(snapshot.data.data || null);
+      const feishuSync = refreshResponse.data?.data?.feishu_sync;
+      if (feishuSync?.error || feishuSync?.failed_count > 0) {
+        message.warning('YouTube数据已更新，飞书联动同步失败，可稍后重试');
+      } else if (feishuSync?.candidate_count > 0) {
+        message.success(`YouTube数据已更新，并同步 ${feishuSync.candidate_count} 条候选记录`);
+      } else {
+        message.success('YouTube近30天数据已更新');
+      }
+    } catch (error) {
+      message.error(error.response?.data?.error || 'YouTube数据抓取失败');
+    } finally {
+      setYoutubeRefreshing(false);
+    }
+  };
+
   const handleFeishuPush = async () => {
     setPushing(true);
     try {
@@ -408,16 +437,16 @@ const Customers = () => {
     { title: '邮箱', dataIndex: 'email', key: 'email', width: 210, render: (value) => value || '-' },
     { title: '国家/地区', dataIndex: 'country_region', key: 'country_region', width: 110, render: (value) => value || '-' },
     { title: '内容类目', dataIndex: 'content_category', key: 'content_category', width: 150, render: (value) => value || '-' },
-    { title: '主平台', dataIndex: 'primary_platform', key: 'primary_platform', width: 105, render: (value) => value || '-' },
+    { title: '平台', dataIndex: 'primary_platform', key: 'primary_platform', width: 105, render: (value) => value || '-' },
     { title: '粉丝数', dataIndex: 'primary_followers', key: 'primary_followers', width: 125, align: 'right', render: (value) => value ?? '-' },
     { title: '近30天平均曝光', dataIndex: 'avg_views_30d', key: 'avg_views_30d', width: 155, align: 'right', render: (value) => value ?? '-' },
     { title: '近30天中位曝光', dataIndex: 'median_views_30d', key: 'median_views_30d', width: 155, align: 'right', render: (value) => value ?? '-' },
     { title: '近30天作品数', dataIndex: 'posts_30d', key: 'posts_30d', width: 140, align: 'right', render: (value) => value ?? '-' },
     { title: '互动率', dataIndex: 'engagement_rate_30d', key: 'engagement_rate_30d', width: 105, align: 'right', render: (value) => value ?? '-' },
     { title: '合作状态', key: 'cooperation_status', width: 125, render: (_, record) => record.cooperation_status === 'do_not_contact' ? <Tag color="red">不建议合作</Tag> : <Tag color="green">可合作</Tag> },
-    { title: '本次目标 SKU', dataIndex: 'current_target_sku', key: 'current_target_sku', width: 135, render: (value) => value || '-' },
-    { title: '匹配分', dataIndex: 'current_fit_score', key: 'current_fit_score', width: 90, align: 'right', render: (value) => value ?? '-' },
-    { title: 'SKU审核', dataIndex: 'current_fit_decision', key: 'current_fit_decision', width: 110, render: (value) => <Tag color={value === 'approved' ? 'green' : value === 'rejected' ? 'red' : 'gold'}>{decisionLabel(value)}</Tag> },
+    { title: '匹配SKU', dataIndex: 'current_target_sku', key: 'current_target_sku', width: 125, render: (value) => value || '-' },
+    { title: 'SKU匹配分', dataIndex: 'current_fit_score', key: 'current_fit_score', width: 105, align: 'right', render: (value) => value ?? '-' },
+    { title: 'SKU匹配确认', dataIndex: 'current_fit_decision', key: 'current_fit_decision', width: 125, render: (value) => <Tag color={value === 'approved' ? 'green' : value === 'rejected' ? 'red' : 'gold'}>{decisionLabel(value)}</Tag> },
     { title: '识别状态', dataIndex: 'identity_status', key: 'identity_status', width: 180, render: (value) => identityLabel(value) },
     { title: '进行中项目数', dataIndex: 'active_project_count', key: 'active_project_count', width: 125, align: 'right', render: (value) => value || 0 },
     { title: '进行中项目及进度', dataIndex: 'active_project_summary', key: 'active_project_summary', width: 300, ellipsis: true, render: (value) => value || '-' },
@@ -426,7 +455,7 @@ const Customers = () => {
     { title: '历史合作 SKU', dataIndex: 'historical_cooperation_skus', key: 'historical_cooperation_skus', width: 190, render: (values = []) => values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-' },
     { title: '最近合作项目', dataIndex: 'latest_cooperation_project', key: 'latest_cooperation_project', width: 170, render: (value) => value || '-' },
     { title: '开发人', dataIndex: 'developer', key: 'developer', width: 110, render: (value) => value || '-' },
-    { title: '覆盖平台', dataIndex: 'covered_platforms', key: 'covered_platforms', width: 190, render: (values = []) => values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-' },
+    { title: '合作平台', dataIndex: 'covered_platforms', key: 'covered_platforms', width: 190, render: (values = []) => values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-' },
     { title: '平台账号名', dataIndex: 'primary_account_name', key: 'primary_account_name', width: 150, render: (value) => value || '-' },
     { title: '平台主页链接', dataIndex: 'primary_profile_url', key: 'primary_profile_url', width: 130, render: (value) => value ? <a href={value} target="_blank" rel="noreferrer">打开主页</a> : '-' },
     { title: '飞书同步', dataIndex: 'sync_status', key: 'sync_status', width: 110, render: (value) => <Tag color={syncColor(value)}>{syncLabel(value)}</Tag> },
@@ -472,7 +501,7 @@ const Customers = () => {
             style={{ width: 190 }}
             options={cooperationStatusOptions}
           />
-          <Select allowClear placeholder="覆盖平台" value={selectedPlatform} onChange={setSelectedPlatform}
+          <Select allowClear placeholder="合作平台" value={selectedPlatform} onChange={setSelectedPlatform}
             style={{ width: 140 }} options={filterOptions.platforms.map((value) => ({ value, label: value }))} />
           <Select allowClear showSearch placeholder="国家地区" value={selectedCountry} onChange={setSelectedCountry}
             style={{ width: 160 }} options={filterOptions.countries.map((value) => ({ value, label: value }))} />
@@ -529,6 +558,7 @@ const Customers = () => {
 
       <Drawer title={drawerKol?.name || 'KOL 详情'} width={720} open={drawerOpen} onClose={closeDrawer}
         extra={drawerKol && <Space>
+          <Button icon={<ReloadOutlined />} loading={youtubeRefreshing} onClick={refreshYoutubeSnapshot}>重新抓取YouTube</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openAddToProject([drawerKol.id])}>加入项目</Button>
           <Button icon={<EditOutlined />} onClick={() => handleEdit(drawerKol)}>编辑基本资料</Button>
         </Space>}>
@@ -542,11 +572,32 @@ const Customers = () => {
               <Descriptions.Item label="默认报价">{drawerKol.video_price || drawerKol.price_rmb || '-'}</Descriptions.Item>
               <Descriptions.Item label="合作状态">{cooperationStatusLabel(drawerKol.cooperation_status)}</Descriptions.Item>
               <Descriptions.Item label="风险">{cooperationRiskLabel(drawerKol.cooperation_risk_category)}</Descriptions.Item>
-              <Descriptions.Item label="覆盖平台">{drawerKol.covered_platforms?.join('、') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="合作平台">{drawerKol.covered_platforms?.join('、') || '-'}</Descriptions.Item>
               <Descriptions.Item label="平台账号名">{drawerKol.primary_account_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="备注">{drawerKol.notes || '-'}</Descriptions.Item>
             </Descriptions>
             <div><h3>平台账号</h3>{accountLinks(drawerKol.platform_accounts)}</div>
+            <div>
+              <h3>YouTube近30天长视频快照</h3>
+              <Descriptions bordered column={2} size="small">
+                <Descriptions.Item label="作品数">{youtubeSnapshot?.posts_30d ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="平均曝光">{youtubeSnapshot?.avg_views_30d ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="中位曝光">{youtubeSnapshot?.median_views_30d ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="互动率">{youtubeSnapshot?.engagement_rate_30d != null ? `${(Number(youtubeSnapshot.engagement_rate_30d) * 100).toFixed(2)}%` : '-'}</Descriptions.Item>
+                <Descriptions.Item label="更新时间">{youtubeSnapshot?.updated_at || '-'}</Descriptions.Item>
+                <Descriptions.Item label="抓取状态">{youtubeSnapshot?.status || '待抓取'}</Descriptions.Item>
+                <Descriptions.Item label="失败原因" span={2}>{youtubeSnapshot?.error || '-'}</Descriptions.Item>
+                <Descriptions.Item label="数据口径" span={2}>近30天YouTube长视频，不含Shorts和直播</Descriptions.Item>
+              </Descriptions>
+              <Table size="small" pagination={false} rowKey="youtube_video_id" dataSource={youtubeSnapshot?.videos || []} columns={[
+                { title: '视频', dataIndex: 'title', render: (value, row) => <a href={row.video_url} target="_blank" rel="noreferrer">{value || row.youtube_video_id}</a> },
+                { title: '发布时间', dataIndex: 'published_at', width: 170 },
+                { title: '播放', dataIndex: 'play_count', width: 100 },
+                { title: '点赞', dataIndex: 'like_count', width: 90 },
+                { title: '评论', dataIndex: 'comment_count', width: 90 },
+                { title: '计入', dataIndex: 'included_in_aggregate', width: 80, render: (value, row) => value ? '是' : `否（${row.exclusion_reason || '排除'}）` }
+              ]} />
+            </div>
             <div>
               <h3>项目进度汇总</h3>
               <Descriptions bordered column={2} size="small">
@@ -556,14 +607,14 @@ const Customers = () => {
               </Descriptions>
             </div>
             <div>
-              <h3>当前 SKU 匹配</h3>
+              <h3>SKU 匹配</h3>
               <Descriptions bordered column={2} size="small">
-                <Descriptions.Item label="本次目标 SKU">{drawerKol.current_target_sku || '-'}</Descriptions.Item>
-                <Descriptions.Item label="匹配分">{drawerKol.current_fit_score ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="审核结果">{decisionLabel(drawerKol.current_fit_decision)}</Descriptions.Item>
+                <Descriptions.Item label="匹配SKU">{drawerKol.current_target_sku || '-'}</Descriptions.Item>
+                <Descriptions.Item label="SKU匹配分">{drawerKol.current_fit_score ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="SKU匹配确认">{decisionLabel(drawerKol.current_fit_decision)}</Descriptions.Item>
                 <Descriptions.Item label="识别状态">{identityLabel(drawerKol.identity_status)}</Descriptions.Item>
-                <Descriptions.Item label="匹配理由" span={2}>{drawerKol.current_fit_reason || '-'}</Descriptions.Item>
-                <Descriptions.Item label="代表证据" span={2}>
+                <Descriptions.Item label="SKU匹配理由" span={2}>{drawerKol.current_fit_reason || '-'}</Descriptions.Item>
+                <Descriptions.Item label="视频证据" span={2}>
                   {drawerKol.current_evidence_url ? <a href={drawerKol.current_evidence_url} target="_blank" rel="noreferrer">查看视频证据</a> : '-'}
                 </Descriptions.Item>
               </Descriptions>

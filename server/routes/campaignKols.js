@@ -45,6 +45,10 @@ const EDITABLE_FIELDS = [
   'content_format',
   'estimated_total_cost_usd',
   'median_views_30d_snapshot',
+  'posts_30d_snapshot',
+  'avg_views_30d_snapshot',
+  'engagement_rate_30d_snapshot',
+  'youtube_snapshot_updated_at',
   'expected_views',
   'estimated_cpm',
   'budget_approval_status',
@@ -342,8 +346,10 @@ router.post('/', async (req, res) => {
        (campaign_id, customer_id, kol_name_snapshot, contact_name_snapshot,
         youtube_url_snapshot, youtube_followers_snapshot, instagram_url_snapshot, instagram_followers_snapshot,
         tiktok_url_snapshot, tiktok_followers_snapshot, email_snapshot, country_region_snapshot,
-        quoted_price, exchange_rate, price_rmb, project_status, owner, notes, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        quoted_price, exchange_rate, price_rmb, project_status, owner, notes,
+        posts_30d_snapshot, avg_views_30d_snapshot, median_views_30d_snapshot,
+        engagement_rate_30d_snapshot, youtube_snapshot_updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         campaignId,
         customerId,
@@ -363,6 +369,11 @@ router.post('/', async (req, res) => {
         clean(req.body.project_status) || 'pending_confirmation',
         clean(req.body.owner),
         clean(req.body.notes),
+        customer.youtube_posts_30d,
+        customer.youtube_avg_views_30d,
+        customer.youtube_median_views_30d,
+        customer.youtube_engagement_rate_30d,
+        customer.youtube_snapshot_updated_at,
         'sync_pending'
       ]
     );
@@ -429,7 +440,8 @@ router.post('/:id/sync-from-master', async (req, res) => {
       SELECT ck.*, k.name, k.contact_name, k.email, k.phone, k.country_region,
         k.youtube_url, k.youtube_followers, k.instagram_url, k.instagram_followers,
         k.tiktok_url, k.tiktok_followers, k.cooperation_status, k.cooperation_risk_category,
-        k.cooperation_risk_reason
+        k.cooperation_risk_reason, k.youtube_posts_30d, k.youtube_avg_views_30d,
+        k.youtube_median_views_30d, k.youtube_engagement_rate_30d, k.youtube_snapshot_updated_at
       FROM campaign_kols ck
       JOIN customers k ON k.id = ck.customer_id
       WHERE ck.id = ?
@@ -467,6 +479,11 @@ router.post('/:id/sync-from-master', async (req, res) => {
         youtube_followers_snapshot = COALESCE(NULLIF(?, ''), youtube_followers_snapshot),
         instagram_followers_snapshot = COALESCE(NULLIF(?, ''), instagram_followers_snapshot),
         tiktok_followers_snapshot = COALESCE(NULLIF(?, ''), tiktok_followers_snapshot),
+        posts_30d_snapshot = ?,
+        avg_views_30d_snapshot = ?,
+        median_views_30d_snapshot = ?,
+        engagement_rate_30d_snapshot = ?,
+        youtube_snapshot_updated_at = ?,
         sync_status = 'sync_pending',
         updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
@@ -475,6 +492,8 @@ router.post('/:id/sync-from-master', async (req, res) => {
         row.name, row.contact_name, row.email, row.country_region,
         row.youtube_url, row.instagram_url, row.tiktok_url,
         row.youtube_followers, row.instagram_followers, row.tiktok_followers,
+        row.youtube_posts_30d, row.youtube_avg_views_30d, row.youtube_median_views_30d,
+        row.youtube_engagement_rate_30d, row.youtube_snapshot_updated_at,
         id
       ]
     );
