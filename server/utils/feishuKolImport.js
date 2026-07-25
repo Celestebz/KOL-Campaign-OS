@@ -42,7 +42,7 @@ function mapFeishuRecordToKol(record) {
   for (const [column, fieldNames] of Object.entries(FIELD_MAP)) {
     kol[column] = fieldNames.map((fieldName) => feishuFieldToText(fields[fieldName])).find(Boolean) || '';
   }
-  const profileUrl = feishuFieldToText(fields['平台主页链接']) || feishuFieldToText(fields['主主页链接']);
+  const profileUrl = feishuFieldToText(fields['主页链接']) || feishuFieldToText(fields['平台主页链接']) || feishuFieldToText(fields['主主页链接']);
   const followers = feishuFieldToText(fields['粉丝数']) || feishuFieldToText(fields['主平台粉丝数']);
   const platform = kol.platform.toLowerCase();
   if (profileUrl && ['youtube', 'instagram', 'tiktok'].includes(platform)) {
