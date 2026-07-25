@@ -103,6 +103,10 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
   { field_name: '预估CPM', aliases: [], type: 2, accepted_types: [2] },
   { field_name: '预算审批状态', aliases: [], type: 3, accepted_types: [3], property: { options: [{ name: '待审批' }, { name: '已通过' }, { name: '未通过' }] } },
   {
+    field_name: '外联状态', aliases: [], type: 3, accepted_types: [1, 3],
+    property: { options: [{ name: '待联系' }, { name: '已联系' }, { name: '已回复' }, { name: '沟通中' }, { name: '有意向' }, { name: '已拒绝' }] }
+  },
+  {
     field_name: '项目状态', aliases: [], type: 3, accepted_types: [3],
     replace_options: true,
     property: { options: [
@@ -136,6 +140,16 @@ const CANDIDATE_POOL_STATUS_LABELS = {
   not_fit: '不合适'
 };
 
+// campaign_kols.outreach_status stores English codes; Feishu shows Chinese labels.
+const OUTREACH_STATUS_LABELS = {
+  not_contacted: '待联系',
+  contacted: '已联系',
+  replied: '已回复',
+  negotiating: '沟通中',
+  interested: '有意向',
+  rejected: '已拒绝'
+};
+
 // Mirrors the candidate pool table curated by the user in Feishu. The system
 // only adds missing fields/options here; it never recreates the logistics and
 // lifecycle fields the user removed (项目状态/发货日期/物流单号/交付内容/预计上线时间/收货地址).
@@ -166,7 +180,12 @@ const CANDIDATE_POOL_FIELD_SCHEMA = [
   { field_name: '数据更新时间', type: 5 },
   { field_name: '内容形式', type: 1 },
   { field_name: '预计合作曝光', type: 2 },
-  { field_name: '跟进人', type: 1 }
+  { field_name: '跟进人', type: 1 },
+  {
+    field_name: '外联状态', type: 3,
+    property: { options: [{ name: '待联系' }, { name: '已联系' }, { name: '已回复' }, { name: '沟通中' }, { name: '有意向' }, { name: '已拒绝' }] }
+  },
+  { field_name: '跟进记录', type: 1 }
 ];
 
 function parseJson(value, fallback = {}) {
@@ -1018,6 +1037,7 @@ function campaignKolFields(row) {
   setNumberField(fields, '预计合作曝光', row.expected_views);
   setNumberField(fields, '预估CPM', row.estimated_cpm);
   setTextField(fields, '预算审批状态', row.budget_approval_status);
+  setTextField(fields, '外联状态', OUTREACH_STATUS_LABELS[row.outreach_status] || row.outreach_status);
   setTextField(fields, '项目状态', campaignKolStatusLabel(row.project_status));
   setTextField(fields, '备注', row.project_notes || row.notes);
   setDateTimeField(fields, '发货日期', row.shipping_date);
@@ -1033,6 +1053,7 @@ function candidatePoolKolFields(row) {
   const fields = campaignKolFields(row);
   for (const name of CANDIDATE_POOL_OMITTED_FIELDS) delete fields[name];
   fields['状态'] = candidatePoolStatusLabel(row.project_status);
+  setTextField(fields, '跟进记录', row.last_reply_summary);
   return fields;
 }
 

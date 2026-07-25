@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-// UI 评审阶段：true 使用内置假数据，不调后端；
-// 后端接口就绪后改为 false 即切换到真实 API（或删除 mock 分支）。
+// 分阶段去 mock：settings / templates / records / drafts.generate 已接真实接口；
+// USE_MOCK 目前只控制审批台草稿、回复待确认、固定模板预览/发送（后续 Task 删除全部 mock）。
 export const USE_MOCK = true;
 
 const mockDelay = (ms = 400) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,15 +40,6 @@ let mockTemplates = [
     created_at: '2026-07-24 08:01:00'
   }
 ];
-
-const mockVariables = {
-  kol_name: 'KOL名称',
-  contact_name: '联系人姓名',
-  campaign_name: '项目名称',
-  product_names: '合作产品',
-  cooperation_type: '合作方式',
-  sender_name: '发件人署名'
-};
 
 let mockDrafts = [
   {
@@ -169,18 +160,15 @@ const renderMock = (text, vars) => String(text || '').replace(/\{\{\s*([a-z_]+)\
 // ---- 邮箱配置 ----
 
 export async function getEmailSettings() {
-  if (USE_MOCK) { await mockDelay(); return { ...mockSettings }; }
   const res = await axios.get('/api/emails/settings');
   return res.data.data;
 }
 
 export async function saveEmailSettings(values) {
-  if (USE_MOCK) { await mockDelay(); mockSettings = { ...mockSettings, ...values }; return; }
   await axios.put('/api/emails/settings', values);
 }
 
 export async function testEmailSettings() {
-  if (USE_MOCK) { await mockDelay(800); return 'SMTP 连接成功（模拟数据）'; }
   const res = await axios.post('/api/emails/settings/test');
   return res.data.message;
 }
@@ -188,37 +176,24 @@ export async function testEmailSettings() {
 // ---- 模板与口径 ----
 
 export async function getEmailTemplates() {
-  if (USE_MOCK) { await mockDelay(); return [...mockTemplates]; }
   const res = await axios.get('/api/emails/templates');
   return res.data.data || [];
 }
 
 export async function getEmailVariables() {
-  if (USE_MOCK) { await mockDelay(100); return { ...mockVariables }; }
   const res = await axios.get('/api/emails/templates/variables');
   return res.data.data || {};
 }
 
 export async function createEmailTemplate(values) {
-  if (USE_MOCK) {
-    await mockDelay();
-    mockTemplates = [{ id: Date.now(), ...values, created_at: new Date().toISOString() }, ...mockTemplates];
-    return;
-  }
   await axios.post('/api/emails/templates', values);
 }
 
 export async function updateEmailTemplate(id, values) {
-  if (USE_MOCK) {
-    await mockDelay();
-    mockTemplates = mockTemplates.map((t) => (t.id === id ? { ...t, ...values } : t));
-    return;
-  }
   await axios.put(`/api/emails/templates/${id}`, values);
 }
 
 export async function deleteEmailTemplate(id) {
-  if (USE_MOCK) { await mockDelay(); mockTemplates = mockTemplates.filter((t) => t.id !== id); return; }
   await axios.delete(`/api/emails/templates/${id}`);
 }
 
@@ -313,12 +288,6 @@ export async function sendDraft(id) {
 }
 
 export async function generateDrafts({ campaign_id, customer_ids, kind = 'first_touch' }) {
-  if (USE_MOCK) {
-    await mockDelay(1500);
-    return {
-      results: customer_ids.map((id) => ({ customer_id: id, ok: true, draft_id: Date.now() + id }))
-    };
-  }
   const res = await axios.post('/api/emails/drafts/generate', { campaign_id, customer_ids, kind });
   return res.data.data;
 }
@@ -326,11 +295,6 @@ export async function generateDrafts({ campaign_id, customer_ids, kind = 'first_
 // ---- 发送记录 ----
 
 export async function getEmailRecords(status) {
-  if (USE_MOCK) {
-    await mockDelay();
-    const records = status ? mockRecords.filter((r) => r.status === status) : [...mockRecords];
-    return { records, total: records.length };
-  }
   const res = await axios.get('/api/emails/records', { params: status ? { status } : {} });
   return res.data.data;
 }
@@ -393,11 +357,12 @@ export async function draftReply(id) {
 
 // ---- 固定模板预览/发送（原发邮件入口，kind='fixed'） ----
 
-export async function previewEmail({ campaignKolId, templateId, kol }) {
+export async function previewEmail({ campaignKolId, templateId, kol, template }) {
   if (USE_MOCK) {
     await mockDelay();
-    const template = mockTemplates.find((t) => t.id === templateId);
-    if (!template) throw new Error('模板不存在');
+    // 模板列表已接真实接口，优先用调用方传入的真实模板对象渲染预览
+    const tpl = template || mockTemplates.find((t) => t.id === templateId);
+    if (!tpl) throw new Error('模板不存在');
     const vars = {
       kol_name: kol?.kol_name || kol?.kol_name_snapshot || '示例KOL',
       contact_name: kol?.contact_name || kol?.contact_name_snapshot || kol?.kol_name_snapshot || 'Creator',
@@ -408,8 +373,8 @@ export async function previewEmail({ campaignKolId, templateId, kol }) {
     };
     return {
       to: kol?.contact_email_override || kol?.email_snapshot || kol?.email || 'creator@example.com',
-      subject: renderMock(template.subject, vars),
-      body_html: renderMock(template.body_html, vars)
+      subject: renderMock(tpl.subject, vars),
+      body_html: renderMock(tpl.body_html, vars)
     };
   }
   const res = await axios.post('/api/emails/preview', { campaignKolId, templateId });

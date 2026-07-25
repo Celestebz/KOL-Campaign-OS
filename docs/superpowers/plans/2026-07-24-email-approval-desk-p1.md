@@ -1437,7 +1437,7 @@ git commit -m "feat: add draft review/approve/send APIs with campaign_kols write
 - Consumes: Task 4/6 全部 API。
 - Produces: 前端全部走真实接口；无行为新增。
 
-- [ ] **Step 1: CampaignKols 传参修正**
+- [x] **Step 1: CampaignKols 传参修正**
 
 `handleAiDraft` 中 `customer_ids` 目前传的是 `selectedRowKeys`（campaign_kols.id）。改为映射出 customer_id：
 
@@ -1461,7 +1461,7 @@ git commit -m "feat: add draft review/approve/send APIs with campaign_kols write
 
 删除 `USE_MOCK` 常量、全部 mock 数据与 mock 分支，每个函数只保留 axios 真实调用。`getDrafts` 返回 `res.data.data`（含 drafts 与 counts）。`Emails.js` 删除 `USE_MOCK` import 与顶部黄色提示条，`CampaignKols.js` 删除 `USE_MOCK` 引用（`if (!USE_MOCK) fetchRows()` 恢复为 `fetchRows()`）。
 
-- [ ] **Step 3: 构建 + 现有前端测试**
+- [x] **Step 3: 构建 + 现有前端测试**
 
 Run: `cd client && npm run build`
 Expected: `Compiled successfully.`
@@ -1817,7 +1817,7 @@ git commit -m "feat: add IMAP reply poller with AI summary and reply APIs"
 **Interfaces:**
 - Produces: 候选池新增"跟进记录"文本字段（自动补建）；`candidatePoolKolFields(row)` 输出 `'跟进记录': row.last_reply_summary`；`campaignKolFields(row)` 输出 `'外联状态'`（英文编码→中文标签映射：`not_contacted 待联系 / contacted 已联系 / replied 已回复 / negotiating 沟通中 / interested 有意向 / rejected 已拒绝`），候选池"状态"走现有 `CANDIDATE_POOL_STATUS_LABELS`（contacted→已联络、replied→已回复、negotiating→沟通中，已存在无需改）。
 
-- [ ] **Step 1: 追加失败测试**
+- [x] **Step 1: 追加失败测试**
 
 ```js
 test('candidatePoolKolFields includes follow-up note; campaignKolFields maps outreach status', () => {
@@ -1829,12 +1829,12 @@ test('candidatePoolKolFields includes follow-up note; campaignKolFields maps out
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd server && node --test routes/sync.test.js`
 Expected: FAIL（`跟进记录` 为 undefined）。
 
-- [ ] **Step 3: 修改 sync.js**
+- [x] **Step 3: 修改 sync.js**
 
 3a. `CANDIDATE_POOL_FIELD_SCHEMA` 末尾（`{ field_name: '跟进人', type: 1 }` 后）加：
 
@@ -1869,7 +1869,7 @@ const OUTREACH_STATUS_LABELS = {
 
 3e. 若 `PROJECT_TRACKING_FIELD_SCHEMA` 需要"外联状态"字段则同步加一条（type 3，选项：待联系/已联系/已回复/沟通中/有意向/已拒绝）。
 
-- [ ] **Step 4: 测试 + 回归 + Commit**
+- [x] **Step 4: 测试 + 回归 + Commit**
 
 Run: `cd server && npm test`
 Expected: 全部通过。

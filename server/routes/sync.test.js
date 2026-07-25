@@ -598,3 +598,26 @@ test('candidatePoolKolFields maps internal statuses to pool labels', () => {
   assert.equal(candidatePoolKolFields({ project_status: 'confirmed' })['状态'], '已确定');
   assert.equal(candidatePoolKolFields({ project_status: 'not_fit' })['状态'], '不合适');
 });
+
+test('candidatePoolKolFields includes follow-up note; campaignKolFields maps outreach status', () => {
+  const { candidatePoolKolFields, campaignKolFields } = require('./sync');
+  const pool = candidatePoolKolFields({ kol_name_snapshot: 'Alice', last_reply_summary: '询问寄送', cooperation_platforms: '[]' });
+  assert.equal(pool['跟进记录'], '询问寄送');
+  const tracking = campaignKolFields({ kol_name_snapshot: 'Alice', outreach_status: 'contacted', cooperation_platforms: '[]' });
+  assert.equal(tracking['外联状态'], '已联系');
+});
+
+test('candidate pool schema declares the follow-up note field; outreach status field exists in both schemas', () => {
+  const { CANDIDATE_POOL_FIELD_SCHEMA, PROJECT_TRACKING_FIELD_SCHEMA } = require('./sync');
+  const followUp = CANDIDATE_POOL_FIELD_SCHEMA.find((field) => field.field_name === '跟进记录');
+  assert.ok(followUp, 'candidate pool schema missing 跟进记录');
+  assert.equal(followUp.type, 1);
+  for (const schema of [CANDIDATE_POOL_FIELD_SCHEMA, PROJECT_TRACKING_FIELD_SCHEMA]) {
+    const outreach = schema.find((field) => field.field_name === '外联状态');
+    assert.ok(outreach, 'schema missing 外联状态');
+    const optionNames = (outreach.property?.options || []).map((option) => option.name);
+    for (const name of ['待联系', '已联系', '已回复', '沟通中', '有意向', '已拒绝']) {
+      assert.ok(optionNames.includes(name), `外联状态 missing option ${name}`);
+    }
+  }
+});

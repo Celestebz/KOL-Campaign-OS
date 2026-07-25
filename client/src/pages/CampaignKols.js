@@ -319,7 +319,8 @@ const CampaignKols = () => {
   const handlePreviewEmail = async (templateId) => {
     try {
       const kol = rows.find((r) => r.id === selectedRowKeys[0]) || null;
-      const preview = await previewEmail({ campaignKolId: selectedRowKeys[0], templateId, kol });
+      const template = emailTemplates.find((t) => t.id === templateId) || null;
+      const preview = await previewEmail({ campaignKolId: selectedRowKeys[0], templateId, kol, template });
       setEmailPreviewTo(preview.to || '');
       setEmailSubject(preview.subject || '');
       setEmailContent(preview.body_html || '');
@@ -355,10 +356,16 @@ const CampaignKols = () => {
       message.warning('请先勾选要起草的 KOL');
       return;
     }
+    const selectedRows = rows.filter((r) => selectedRowKeys.includes(r.id));
+    const customerIds = [...new Set(selectedRows.map((r) => r.customer_id).filter(Boolean))];
+    if (!customerIds.length) {
+      message.warning('选中的 KOL 缺少 customer_id，无法起草');
+      return;
+    }
     try {
       const result = await generateDrafts({
-        campaign_id: rows.find((r) => r.id === selectedRowKeys[0])?.campaign_id,
-        customer_ids: selectedRowKeys,
+        campaign_id: selectedRows[0]?.campaign_id,
+        customer_ids: customerIds,
         kind: 'first_touch'
       });
       const okCount = (result?.results || []).filter((r) => r.ok).length;
@@ -566,10 +573,10 @@ const CampaignKols = () => {
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Select
             style={{ width: '100%' }}
-            placeholder="选择邮件模板"
+            placeholder="选择邮件模板（仅固定模板；个性化起草请用「AI 起草邮件」）"
             value={emailTemplateId}
             onChange={(value) => { setEmailTemplateId(value); handlePreviewEmail(value); }}
-            options={emailTemplates.map((t) => ({ value: t.id, label: t.name }))}
+            options={emailTemplates.filter((t) => t.kind === 'fixed').map((t) => ({ value: t.id, label: t.name }))}
           />
           {emailSubject !== '' && (
             <>
