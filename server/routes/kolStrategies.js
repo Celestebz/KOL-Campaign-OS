@@ -744,30 +744,35 @@ router.post('/:id/analyze-materials', upload.array('files', MAX_MATERIAL_FILES),
   }
 });
 
+// mark-ready 核心逻辑（事务内）：路由 /:id/mark-ready 与 approval_items 决定副作用共用。
+async function markStrategyReady(strategyId) {
+  return sequelize.transaction(async (transaction) => {
+    const strategy = await getStrategyForUpdate(strategyId, transaction);
+    if (!strategy) throw routeError('Strategy not found', 404);
+    await getCampaignProductForStrategy(
+      strategy.campaign_id,
+      strategy.campaign_product_id,
+      { requireActive: true, transaction }
+    );
+    validateReady(strategy);
+    await transactionRun(
+      'UPDATE kol_strategies SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ['ready', strategyId],
+      transaction
+    );
+    const updated = await getStrategy(strategyId, { transaction });
+    if (!updated) throw routeError('Strategy ready update conflicted with another update', 409);
+    return updated;
+  });
+}
+
 router.post('/:id/mark-ready', async (req, res) => {
   try {
     const body = req.body || {};
     rejectLegacyCycleFields(body);
     const strategyId = parsePathId(req.params.id);
     if (strategyId === null) throw routeError('Strategy id must be a positive integer', 400);
-    const ready = await sequelize.transaction(async (transaction) => {
-      const strategy = await getStrategyForUpdate(strategyId, transaction);
-      if (!strategy) throw routeError('Strategy not found', 404);
-      await getCampaignProductForStrategy(
-        strategy.campaign_id,
-        strategy.campaign_product_id,
-        { requireActive: true, transaction }
-      );
-      validateReady(strategy);
-      await transactionRun(
-        'UPDATE kol_strategies SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        ['ready', strategyId],
-        transaction
-      );
-      const updated = await getStrategy(strategyId, { transaction });
-      if (!updated) throw routeError('Strategy ready update conflicted with another update', 409);
-      return updated;
-    });
+    const ready = await markStrategyReady(strategyId);
     res.json({ success: true, data: ready, message: 'Strategy is ready' });
   } catch (error) {
     sendRouteError(res, error);
@@ -865,3 +870,5 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
+// 供 approval_items 决定副作用复用（decisionDispatcher），保持与 /:id/mark-ready 同一代码路径。
+module.exports.markStrategyReady = markStrategyReady;

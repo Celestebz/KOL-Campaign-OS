@@ -90,6 +90,40 @@ async function markCustomerSyncPending(customerId) {
   );
 }
 
+// 以下两个函数供 approval_items 决定副作用（decisionDispatcher）复用，
+// 与 PATCH /:id 走相同的 sync_status/markCustomerSyncPending 约定。
+async function setCampaignKolStatus(id, status) {
+  const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+  if (!row) {
+    const error = new Error('Campaign KOL not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  await dbOperations.run(
+    `UPDATE campaign_kols SET status = ?, sync_status = 'sync_pending',
+     updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [status, id]
+  );
+  await markCustomerSyncPending(row.customer_id);
+  return dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+}
+
+async function setBudgetApprovalStatus(id, status) {
+  const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+  if (!row) {
+    const error = new Error('Campaign KOL not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  await dbOperations.run(
+    `UPDATE campaign_kols SET budget_approval_status = ?, sync_status = 'sync_pending',
+     updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [status, id]
+  );
+  await markCustomerSyncPending(row.customer_id);
+  return dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+}
+
 router.get('/', async (req, res) => {
   try {
     const { campaign_id, status, sync_status, search } = req.query;
@@ -526,3 +560,6 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
+// 供 approval_items 决定副作用复用（decisionDispatcher）
+module.exports.setCampaignKolStatus = setCampaignKolStatus;
+module.exports.setBudgetApprovalStatus = setBudgetApprovalStatus;

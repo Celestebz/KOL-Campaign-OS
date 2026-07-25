@@ -25,6 +25,7 @@ const agentRoutes = require('./routes/agent');
 const finderSubtaskRoutes = require('./routes/finderSubtasks');
 const emailRoutes = require('./routes/emails');
 const workbenchRoutes = require('./routes/workbench');
+const approvalRoutes = require('./routes/approvals');
 const { startReplyPoller } = require('./services/emailReplyPoller');
 const { startFollowUpTimer } = require('./services/emailFollowUp');
 
@@ -70,6 +71,7 @@ app.use('/api/finder-subtasks', finderSubtaskRoutes);
 app.use('/api/agent', agentRoutes);
 app.use('/api/emails', emailRoutes);
 app.use('/api/workbench', workbenchRoutes);
+app.use('/api/approvals', approvalRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'KOL Campaign OS service is running' });

@@ -2,8 +2,13 @@ const express = require('express');
 const { dbOperations } = require('../database');
 const mailer = require('../services/mailer');
 const emailDrafter = require('../services/emailDrafter');
+const emailReviewActions = require('../services/emailReviewActions');
 
 const router = express.Router();
+
+function sendActionError(res, error) {
+  return res.status(error.statusCode || 500).json({ success: false, error: error.message });
+}
 
 const MASKED_SECRET = '••••••••';
 const TEMPLATE_KINDS = new Set(['style_guide', 'fixed']);
@@ -303,35 +308,19 @@ router.post('/drafts/:id/regenerate', async (req, res) => {
 
 router.post('/drafts/:id/approve', async (req, res) => {
   try {
-    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
-    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
-    if (draft.status !== 'pending_review') {
-      return res.status(409).json({ success: false, error: '仅待审阅状态可批准' });
-    }
-    await dbOperations.run(
-      `UPDATE email_drafts SET status = 'approved', reviewed_at = NOW(), updated_at = NOW() WHERE id = ?`,
-      [draft.id]
-    );
+    await emailReviewActions.approveDraft(req.params.id);
     res.json({ success: true, message: '已批准' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendActionError(res, error);
   }
 });
 
 router.post('/drafts/:id/reject', async (req, res) => {
   try {
-    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
-    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
-    if (draft.status !== 'pending_review') {
-      return res.status(409).json({ success: false, error: '仅待审阅状态可驳回' });
-    }
-    await dbOperations.run(
-      `UPDATE email_drafts SET status = 'rejected', reviewer_note = ?, reviewed_at = NOW(), updated_at = NOW() WHERE id = ?`,
-      [req.body?.reason || null, draft.id]
-    );
+    await emailReviewActions.rejectDraft(req.params.id, req.body?.reason);
     res.json({ success: true, message: '已驳回' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendActionError(res, error);
   }
 });
 
@@ -394,13 +383,6 @@ router.post('/drafts/:id/send', async (req, res) => {
 
 // ---- 回复 ----
 
-const INTENT_TO_OUTREACH = {
-  interested: 'replied',
-  question: 'negotiating',
-  rejected: 'replied',
-  other: 'negotiating'
-};
-
 router.get('/replies', async (req, res) => {
   try {
     const { confirm_status } = req.query || {};
@@ -426,45 +408,19 @@ router.get('/replies', async (req, res) => {
 
 router.post('/replies/:id/confirm', async (req, res) => {
   try {
-    const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
-    if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
-    const summary = (req.body?.summary || reply.ai_summary || '').trim();
-    const outreachStatus = INTENT_TO_OUTREACH[reply.ai_intent] || 'negotiating';
-
-    const kol = await dbOperations.get(
-      'SELECT id, internal_notes FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?',
-      [reply.campaign_id, reply.customer_id]
-    );
-    if (kol) {
-      const noteLine = `[邮件回复 ${new Date().toISOString().slice(0, 10)}] ${summary}`;
-      const internalNotes = kol.internal_notes ? `${kol.internal_notes}\n${noteLine}` : noteLine;
-      await dbOperations.run(
-        `UPDATE campaign_kols SET outreach_status = ?, last_reply_summary = ?, internal_notes = ?,
-         sync_status = 'sync_pending', updated_at = NOW() WHERE id = ?`,
-        [outreachStatus, summary, internalNotes, kol.id]
-      );
-    }
-    await dbOperations.run(
-      `UPDATE email_replies SET confirm_status = 'confirmed', confirmed_summary = ?, updated_at = NOW() WHERE id = ?`,
-      [summary, reply.id]
-    );
-    res.json({ success: true, message: '已确认', data: { outreach_status: outreachStatus } });
+    const result = await emailReviewActions.confirmReply(req.params.id, req.body?.summary);
+    res.json({ success: true, message: '已确认', data: result });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendActionError(res, error);
   }
 });
 
 router.post('/replies/:id/ignore', async (req, res) => {
   try {
-    const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
-    if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
-    await dbOperations.run(
-      `UPDATE email_replies SET confirm_status = 'ignored', updated_at = NOW() WHERE id = ?`,
-      [reply.id]
-    );
+    await emailReviewActions.ignoreReply(req.params.id);
     res.json({ success: true, message: '已忽略' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendActionError(res, error);
   }
 });
 
