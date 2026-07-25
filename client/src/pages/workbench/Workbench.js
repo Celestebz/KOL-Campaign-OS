@@ -20,7 +20,8 @@ const POLL_INTERVAL = 60 * 1000;
 function Workbench() {
   const [data, setData] = useState({ summary: {}, items: [], recent_decisions: [] });
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState(null);
+  // 记录选中卡片 id 而非对象：刷新后可自动拿到该卡片的最新版本（用于 409 冲突后重新打开）。
+  const [selectedId, setSelectedId] = useState(null);
 
   const fetchWorkbench = useCallback(async () => {
     try {
@@ -41,6 +42,12 @@ function Workbench() {
 
   const { summary, recent_decisions: recentDecisions } = data;
   const items = sortItemsByRisk(data.items);
+  const selected = selectedId ? data.items.find((i) => i.id === selectedId) || null : null;
+
+  // 刷新后选中卡片已离开队列（如已被他人处理）：自动关闭抽屉。
+  useEffect(() => {
+    if (selectedId && !selected) setSelectedId(null);
+  }, [selectedId, selected]);
 
   return (
     <div style={{ padding: '16px 0' }}>
@@ -69,9 +76,9 @@ function Workbench() {
       ) : (
         items.map((item) =>
           item.type === 'exception' ? (
-            <ExceptionCard key={item.id} item={item} onOpen={setSelected} />
+            <ExceptionCard key={item.id} item={item} onOpen={(i) => setSelectedId(i.id)} />
           ) : (
-            <DecisionCard key={item.id} item={item} onOpen={setSelected} />
+            <DecisionCard key={item.id} item={item} onOpen={(i) => setSelectedId(i.id)} />
           )
         )
       )}
@@ -81,7 +88,12 @@ function Workbench() {
         <RecentDecisions items={recentDecisions} />
       </Card>
 
-      <DecisionDrawer item={selected} open={Boolean(selected)} onClose={() => setSelected(null)} />
+      <DecisionDrawer
+        item={selected}
+        open={Boolean(selectedId)}
+        onClose={() => setSelectedId(null)}
+        onRefresh={fetchWorkbench}
+      />
     </div>
   );
 }

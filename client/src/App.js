@@ -55,7 +55,7 @@ function App() {
     setAuthState('guest');
   };
 
-  // 一级导航收缩为 4 项；/emails、/send、/records、/dashboard 不进菜单，路由保留。
+  // 一级导航收缩为 4 项；/send、/records、/dashboard 不进菜单，路由保留。
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: '工作台' },
     {
@@ -66,7 +66,8 @@ function App() {
         { key: '/campaigns', label: '项目与产品' },
         { key: '/strategy', label: 'KOL 策略' },
         { key: '/finder', label: 'KOL 寻找' },
-        { key: '/campaign-kols', label: 'KOL 合作' }
+        { key: '/campaign-kols', label: 'KOL 合作' },
+        { key: '/emails', label: '邮件中心' }
       ]
     },
     {
@@ -95,6 +96,7 @@ function App() {
     '/strategy': 'project',
     '/finder': 'project',
     '/campaign-kols': 'project',
+    '/emails': 'project',
     '/products': 'library',
     '/customers': 'library',
     '/settings': 'system',

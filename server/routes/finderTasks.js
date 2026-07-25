@@ -2410,6 +2410,63 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// 创建 Finder 任务：Ready Strategy 绑定校验（requireActiveProduct）+ 事务插入 + 后台启动搜索。
+// 供 POST / 路由与工作台自动编排（workflowOrchestrator，策略批准后自动建任务）共用同一条创建路径。
+async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes = '' } = {}) {
+  if (!TARGET_PLATFORMS.includes(targetPlatform)) {
+    throw new Error('Finder requires exactly one target_platform: youtube, instagram, or tiktok');
+  }
+  const safeLimit = Math.max(1, Math.min(Number(limit || 10), 50));
+  const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
+  const task = await sequelize.transaction(async (transaction) => {
+    const strategy = await getReadyStrategy(strategyId, {
+      requireActiveProduct: true,
+      transaction
+    });
+    const keywords = discoveryKeywords(strategy);
+    const rawRequest = {
+      strategy_id: strategy.id,
+      campaign_product_id: strategy.campaign_product_id,
+      target_platform: targetPlatform,
+      limit: safeLimit
+    };
+    const result = await scopedRun(
+      'INSERT INTO finder_tasks ' +
+      '(campaign_id, campaign_product_id, strategy_id, name, platform, keywords, status, search_sources, ' +
+      'discovery_routes, raw_request, notes, source_agent) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        strategy.campaign_id,
+        strategy.campaign_product_id,
+        strategy.id,
+        `${strategy.name} Finder ${new Date().toLocaleString()}`,
+        targetPlatform,
+        keywords,
+        'draft',
+        JSON.stringify([searchSource]),
+        JSON.stringify(['target_platform_first']),
+        JSON.stringify(rawRequest),
+        clean(notes),
+        'video_evidence_finder'
+      ],
+      transaction
+    );
+    return scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [result.id], transaction);
+  });
+  if (process.env.NODE_ENV !== 'test') {
+    setImmediate(() => {
+      processVideoEvidenceTask(task.id, { targetPlatform, limit: safeLimit }).catch((error) => {
+        updateTask(task.id, {
+          status: 'failed',
+          error_message: error.message,
+          finished_at: new Date().toISOString()
+        });
+      });
+    });
+  }
+  return task;
+}
+
 router.post('/', async (req, res) => {
   try {
     const body = req.body || {};
@@ -2426,61 +2483,12 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const targetPlatform = clean(body.target_platform);
-    if (!TARGET_PLATFORMS.includes(targetPlatform)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Finder requires exactly one target_platform: youtube, instagram, or tiktok'
-      });
-    }
-    const limit = Math.max(1, Math.min(Number(body.limit || 10), 50));
-    const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
-    const task = await sequelize.transaction(async (transaction) => {
-      const strategy = await getReadyStrategy(body.strategy_id, {
-        requireActiveProduct: true,
-        transaction
-      });
-      const keywords = discoveryKeywords(strategy);
-      const rawRequest = {
-        strategy_id: strategy.id,
-        campaign_product_id: strategy.campaign_product_id,
-        target_platform: targetPlatform,
-        limit
-      };
-      const result = await scopedRun(
-        'INSERT INTO finder_tasks ' +
-        '(campaign_id, campaign_product_id, strategy_id, name, platform, keywords, status, search_sources, ' +
-        'discovery_routes, raw_request, notes, source_agent) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [
-          strategy.campaign_id,
-          strategy.campaign_product_id,
-          strategy.id,
-          `${strategy.name} Finder ${new Date().toLocaleString()}`,
-          targetPlatform,
-          keywords,
-          'draft',
-          JSON.stringify([searchSource]),
-          JSON.stringify(['target_platform_first']),
-          JSON.stringify(rawRequest),
-          clean(body.notes),
-          'video_evidence_finder'
-        ],
-        transaction
-      );
-      return scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [result.id], transaction);
+    const task = await createFinderTask({
+      strategyId: body.strategy_id,
+      targetPlatform: clean(body.target_platform),
+      limit: body.limit,
+      notes: body.notes
     });
-    if (process.env.NODE_ENV !== 'test') {
-      setImmediate(() => {
-        processVideoEvidenceTask(task.id, { targetPlatform, limit }).catch((error) => {
-          updateTask(task.id, {
-            status: 'failed',
-            error_message: error.message,
-            finished_at: new Date().toISOString()
-          });
-        });
-      });
-    }
     res.json({ success: true, data: task, message: 'Video Evidence Finder task started' });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -2500,3 +2508,4 @@ router.post('/:id/cancel', async (req, res) => {
 module.exports = router;
 module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
 module.exports.buildCandidateIdentity = buildCandidateIdentity;
+module.exports.createFinderTask = createFinderTask;

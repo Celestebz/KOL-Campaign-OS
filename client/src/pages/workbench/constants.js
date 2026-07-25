@@ -29,3 +29,25 @@ export function sortItemsByRisk(items = []) {
     (a, b) => getRiskLevel(a.risk_level).order - getRiskLevel(b.risk_level).order
   );
 }
+
+// 决定按钮配置：label 为按钮文案，primary 为主按钮，
+// needNote 表示点击后弹出备注输入，noteRequired 表示备注必填。
+export const DECISIONS = {
+  approve: { label: '批准', primary: true },
+  reject: { label: '驳回', needNote: true, noteRequired: true, danger: true },
+  request_changes: { label: '要求修改', needNote: true, noteRequired: true },
+  pause: { label: '暂缓', needNote: true },
+  retry: { label: '重试', primary: true },
+  skip: { label: '跳过', needNote: true },
+  stop: { label: '停止', needNote: true, danger: true }
+};
+
+// 决定按钮分组：审批类事项与异常处理事项使用不同按钮组。
+export const DECISION_GROUPS = {
+  approval: ['approve', 'reject', 'request_changes', 'pause'],
+  exception: ['retry', 'skip', 'stop']
+};
+
+export function getDecisionGroup(type) {
+  return DECISION_GROUPS[type === 'exception' ? 'exception' : 'approval'];
+}

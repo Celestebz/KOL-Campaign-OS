@@ -15,3 +15,15 @@ export async function getWorkbench() {
     recent_decisions: data.recent_decisions || []
   };
 }
+
+// 提交人工决定：decision ∈ approve/reject/request_changes/pause/retry/skip/stop。
+// version 必须传当前 item.version 做乐观锁；冲突时后端返回 409，由调用方处理。
+export async function submitDecision(approvalItemId, { decision, note, version }) {
+  const res = await axios.post(`/api/approvals/${approvalItemId}/decision`, {
+    decision,
+    note,
+    version,
+    decided_by: 'boss'
+  });
+  return res.data;
+}
