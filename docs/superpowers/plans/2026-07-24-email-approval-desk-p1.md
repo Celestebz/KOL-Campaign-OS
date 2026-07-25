@@ -708,7 +708,7 @@ git commit -m "feat: add email settings, templates and records APIs"
   - `RISK_CODES` 常量。
   - `draftForCustomer({ campaignId, customerId, kind = 'first_touch', sourceReplyId = null, feedback = null })` → 完整起草流程（快照检查→上下文→AI→校验→落库），成功返回 `{ ok: true, draftId }`，失败返回 `{ ok: false, error }`；并发由调用方控制。Task 6、8、10 依赖。
 
-- [ ] **Step 1: 写失败测试（风险规则，纯函数）**
+- [x] **Step 1: 写失败测试（风险规则，纯函数）**
 
 创建 `server/services/emailRiskRules.test.js`：
 
@@ -768,12 +768,12 @@ test('missing required terms is low risk', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd server && node --test services/emailRiskRules.test.js`
 Expected: FAIL，`Cannot find module './emailRiskRules'`。
 
-- [ ] **Step 3: 实现 server/services/emailRiskRules.js**
+- [x] **Step 3: 实现 server/services/emailRiskRules.js**
 
 ```js
 // 草稿风险规则引擎（纯函数）。规则先硬编码，后续可配置化。
@@ -871,12 +871,12 @@ module.exports = { evaluateDraft, RISK_CODES };
 
 注意：测试用例 `'clean draft gets risk none'` 中正文含 `"Mower test" with 100K views`（与证据 100000 匹配）、含 `5% commission` 和 `no fixed fee`，GB vs US 用例中 `target_market='US'` 与 `country_region='GB'` 不匹配。`countryMatchesMarket` 里 markets 为 `['US']`，c 为 `GB`，`c.includes(m)` false、`m.includes(c)` false → 不匹配，正确触发。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd server && node --test services/emailRiskRules.test.js`
 Expected: PASS 6 个用例。
 
-- [ ] **Step 5: 实现 server/services/emailDrafter.js**
+- [x] **Step 5: 实现 server/services/emailDrafter.js**
 
 ```js
 // AI 邮件起草：快照检查 → 组装上下文 → AI 生成 → 风险校验 → 落库。
@@ -1030,7 +1030,7 @@ module.exports = { draftForCustomer, draftBatch, buildUserPrompt, PROMPT_VERSION
 
 （`customers.avg_views_30d_snapshot` 等快照列若 customers 表不存在则从 `campaign_kols` 快照列取——实现时先用 `describeTable`/现有列名核对，没有的指标置 null，不要导致起草失败。）
 
-- [ ] **Step 6: 全量回归 + Commit**
+- [x] **Step 6: 全量回归 + Commit**
 
 Run: `cd server && npm test`
 Expected: 全部通过。
@@ -1060,7 +1060,7 @@ git commit -m "feat: add email risk rules engine and AI drafter"
   - `POST /drafts/:id/send`（仅 approved，否则 409）
   - 辅助函数 `resolveCustomerEmail(customerId)`：customers.email。
 
-- [ ] **Step 1: 追加失败测试**
+- [x] **Step 1: 追加失败测试**
 
 在 `server/routes/emails.test.js` 末尾追加：
 
@@ -1164,12 +1164,12 @@ test('POST /drafts/generate calls drafter per customer and returns per-item resu
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd server && node --test routes/emails.test.js`
 Expected: FAIL，`Missing POST /drafts/:id/send handler`。
 
-- [ ] **Step 3: 在 routes/emails.js 的 module.exports 前追加**
+- [x] **Step 3: 在 routes/emails.js 的 module.exports 前追加**
 
 顶部 require 区加：
 
@@ -1412,12 +1412,12 @@ router.post('/drafts/:id/send', async (req, res) => {
 
 注意：测试 `POST /drafts/:id/send sends approved draft...` 中 `get` 的匹配顺序——`FROM email_drafts` 先匹配草稿查询，`FROM customers` 匹配 `resolveCustomerEmail`，`email_settings` 匹配 `getEmailSettings`，`FROM campaign_kols` 的分支可以删除（send 里不回查 campaign_kols，直接 UPDATE），实现时保持测试与代码一致即可。
 
-- [ ] **Step 4: 跑测试确认通过 + 全量回归**
+- [x] **Step 4: 跑测试确认通过 + 全量回归**
 
 Run: `cd server && node --test routes/emails.test.js && npm test`
 Expected: 全部通过。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/routes/emails.js server/routes/emails.test.js

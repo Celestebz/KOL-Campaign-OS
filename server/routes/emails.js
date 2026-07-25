@@ -1,6 +1,7 @@
 const express = require('express');
 const { dbOperations } = require('../database');
 const mailer = require('../services/mailer');
+const emailDrafter = require('../services/emailDrafter');
 
 const router = express.Router();
 
@@ -158,6 +159,234 @@ router.get('/records', async (req, res) => {
       params
     );
     res.json({ success: true, data: { records, total: totalRow?.total || 0 } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---- 草稿（审批台） ----
+
+const DRAFT_KINDS = new Set(['first_touch', 'follow_up', 'reply']);
+
+function parseDraftJson(draft) {
+  if (!draft) return draft;
+  const parse = (v, fallback) => {
+    if (!v) return fallback;
+    if (typeof v === 'object') return v;
+    try { return JSON.parse(v); } catch { return fallback; }
+  };
+  return { ...draft, risk_reasons: parse(draft.risk_reasons, []), evidence: parse(draft.evidence, null) };
+}
+
+async function resolveCustomerEmail(customerId) {
+  const customer = await dbOperations.get('SELECT id, name, email FROM customers WHERE id = ?', [customerId]);
+  return customer;
+}
+
+router.post('/drafts/generate', async (req, res) => {
+  try {
+    const { campaign_id, customer_ids, kind = 'first_touch' } = req.body || {};
+    if (!campaign_id || !Array.isArray(customer_ids) || !customer_ids.length) {
+      return res.status(400).json({ success: false, error: '请提供 campaign_id 和 customer_ids' });
+    }
+    if (!DRAFT_KINDS.has(kind)) return res.status(400).json({ success: false, error: '无效的草稿类型' });
+    const results = await emailDrafter.draftBatch(
+      customer_ids.map((customerId) => ({ campaignId: campaign_id, customerId, kind }))
+    );
+    res.json({ success: true, data: { results } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/drafts', async (req, res) => {
+  try {
+    const { status, kind, risk_level, campaign_id } = req.query || {};
+    const conditions = [];
+    const params = [];
+    if (status) { conditions.push('d.status = ?'); params.push(status); }
+    if (kind) { conditions.push('d.kind = ?'); params.push(kind); }
+    if (risk_level) { conditions.push('d.risk_level = ?'); params.push(risk_level); }
+    if (campaign_id) { conditions.push('d.campaign_id = ?'); params.push(campaign_id); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const drafts = (await dbOperations.query(
+      `SELECT d.*, k.name AS kol_name, c.name AS campaign_name
+       FROM email_drafts d
+       LEFT JOIN customers k ON k.id = d.customer_id
+       LEFT JOIN campaigns c ON c.id = d.campaign_id
+       ${where}
+       ORDER BY d.generated_at DESC
+       LIMIT 200`,
+      params
+    )).map(parseDraftJson);
+    const all = drafts; // 计数基于当前过滤结果（计数口径与列表一致）
+    res.json({
+      success: true,
+      data: {
+        drafts: all,
+        counts: {
+          pending_review: all.filter((d) => d.status === 'pending_review').length,
+          high_risk: all.filter((d) => d.status === 'pending_review' && d.risk_level === 'high').length,
+          approved: all.filter((d) => d.status === 'approved').length
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/drafts/:id', async (req, res) => {
+  try {
+    const draft = await dbOperations.get(
+      `SELECT d.*, k.name AS kol_name, c.name AS campaign_name
+       FROM email_drafts d
+       LEFT JOIN customers k ON k.id = d.customer_id
+       LEFT JOIN campaigns c ON c.id = d.campaign_id
+       WHERE d.id = ?`,
+      [req.params.id]
+    );
+    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
+    res.json({ success: true, data: parseDraftJson(draft) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put('/drafts/:id', async (req, res) => {
+  try {
+    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
+    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
+    if (draft.status !== 'pending_review') {
+      return res.status(409).json({ success: false, error: '仅待审阅状态可编辑' });
+    }
+    const { subject, body_text } = req.body || {};
+    if (!subject || !body_text) return res.status(400).json({ success: false, error: '主题和正文为必填' });
+    await dbOperations.run(
+      `INSERT INTO email_draft_versions (draft_id, subject, body_text, source, created_at) VALUES (?, ?, ?, 'human', NOW())`,
+      [draft.id, subject, body_text]
+    );
+    await dbOperations.run(
+      'UPDATE email_drafts SET subject = ?, body_text = ?, updated_at = NOW() WHERE id = ?',
+      [subject, body_text, draft.id]
+    );
+    res.json({ success: true, message: '已保存' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/drafts/:id/regenerate', async (req, res) => {
+  try {
+    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
+    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
+    if (draft.status !== 'pending_review') {
+      return res.status(409).json({ success: false, error: '仅待审阅状态可重新生成' });
+    }
+    const feedback = (req.body?.feedback || '').trim() || null;
+    await dbOperations.run(
+      `INSERT INTO email_draft_versions (draft_id, subject, body_text, source, feedback, created_at)
+       VALUES (?, ?, ?, 'regenerate', ?, NOW())`,
+      [draft.id, draft.subject, draft.body_text, feedback]
+    );
+    const result = await emailDrafter.draftForCustomer({
+      campaignId: draft.campaign_id, customerId: draft.customer_id,
+      kind: draft.kind, sourceReplyId: draft.source_reply_id, feedback, draftId: draft.id
+    });
+    if (!result.ok) return res.status(500).json({ success: false, error: result.error });
+    const updated = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [draft.id]);
+    res.json({ success: true, data: parseDraftJson(updated) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/drafts/:id/approve', async (req, res) => {
+  try {
+    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
+    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
+    if (draft.status !== 'pending_review') {
+      return res.status(409).json({ success: false, error: '仅待审阅状态可批准' });
+    }
+    await dbOperations.run(
+      `UPDATE email_drafts SET status = 'approved', reviewed_at = NOW(), updated_at = NOW() WHERE id = ?`,
+      [draft.id]
+    );
+    res.json({ success: true, message: '已批准' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/drafts/:id/reject', async (req, res) => {
+  try {
+    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
+    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
+    if (draft.status !== 'pending_review') {
+      return res.status(409).json({ success: false, error: '仅待审阅状态可驳回' });
+    }
+    await dbOperations.run(
+      `UPDATE email_drafts SET status = 'rejected', reviewer_note = ?, reviewed_at = NOW(), updated_at = NOW() WHERE id = ?`,
+      [req.body?.reason || null, draft.id]
+    );
+    res.json({ success: true, message: '已驳回' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/drafts/:id/send', async (req, res) => {
+  try {
+    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
+    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
+    if (draft.status !== 'approved') {
+      return res.status(409).json({ success: false, error: '草稿未批准，不能发送' });
+    }
+
+    const settings = await getEmailSettings();
+    if (!settings) return res.status(400).json({ success: false, error: '请先配置邮箱设置' });
+
+    const customer = await resolveCustomerEmail(draft.customer_id);
+    if (!customer?.email) {
+      await dbOperations.run(`UPDATE email_drafts SET status = 'send_failed', updated_at = NOW() WHERE id = ?`, [draft.id]);
+      return res.status(400).json({ success: false, error: '达人无邮箱地址' });
+    }
+
+    try {
+      const { messageId } = await mailer.sendMail({
+        settings,
+        to: customer.email,
+        cc: mailer.parseCc(settings.default_cc),
+        subject: draft.subject,
+        text: draft.body_text
+      });
+      await dbOperations.run(
+        `INSERT INTO email_records
+         (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, NOW())`,
+        [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
+         mailer.parseCc(settings.default_cc).join(',') || null, draft.subject, draft.body_text, messageId]
+      );
+      await dbOperations.run(`UPDATE email_drafts SET status = 'sent', updated_at = NOW() WHERE id = ?`, [draft.id]);
+      // 回写 campaign_kols：按 campaign_id + customer_id 定位
+      await dbOperations.run(
+        `UPDATE campaign_kols SET outreach_status = ?, last_outreach_at = NOW(),
+         sync_status = 'sync_pending', updated_at = NOW()
+         WHERE campaign_id = ? AND customer_id = ?`,
+        ['contacted', draft.campaign_id, draft.customer_id]
+      );
+      res.json({ success: true, message: '发送成功' });
+    } catch (sendError) {
+      await dbOperations.run(
+        `INSERT INTO email_records
+         (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, NOW())`,
+        [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
+         draft.subject, draft.body_text, sendError.message]
+      );
+      await dbOperations.run(`UPDATE email_drafts SET status = 'send_failed', updated_at = NOW() WHERE id = ?`, [draft.id]);
+      res.status(500).json({ success: false, error: `发送失败：${sendError.message}` });
+    }
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
