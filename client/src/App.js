@@ -2,22 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { Button, Layout, Menu, Spin } from 'antd';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import {
-  BarChartOutlined,
   DashboardOutlined,
-  FileTextOutlined,
+  DatabaseOutlined,
   LogoutOutlined,
-  MailOutlined,
-  PlayCircleOutlined,
-  ProductOutlined,
-  ProfileOutlined,
   ProjectOutlined,
-  SearchOutlined,
-  SettingOutlined,
-  TeamOutlined,
-  UserOutlined
+  SettingOutlined
 } from '@ant-design/icons';
 
 import Dashboard from './pages/Dashboard';
+import Workbench from './pages/workbench/Workbench';
 import Customers from './pages/Customers';
 import Templates from './pages/Templates';
 import VideoAnalysis from './pages/VideoAnalysis';
@@ -62,20 +55,66 @@ function App() {
     setAuthState('guest');
   };
 
+  // 一级导航收缩为 4 项；/emails、/send、/records、/dashboard 不进菜单，路由保留。
   const menuItems = [
-    { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-    { key: '/campaigns', icon: <ProjectOutlined />, label: '项目与产品' },
-    { key: '/products', icon: <ProductOutlined />, label: '产品目录' },
-    { key: '/strategy', icon: <ProfileOutlined />, label: 'KOL 策略' },
-    { key: '/finder', icon: <SearchOutlined />, label: 'KOL 寻找' },
-    { key: '/customers', icon: <UserOutlined />, label: 'KOL 管理' },
-    { key: '/campaign-kols', icon: <TeamOutlined />, label: 'KOL 合作' },
-    { key: '/emails', icon: <MailOutlined />, label: '邮件中心' },
-    { key: '/send', icon: <PlayCircleOutlined />, label: '视频数据' },
-    { key: '/records', icon: <BarChartOutlined />, label: '分析记录' },
-    { key: '/templates', icon: <FileTextOutlined />, label: 'AI Prompt 模板' },
-    { key: '/settings', icon: <SettingOutlined />, label: 'API 设置' }
+    { key: '/', icon: <DashboardOutlined />, label: '工作台' },
+    {
+      key: 'project',
+      icon: <ProjectOutlined />,
+      label: '项目',
+      children: [
+        { key: '/campaigns', label: '项目与产品' },
+        { key: '/strategy', label: 'KOL 策略' },
+        { key: '/finder', label: 'KOL 寻找' },
+        { key: '/campaign-kols', label: 'KOL 合作' }
+      ]
+    },
+    {
+      key: 'library',
+      icon: <DatabaseOutlined />,
+      label: '资料库',
+      children: [
+        { key: '/products', label: '产品目录' },
+        { key: '/customers', label: 'KOL 管理' }
+      ]
+    },
+    {
+      key: 'system',
+      icon: <SettingOutlined />,
+      label: '系统设置',
+      children: [
+        { key: '/settings', label: 'API 设置' },
+        { key: '/templates', label: 'AI Prompt 模板' }
+      ]
+    }
   ];
+
+  // 子菜单路由 → 所属父级菜单 key，用于选中态和自动展开。
+  const pathToGroup = {
+    '/campaigns': 'project',
+    '/strategy': 'project',
+    '/finder': 'project',
+    '/campaign-kols': 'project',
+    '/products': 'library',
+    '/customers': 'library',
+    '/settings': 'system',
+    '/templates': 'system'
+  };
+  const menuPathKeys = new Set(['/', ...Object.keys(pathToGroup)]);
+  const selectedKey = menuPathKeys.has(location.pathname) ? location.pathname : null;
+  const [openKeys, setOpenKeys] = useState(() => {
+    const group = pathToGroup[location.pathname];
+    return group ? [group] : [];
+  });
+
+  // 切换到子菜单路由时自动展开对应父级；隐藏路由不改变展开状态。
+  useEffect(() => {
+    const group = pathToGroup[location.pathname];
+    if (group) {
+      setOpenKeys((prev) => (prev.includes(group) ? prev : [...prev, group]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   if (authState === 'loading') {
     return (
@@ -96,9 +135,13 @@ function App() {
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={selectedKey ? [selectedKey] : []}
+          openKeys={collapsed ? [] : openKeys}
+          onOpenChange={setOpenKeys}
           items={menuItems}
-          onClick={({ key }) => navigate(key)}
+          onClick={({ key }) => {
+            if (key.startsWith('/')) navigate(key);
+          }}
         />
       </Sider>
       <Layout>
@@ -119,7 +162,8 @@ function App() {
         </Header>
         <Content style={{ margin: '0 16px' }}>
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/" element={<Workbench />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/products" element={<Products />} />
             <Route path="/strategy" element={<KolStrategy />} />
