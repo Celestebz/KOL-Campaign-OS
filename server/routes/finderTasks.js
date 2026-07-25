@@ -13,33 +13,21 @@ const {
   tiktokVideoToCandidate
 } = require('../utils/tiktokKeywordSearch');
 
-const router = express.Router();
+const {
+  PROVIDER_LABELS,
+  parseJson,
+  providerKey,
+  legacyKeysFor,
+  getSetting,
+  getSelection,
+  fetchJson,
+  callAi
+} = require('../services/aiClient');
 
-const SYSTEM_SELECTION_KEY = 'system.provider_selection';
+const router = express.Router();
 
 const MIN_RELEVANT_SIGNAL_SCORE = 20; // soft-signal floor for entering raw candidate pool
 const EVIDENCE_SIGNAL_TYPES = new Set(['competitor', 'category', 'use_case', 'feature', 'community']);
-const PROVIDER_LABELS = {
-  maton_agent: 'Maton Agent',
-  google_web: 'Google Web',
-  youtube_search: 'YouTube Search',
-  instagram_search: 'Instagram Search',
-  tiktok_search: 'TikTok Search',
-  youtube_to_instagram: 'YouTube -> Instagram',
-  google_web_to_instagram: 'Google/Web -> Instagram',
-  seed_posts_to_profile: 'Seed Posts -> Profile',
-  instagram_native_small_batch: 'Instagram Native Small Batch',
-  reddit_to_instagram: 'Reddit -> Instagram',
-  youtube_native_search: 'YouTube Native Search',
-  google_web_to_youtube: 'Google/Web -> YouTube',
-  google_web_to_tiktok: 'Google/Web -> TikTok',
-  youtube_to_tiktok: 'YouTube -> TikTok',
-  instagram_to_tiktok: 'Instagram -> TikTok',
-  reddit_to_tiktok: 'Reddit -> TikTok',
-  tiktok_native_small_batch: 'TikTok Native Small Batch',
-  google_official: 'Google Official',
-  scrapecreators: 'ScrapeCreators'
-};
 
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
 const cancelledTasks = new Set();
@@ -116,16 +104,6 @@ function normalizeEvidenceSignals(value) {
   });
 }
 
-function parseJson(value, fallback = {}) {
-  if (!value) return fallback;
-  if (typeof value === 'object') return value;
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    return fallback;
-  }
-}
-
 function parseList(value) {
   if (Array.isArray(value)) return value.map(clean).filter(Boolean);
   return clean(value).split(/[,，\n;]/).map(clean).filter(Boolean);
@@ -158,37 +136,6 @@ function isVideoEvidenceUrl(url = '') {
   if (lower.includes('instagram.com/reel/') || lower.includes('instagram.com/p/')) return true;
   if (lower.includes('tiktok.com/') && lower.includes('/video/')) return true;
   return false;
-}
-
-function extractJsonObject(text) {
-  // Find the outermost balanced JSON object { ... }.
-  const start = text.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0;
-  for (let i = start; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === '{' && text[i - 1] !== '\\') depth += 1;
-    else if (char === '}' && text[i - 1] !== '\\') {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-}
-
-function extractJsonArray(text) {
-  const start = text.indexOf('[');
-  if (start < 0) return null;
-  let depth = 0;
-  for (let i = start; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === '[' && text[i - 1] !== '\\') depth += 1;
-    else if (char === ']' && text[i - 1] !== '\\') {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
 }
 
 function parseKeyValuePairs(text) {
@@ -270,45 +217,6 @@ function normalizeParsedAnalysis(parsed, rawText) {
   return result;
 }
 
-function parseAiContentRobust(content) {
-  const raw = String(content || '').trim();
-  if (!raw) return normalizeParsedAnalysis(null, raw);
-
-  const candidates = [];
-
-  // 1. Markdown fenced code block.
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenceMatch) candidates.push(fenceMatch[1].trim());
-
-  // 2. Text with think tags removed.
-  const withoutThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  candidates.push(withoutThink);
-
-  // 3. Raw content.
-  candidates.push(raw);
-
-  // 4. Extract outermost JSON object/array from each candidate.
-  for (const candidate of [...candidates]) {
-    const obj = extractJsonObject(candidate);
-    if (obj) candidates.push(obj);
-    const arr = extractJsonArray(candidate);
-    if (arr) candidates.push(arr);
-  }
-
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      const parsed = JSON.parse(candidate);
-      return normalizeParsedAnalysis(parsed, raw);
-    } catch (error) {
-      // Try the next extraction strategy.
-    }
-  }
-
-  // Final fallback: plain text key-value extraction.
-  return normalizeParsedAnalysis(parseKeyValuePairs(raw), raw);
-}
-
 function parseMetricNumber(value) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -326,45 +234,6 @@ function parseMetricNumber(value) {
   return Math.round(base);
 }
 
-function providerKey(scope, provider) {
-  return `${scope}.${provider}`;
-}
-
-function legacyKeysFor(scope, provider) {
-  if (scope === 'youtube' && provider === 'google_official') return ['youtube'];
-  if (provider === 'scrapecreators') return ['scrapecreators'];
-  if (provider === 'maton_gateway') return ['maton_gateway'];
-  if (scope === 'ai' && provider === 'deepseek') return ['ai'];
-  return [];
-}
-
-function hasUsableSetting(row) {
-  const extra = parseJson(row?.extra_config, {});
-  return Boolean(
-    row?.api_key ||
-    row?.base_url ||
-    row?.model ||
-    extra.connection_id ||
-    extra.auth_header_name ||
-    extra.custom_provider_name
-  );
-}
-
-async function getSetting(key, legacyKeys = []) {
-  const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [key]);
-  if (hasUsableSetting(direct)) return direct;
-  for (const legacyKey of legacyKeys) {
-    const legacy = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [legacyKey]);
-    if (hasUsableSetting(legacy)) return legacy;
-  }
-  return direct || null;
-}
-
-async function getSelection() {
-  const row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ?', [SYSTEM_SELECTION_KEY]);
-  return parseJson(row?.extra_config, {});
-}
-
 function searchSourceForPlatformProvider(platform, provider) {
   if (provider === 'maton_gateway') return 'maton_agent';
   if (platform === 'youtube') return 'youtube_search';
@@ -379,25 +248,6 @@ async function preferredSearchSourceForTargetPlatform(platform) {
   return searchSourceForPlatformProvider(platform, provider) || searchSourceForPlatformProvider(platform);
 }
 
-async function fetchJson(url, options = {}) {
-  if (typeof fetch !== 'function') throw new Error('Node.js 18+ is required');
-  const response = await fetch(url, options);
-  const text = await response.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (error) {
-    data = { raw: text };
-  }
-  if (!response.ok) {
-    throw Object.assign(
-      new Error(data?.error?.message || data?.message || `HTTP ${response.status}`),
-      { status: response.status }
-    );
-  }
-  return data;
-}
-
 async function fetchFirstJson(urls, options = {}) {
   const errors = [];
   for (const url of urls) {
@@ -408,69 +258,6 @@ async function fetchFirstJson(urls, options = {}) {
     }
   }
   throw new Error(errors.join('；'));
-}
-
-async function callFinderAi(setting, provider, systemPrompt, finalPrompt) {
-  if (!setting?.api_key) throw new Error(`${PROVIDER_LABELS[provider] || provider} API Key is not configured`);
-
-  if (provider === 'minimax') {
-    const configuredBase = (setting.base_url || 'https://api.minimaxi.com').replace(/\/$/, '');
-    const model = setting.model || 'MiniMax-M3';
-    const endpoint = /\/v1$/i.test(configuredBase) || /minimax-m3/i.test(model)
-      ? `${configuredBase}/chat/completions`
-      : `${configuredBase.replace(/\/v1$/i, '')}/v1/text/chatcompletion_v2`;
-    const modern = endpoint.endsWith('/chat/completions');
-    const data = await fetchJson(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${setting.api_key}`
-      },
-      body: JSON.stringify(modern ? {
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: finalPrompt }
-        ],
-        temperature: 0.2
-      } : {
-        model,
-        messages: [
-          { sender_type: 'BOT', text: systemPrompt },
-          { sender_type: 'USER', text: finalPrompt }
-        ],
-        temperature: 0.2
-      })
-    });
-    const content = data.reply || data.output_text || data.choices?.[0]?.message?.content || data.data?.reply || JSON.stringify(data);
-    return { parsed: parseAiContentRobust(content), raw: data, model };
-  }
-
-  const defaultBaseUrl = provider === 'openai'
-    ? 'https://api.openai.com/v1'
-    : provider === 'deepseek'
-      ? 'https://api.deepseek.com'
-      : '';
-  const baseUrl = (setting.base_url || defaultBaseUrl).replace(/\/$/, '');
-  if (!baseUrl) throw new Error(`${PROVIDER_LABELS[provider] || provider} Base URL is not configured`);
-  const model = setting.model || (provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini');
-  const data = await fetchJson(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${setting.api_key}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: finalPrompt }
-      ],
-      temperature: 0.2
-    })
-  });
-  const content = data.choices?.[0]?.message?.content || '{}';
-  return { parsed: parseAiContentRobust(content), raw: data, model };
 }
 
 function normalizeFinderEvidenceResult(parsed = {}) {
@@ -741,7 +528,8 @@ async function runFinderEvidenceAnalysis(video, snapshot, evidence, strategy) {
     'If risk.risk_level is high or historical cooperation issue, set recommended_status = risk_review (but keep enter_raw_candidates = true if hard_filter and signal conditions pass).',
     'If the evidence is relevant but uncertain, set recommended_status = manual_review instead of rejecting.'
   ].join('\n');
-  const result = await callFinderAi(setting, provider, systemPrompt, finalPrompt);
+  const aiResult = await callAi(setting, provider, systemPrompt, finalPrompt);
+  const result = { ...aiResult, parsed: normalizeParsedAnalysis(aiResult.parsed, aiResult.content || '') };
   return { ...result, finalPrompt };
 }
 

@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces: 表 `email_settings`、`email_templates`（含 `kind`）、`email_drafts`、`email_records`、`email_replies`、`email_draft_versions`；`campaign_kols` 加列 `last_outreach_at`、`follow_up_count`、`last_reply_summary`；seed 一条 `kind='style_guide'` 写作规范模板。后续全部任务依赖。
 
-- [ ] **Step 1: 写迁移文件**
+- [x] **Step 1: 写迁移文件**
 
 创建 `server/migrations/20260724000001-create-email-center-tables.js`：
 
@@ -198,7 +198,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 2: 跑迁移 + 回归**
+- [x] **Step 2: 跑迁移 + 回归**
 
 Run: `cd server && npm run db:migrate`
 Expected: `20260724000001-create-email-center-tables.js ... migrated`，无报错。
@@ -206,7 +206,7 @@ Expected: `20260724000001-create-email-center-tables.js ... migrated`，无报�
 Run: `cd server && npm test`
 Expected: 全部通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add server/migrations/20260724000001-create-email-center-tables.js
@@ -230,12 +230,12 @@ git commit -m "feat: add email approval desk tables migration"
   - `callActiveAi(systemPrompt, userPrompt)` — 上面两步合一，邮件模块（Task 5、8）直接用。
   - `providerKey(scope, provider)`、`legacyKeysFor(scope, provider)`、`getSetting(key, legacyKeys)`、`fetchJson(url, options)`、`PROVIDER_LABELS`。
 
-- [ ] **Step 1: 基线测试**
+- [x] **Step 1: 基线测试**
 
 Run: `cd server && npm test`
 Expected: 全部通过。
 
-- [ ] **Step 2: 创建 server/services/aiClient.js**
+- [x] **Step 2: 创建 server/services/aiClient.js**
 
 把 `server/routes/finderTasks.js` 的 `callFinderAi`（约 411–470 行，minimax legacy/modern 双报文 + openai 兼容分发）与 `server/routes/videos.js` 的 `parseAiContentRobust`（738–761）、`getSelection/getSetting/providerKey/legacyKeysFor`（291–331）、`fetchJson`（337–356）、`PROVIDER_LABELS`（28–40）、`DEFAULT_SELECTION`（13–26）、`SYSTEM_SELECTION_KEY` 合并为一份。要点：
 
@@ -262,7 +262,7 @@ async function callActiveAi(systemPrompt, userPrompt) {
 }
 ```
 
-- [ ] **Step 3: finderTasks.js、videos.js 改引用**
+- [x] **Step 3: finderTasks.js、videos.js 改引用**
 
 两个文件删除各自被搬走的函数/常量定义，顶部改为：
 
@@ -280,7 +280,7 @@ const {
 - videos.js 中 `callOpenAiCompatible(setting, provider, sys, usr)` 调用点改为 `callAi(setting, provider, sys, usr)`；`callMiniMax(setting, sys, usr)` 改为 `callAi(setting, 'minimax', sys, usr)`；`runAiAnalysis` 里 provider 校验逻辑保留在 videos.js（行为不变）。
 - 两文件各自平台抓取专用的 `fetchFirstJson` 留在原文件，其内部 `fetchJson` 来自 import。
 
-- [ ] **Step 4: 回归 + smoke**
+- [x] **Step 4: 回归 + smoke**
 
 Run: `cd server && npm test`
 Expected: 全部通过，无回归。
@@ -288,7 +288,7 @@ Expected: 全部通过，无回归。
 Run: `cd server && node -e "const a=require('./services/aiClient');console.log(Object.keys(a).join(','))"`
 Expected: 输出含 `callActiveAi,callAi,parseAiContentRobust,getActiveAiSetting`。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**（按指示暂不执行 git 提交，改动留在工作区）
 
 ```bash
 git add server/services/aiClient.js server/routes/finderTasks.js server/routes/videos.js
@@ -306,7 +306,7 @@ git commit -m "refactor: extract shared AI client into services/aiClient.js"
 **Interfaces:**
 - Produces: `createTransporter(settings)`、`parseCc(text)`、`verifySettings(settings)`（失败抛中文错误）、`sendMail({ settings, to, cc, subject, text })`（返回 `{ messageId }`；正文用纯文本 `text`，同时附 `html: text.replace(/\n/g,'<br>')` 简单包装）。Task 6 发送草稿时用。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `server/services/mailer.test.js`：
 
@@ -324,12 +324,12 @@ test('parseCc splits by comma/semicolon/newline incl. Chinese separators', () =>
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd server && node --test services/mailer.test.js`
 Expected: FAIL，`Cannot find module './mailer'`。
 
-- [ ] **Step 3: 实现 server/services/mailer.js**
+- [x] **Step 3: 实现 server/services/mailer.js**
 
 ```js
 // SMTP 发送封装（nodemailer 已在依赖中）。
@@ -385,7 +385,7 @@ async function sendMail({ settings, to, cc = [], subject, text }) {
 module.exports = { createTransporter, parseCc, verifySettings, sendMail, textToHtml };
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + Commit**
+- [x] **Step 4: 跑测试确认通过 + Commit**（测试已通过；按指示暂不执行 git 提交）
 
 Run: `cd server && node --test services/mailer.test.js`
 Expected: PASS。
@@ -408,7 +408,7 @@ git commit -m "feat: add SMTP mailer service"
 - Consumes: Task 1 表、Task 3 `verifySettings`。
 - Produces: `GET/PUT /settings`、`POST /settings/test`、`GET/POST/PUT/DELETE /templates`、`GET /templates/variables`、`GET /records`。统一 `{ success, data?, error? }`。后续 Task 6、8 往同一文件追加 drafts/replies 路由。`getEmailSettings()`（内部函数）供 Task 6/8 复用。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `server/routes/emails.test.js`（辅助函数复制 settings.test.js 惯例）：
 
@@ -500,12 +500,12 @@ test('GET /records joins draft kol name and filters status', async () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd server && node --test routes/emails.test.js`
 Expected: FAIL，`Cannot find module './emails'`。
 
-- [ ] **Step 3: 实现 server/routes/emails.js（本任务部分）**
+- [x] **Step 3: 实现 server/routes/emails.js（本任务部分）**
 
 ```js
 const express = require('express');
@@ -678,11 +678,11 @@ module.exports = router;
 
 （`GET /records` 的 `kol_name` 在发送时已快照进 `email_records.kol_name`，无需 join customers；`LEFT JOIN email_drafts` 仅用于测试断言与后续扩展。）
 
-- [ ] **Step 4: 挂载路由**
+- [x] **Step 4: 挂载路由**
 
 `server/index.js`：顶部 require 区加 `const emailRoutes = require('./routes/emails');`，`app.use('/api/agent', agentRoutes);` 后加 `app.use('/api/emails', emailRoutes);`。
 
-- [ ] **Step 5: 跑测试 + 全量回归 + Commit**
+- [x] **Step 5: 跑测试 + 全量回归 + Commit**（测试与全量回归已通过；按指示暂不执行 git 提交）
 
 Run: `cd server && node --test routes/emails.test.js && npm test`
 Expected: 全部通过。
