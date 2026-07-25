@@ -27,10 +27,14 @@ function silenceConsoleError(fn) {
 // ---- 内存版最小仓库：approval_items + 各业务源表行 ----
 function createFakeDb({ items = [], strategies = {}, campaignKols = {}, replies = {}, finderTaskRows = {} } = {}) {
   const store = new Map(items.map((item) => [item.id, { ...item }]));
+  let nextId = Math.max(0, ...items.map((item) => item.id)) + 1;
   const statements = [];
 
   const get = async (sql, params = []) => {
     if (/SELECT actions_json FROM approval_items WHERE id = \?/.test(sql)) return store.get(Number(params[0])) || null;
+    if (/FROM approval_items WHERE dedupe_key = \?/.test(sql)) {
+      return [...store.values()].find((row) => row.dedupe_key === params[0]) || null;
+    }
     if (/FROM approval_items WHERE id = \?/.test(sql)) return store.get(Number(params[0])) || null;
     if (/FROM kol_strategies WHERE id = \?/.test(sql)) return strategies[Number(params[0])] || null;
     if (/FROM campaign_kols WHERE id = \?/.test(sql)) return campaignKols[Number(params[0])] || null;
@@ -44,6 +48,45 @@ function createFakeDb({ items = [], strategies = {}, campaignKols = {}, replies 
     if (/UPDATE approval_items SET actions_json = \?/.test(sql)) {
       const row = store.get(Number(params[1]));
       if (row) row.actions_json = params[0];
+      return { id: 0, changes: 1 };
+    }
+    // 失败可见化建卡（workflowOrchestrator.upsertAutoFollowupException）
+    if (/INSERT INTO approval_items/.test(sql)) {
+      const [campaignId, subjectId, factsJson, opinionJson, risksJson, actionsJson, dedupeKey] = params;
+      const row = {
+        id: nextId++, campaign_id: campaignId, type: 'exception', subject_type: 'auto_followup',
+        subject_id: subjectId, status: 'pending', priority: 'high',
+        facts_json: factsJson, opinion_json: opinionJson, risks_json: risksJson, actions_json: actionsJson,
+        version: 1, decision: null, decision_note: null, decided_by: null, decided_at: null,
+        dedupe_key: dedupeKey, created_at: new Date(), updated_at: new Date()
+      };
+      store.set(row.id, row);
+      return { id: row.id, changes: 1 };
+    }
+    // retry 重跑成功：卡关闭 decision='resolved'
+    if (/UPDATE approval_items/.test(sql) && /decision = 'resolved'/.test(sql)) {
+      const row = store.get(Number(params[0]));
+      Object.assign(row, { status: 'cancelled', decision: 'resolved', decided_at: new Date() });
+      return { id: 0, changes: 1 };
+    }
+    // retry 重跑仍失败：卡恢复 pending + version+1 + 快照更新
+    if (/UPDATE approval_items/.test(sql) && /SET status = 'pending'/.test(sql) && /facts_json = \?/.test(sql)) {
+      const [factsJson, opinionJson, risksJson, actionsJson, id] = params;
+      const row = store.get(Number(id));
+      Object.assign(row, {
+        status: 'pending', facts_json: factsJson, opinion_json: opinionJson,
+        risks_json: risksJson, actions_json: actionsJson, version: row.version + 1
+      });
+      return { id: 0, changes: 1 };
+    }
+    // 重复失败：已有 pending 卡 upsert 更新快照 + version+1
+    if (/UPDATE approval_items/.test(sql) && /SET campaign_id = \?, priority = 'high'/.test(sql)) {
+      const [campaignId, factsJson, opinionJson, risksJson, actionsJson, id] = params;
+      const row = store.get(Number(id));
+      Object.assign(row, {
+        campaign_id: campaignId, facts_json: factsJson, opinion_json: opinionJson,
+        risks_json: risksJson, actions_json: actionsJson, version: row.version + 1
+      });
       return { id: 0, changes: 1 };
     }
     if (/UPDATE approval_items/.test(sql) && /SET status = \?, decision = \?/.test(sql)) {
@@ -308,4 +351,193 @@ test('端到端：submitDecision 编排异步失败时决定仍生效，失败�
         // 决定记录本身保持有效
         assert.equal(fake.store.get(90).status, 'approved');
       })));
+});
+
+// ---- 失败可见化：auto_followup exception 审批卡 ----
+
+// 造一张“自动执行失败”异常卡（老板点 retry 后的状态：cancelled + decision=retry）
+function seededExceptionCard(overrides = {}) {
+  return seededItem({
+    id: 91, type: 'exception', subject_type: 'auto_followup', subject_id: 90,
+    status: 'cancelled', decision: 'retry', decided_at: new Date(),
+    priority: 'high',
+    facts_json: JSON.stringify({ title: 'Alice · 自动执行失败', campaign_name: '春季推广', facts: [] }),
+    actions_json: JSON.stringify([{ key: 'open', label: '去处理', href: '/campaign-kols' }]),
+    dedupe_key: 'exception:auto_followup:90',
+    ...overrides
+  });
+}
+
+// 父项（candidate 已批准）里已有一条 draft_first_touch 失败记录
+function failedParentItem(overrides = {}) {
+  return seededItem({
+    type: 'candidate', subject_type: 'campaign_kol', subject_id: 2,
+    status: 'approved', decision: 'approve', decided_at: new Date(),
+    facts_json: JSON.stringify({ title: 'Alice · 达人候选待审批', campaign_name: '春季推广', facts: [] }),
+    actions_json: JSON.stringify([
+      { key: 'auto_followup', at: '2026-07-25T08:00:00.000Z', action: 'draft_first_touch', ok: false, summary: '触达邮件草稿生成失败：KOL 没有 YouTube 主页链接' }
+    ]),
+    ...overrides
+  });
+}
+
+test('失败可见化：自动后续动作 ok:false 时创建 exception 审批卡', async () => {
+  const fake = createFakeDb({
+    items: [seededItem({ type: 'candidate', subject_type: 'campaign_kol', subject_id: 2 })],
+    campaignKols: { 2: { id: 2, campaign_id: 10, customer_id: 20 } }
+  });
+  await withPatched(dbOperations, fake, () =>
+    withPatched(emailDrafter, {
+      draftForCustomer: async () => ({ ok: false, error: 'KOL 没有 YouTube 主页链接' })
+    }, async () => {
+      const entry = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(90)), { decision: 'approve' });
+      assert.equal(entry.ok, false);
+      const cards = [...fake.store.values()].filter((row) => row.type === 'exception');
+      assert.equal(cards.length, 1);
+      const card = cards[0];
+      assert.equal(card.subject_type, 'auto_followup');
+      assert.equal(card.subject_id, 90, 'subject_id 指向父 approval_item');
+      assert.equal(card.dedupe_key, 'exception:auto_followup:90');
+      assert.equal(card.status, 'pending');
+      assert.equal(card.priority, 'high');
+      assert.equal(card.campaign_id, 10, 'campaign_id 继承父项');
+      assert.equal(card.version, 1);
+      const facts = JSON.parse(card.facts_json);
+      assert.match(facts.title, /自动执行失败/);
+      assert.equal(facts.campaign_name, '春季推广');
+      assert.ok(facts.facts.some((f) => /原决定：达人候选 · 批准/.test(f)));
+      assert.ok(facts.facts.some((f) => /尝试动作：生成首轮触达邮件草稿/.test(f)));
+      assert.ok(facts.facts.some((f) => /失败原因：.*KOL 没有 YouTube 主页链接/.test(f)));
+      assert.ok(facts.facts.some((f) => /^时间：/.test(f)));
+      assert.match(JSON.parse(card.opinion_json), /重试/);
+      assert.ok(JSON.parse(card.risks_json).some((r) => /AI 额度/.test(r)));
+      assert.deepEqual(JSON.parse(card.actions_json), [{ key: 'open', label: '去处理', href: '/campaign-kols' }]);
+    }));
+});
+
+test('失败可见化：同一父项重复失败只更新快照 + version+1，不重复建行', async () => {
+  const fake = createFakeDb({
+    items: [seededItem({ type: 'candidate', subject_type: 'campaign_kol', subject_id: 2 })],
+    campaignKols: { 2: { id: 2, campaign_id: 10, customer_id: 20 } }
+  });
+  let error = '第一次失败';
+  await withPatched(dbOperations, fake, () =>
+    withPatched(emailDrafter, {
+      draftForCustomer: async () => ({ ok: false, error })
+    }, async () => {
+      await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(90)), { decision: 'approve' });
+      error = '第二次失败';
+      await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(90)), { decision: 'approve' });
+      const cards = [...fake.store.values()].filter((row) => row.type === 'exception');
+      assert.equal(cards.length, 1, '同一 dedupe_key 不重复建行');
+      assert.equal(cards[0].version, 2, 'upsert 语义 version+1');
+      assert.match(cards[0].facts_json, /第二次失败/);
+      assert.ok(!cards[0].facts_json.includes('第一次失败'));
+    }));
+});
+
+test('失败可见化：成功路径不建卡', async () => {
+  const fake = createFakeDb({
+    items: [seededItem({ type: 'candidate', subject_type: 'campaign_kol', subject_id: 2 })],
+    campaignKols: { 2: { id: 2, campaign_id: 10, customer_id: 20 } }
+  });
+  await withPatched(dbOperations, fake, () =>
+    withPatched(emailDrafter, {
+      draftForCustomer: async () => ({ ok: true, draftId: 501 })
+    }, async () => {
+      await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(90)), { decision: 'approve' });
+      assert.equal([...fake.store.values()].filter((row) => row.type === 'exception').length, 0);
+    }));
+});
+
+test('auto_followup exception retry 重跑成功 → 卡 resolved + 父项追加 ok:true 记录', async () => {
+  const fake = createFakeDb({
+    items: [failedParentItem(), seededExceptionCard()],
+    campaignKols: { 2: { id: 2, campaign_id: 10, customer_id: 20 } }
+  });
+  const calls = [];
+  await withPatched(dbOperations, fake, () =>
+    withPatched(emailDrafter, {
+      draftForCustomer: async (args) => { calls.push(args); return { ok: true, draftId: 600 }; }
+    }, async () => {
+      const entry = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(91)), { decision: 'retry' });
+      assert.equal(entry.ok, true);
+      assert.equal(entry.action, 'draft_first_touch', '按父项当时失败的 action 重跑');
+      assert.deepEqual(calls, [{ campaignId: 10, customerId: 20, kind: 'first_touch' }]);
+      // 父项追加 ok:true 记录
+      const parentActions = appendedEntries(fake, 90);
+      assert.equal(parentActions.length, 2);
+      assert.equal(parentActions[1].ok, true);
+      assert.equal(parentActions[1].action, 'draft_first_touch');
+      assert.equal(parentActions[1].draft_id, 600);
+      // 卡关闭：status=cancelled + decision=resolved
+      const card = fake.store.get(91);
+      assert.equal(card.status, 'cancelled');
+      assert.equal(card.decision, 'resolved');
+      // selfRecorded：exception 卡自身的 actions（open href）不被 auto_followup 条目污染
+      assert.deepEqual(JSON.parse(card.actions_json), [{ key: 'open', label: '去处理', href: '/campaign-kols' }]);
+    }));
+});
+
+test('auto_followup exception retry 重跑仍失败 → 卡恢复 pending + version+1，父项追加最新失败', async () => {
+  const fake = createFakeDb({
+    items: [failedParentItem(), seededExceptionCard()],
+    campaignKols: { 2: { id: 2, campaign_id: 10, customer_id: 20 } }
+  });
+  await withPatched(dbOperations, fake, () =>
+    withPatched(emailDrafter, {
+      draftForCustomer: async () => ({ ok: false, error: 'LLM 服务超时' })
+    }, async () => {
+      const entry = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(91)), { decision: 'retry' });
+      assert.equal(entry.ok, false);
+      // 父项追加最新失败记录
+      const parentActions = appendedEntries(fake, 90);
+      assert.equal(parentActions.length, 2);
+      assert.equal(parentActions[1].ok, false);
+      assert.match(parentActions[1].summary, /LLM 服务超时/);
+      // 卡恢复 pending，version+1，decision 保留 retry，快照更新为最新失败原因
+      const card = fake.store.get(91);
+      assert.equal(card.status, 'pending');
+      assert.equal(card.version, 2);
+      assert.equal(card.decision, 'retry');
+      assert.match(card.facts_json, /LLM 服务超时/);
+      // 不另建新卡
+      assert.equal([...fake.store.values()].filter((row) => row.type === 'exception').length, 1);
+    }));
+});
+
+test('auto_followup exception retry：父项无可重跑动作 → 卡恢复 pending 并记录原因', async () => {
+  const fake = createFakeDb({
+    items: [failedParentItem({ actions_json: JSON.stringify([]) }), seededExceptionCard()]
+  });
+  await withPatched(dbOperations, fake, () =>
+    withPatched(emailDrafter, {
+      draftForCustomer: async () => { throw new Error('不应被调用'); }
+    }, async () => {
+      const entry = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(91)), { decision: 'retry' });
+      assert.equal(entry.ok, false);
+      assert.match(entry.summary, /未找到可重跑/);
+      const card = fake.store.get(91);
+      assert.equal(card.status, 'pending');
+      assert.equal(card.version, 2);
+    }));
+});
+
+test('auto_followup exception skip/stop 只记录决定，编排层不触发任何重跑', async () => {
+  const fake = createFakeDb({
+    items: [failedParentItem(), seededExceptionCard({ status: 'pending', decision: null, decided_at: null })]
+  });
+  await withPatched(dbOperations, fake, () =>
+    withPatched(emailDrafter, {
+      draftForCustomer: async () => { throw new Error('不应被调用'); }
+    }, async () => {
+      for (const decision of ['skip', 'stop']) {
+        const result = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(91)), { decision });
+        assert.equal(result, null, `${decision} 无自动执行映射`);
+      }
+      // 父项与卡均无变化
+      assert.equal(appendedEntries(fake, 90).length, 1);
+      assert.equal(fake.store.get(91).status, 'pending');
+      assert.equal(fake.store.get(91).version, 1);
+    }));
 });

@@ -36,7 +36,7 @@ module.exports = {
       version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1, comment: '快照版本号：源数据变化或要求修改时+1，提交决定需携带' },
       decision: {
         type: DataTypes.STRING(20),
-        comment: '人工决定：approve/reject/request_changes/pause/retry/skip/stop；source_gone表示源数据消失自动取消'
+        comment: '人工决定：approve/reject/request_changes/pause/retry/skip/stop；source_gone表示源数据消失自动取消；resolved表示auto_followup异常卡重试重跑成功（系统写入）'
       },
       decision_note: { type: DataTypes.TEXT, comment: '决定备注' },
       decided_by: { type: DataTypes.STRING(100), comment: '决定人' },

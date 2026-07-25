@@ -405,3 +405,31 @@ test('listRecentDecisions 输出中文决定标签与跳转 href', async () => {
     assert.equal(decisions[0].title, 'Carol · 触达邮件待审批');
   });
 });
+
+test('syncApprovalItems GC 豁免：手工创建的 auto_followup 异常卡不被 source_gone 取消', async () => {
+  // workflowOrchestrator 失败可见化建的手工卡（非 builder 来源）
+  const manualCard = seededPendingItem({
+    id: 98, type: 'exception', subject_type: 'auto_followup', subject_id: 90,
+    priority: 'high',
+    facts_json: JSON.stringify({ title: 'Alice · 自动执行失败', campaign_name: '春季推广', facts: [] }),
+    dedupe_key: 'exception:auto_followup:90'
+  });
+  const fake = createFakeDb({ sources: fullSources, initialItems: [manualCard] });
+  await withPatchedDb(fake, async () => {
+    const result = await approvalItemService.syncApprovalItems();
+    assert.equal(result.inserted, 6);
+    assert.equal(result.cancelled, 0, '手工卡不在 builder 产出集合里也不应被取消');
+    const card = fake.store.get(98);
+    assert.equal(card.status, 'pending');
+    assert.equal(card.version, 1);
+  });
+  // 第二次扫描：builder 源全部消失 → 六类 builder 卡被取消，手工卡仍然豁免
+  const fake2 = createFakeDb({ sources: {}, initialItems: [...fake.store.values()] });
+  await withPatchedDb(fake2, async () => {
+    const result = await approvalItemService.syncApprovalItems();
+    assert.equal(result.cancelled, 6, 'builder 来源卡照常 GC');
+    const card = fake2.store.get(98);
+    assert.equal(card.status, 'pending', '手工卡豁免 source_gone');
+    assert.equal(card.decision, null);
+  });
+});

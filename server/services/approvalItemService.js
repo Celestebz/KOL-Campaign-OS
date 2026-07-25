@@ -28,8 +28,17 @@ const DECISION_LABELS = {
   pause: '已暂缓',
   retry: '重试',
   skip: '已跳过',
-  stop: '已停止'
+  stop: '已停止',
+  resolved: '已解决' // 系统写入：auto_followup exception 卡 retry 重跑成功（workflowOrchestrator）
 };
+
+// builder 产出的 dedupe_key 前缀（六类来源）。source_gone GC 只对这些前缀生效：
+// 手工创建的卡（如 workflowOrchestrator 失败可见化建的 exception:auto_followup:{id}）
+// 及未来任何非 builder 来源的卡不参与“源已消失”取消，避免被 sync 误伤。
+const BUILDER_DEDUPE_PREFIXES = [
+  'strategy:', 'candidate:', 'budget:', 'outreach:', 'reply:',
+  'exception:finder:', 'exception:email:'
+];
 
 const TYPE_HREFS = {
   strategy: '/strategy',
@@ -56,9 +65,11 @@ function parseJsonColumn(value, fallback) {
   }
 }
 
-// 工作台卡片 legacy id（阶段 B 契约）：strategy:1 / exception:finder:6 等
+// 工作台卡片 legacy id（阶段 B 契约）：strategy:1 / exception:finder:6 等；
+// auto_followup 失败卡沿用其 dedupe_key 形态，避免与 exception:email:{draft_id} 撞 id
 function legacyItemId(row) {
   if (row.type === 'exception') {
+    if (row.subject_type === 'auto_followup') return `exception:auto_followup:${row.subject_id}`;
     return `exception:${row.subject_type === 'finder' ? 'finder' : 'email'}:${row.subject_id}`;
   }
   return `${row.type}:${row.subject_id}`;
@@ -179,9 +190,10 @@ async function syncApprovalItems() {
     // 已决定的（非 pending）不动：保留老板决定时的快照
   }
 
-  // 源已消失的 pending 项标记 cancelled
+  // 源已消失的 pending 项标记 cancelled（仅 builder 来源；手工卡豁免，见 BUILDER_DEDUPE_PREFIXES）
   for (const row of existingRows) {
-    if (row.status === 'pending' && !seenKeys.has(row.dedupe_key)) {
+    if (row.status === 'pending' && !seenKeys.has(row.dedupe_key)
+      && BUILDER_DEDUPE_PREFIXES.some((prefix) => String(row.dedupe_key || '').startsWith(prefix))) {
       await dbOperations.run(
         `UPDATE approval_items
          SET status = 'cancelled', decision = 'source_gone', decided_at = NOW(), updated_at = NOW()

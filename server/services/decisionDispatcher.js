@@ -5,7 +5,8 @@
 //   candidate approve/reject → campaignKols.setCampaignKolStatus（campaign_kols.status → approved/rejected）
 //   strategy approve        → kolStrategies.markStrategyReady（与 /api/kol-strategies/:id/mark-ready 同一事务逻辑）
 //   budget   approve/reject → campaignKols.setBudgetApprovalStatus（budget_approval_status → approved/rejected）
-//   exception retry/skip/stop → 即时副作用仅透传记录；retry 的自动重跑由下方钩子异步编排。
+//   exception retry/skip/stop → 即时副作用仅透传记录；retry 的自动重跑由下方钩子异步编排
+//                        （auto_followup 失败卡在 workflowOrchestrator 内按父项与失败 action 真重跑）。
 //
 // 下一阶段（spec 第十节“审批后的自动工作流”）：AI 自动流转编排由 workflowOrchestrator 承担，
 // 本文件保留为唯一调用入口（钩子）：副作用成功后 fire-and-forget 触发，不阻塞决定响应，
