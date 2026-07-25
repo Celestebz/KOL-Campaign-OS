@@ -250,10 +250,10 @@ function ApprovalTab() {
                       <Descriptions.Item label="粉丝">{evidence.metrics?.followers || '-'}</Descriptions.Item>
                       <Descriptions.Item label="近30天均播">{evidence.metrics?.avg_views_30d?.toLocaleString() || '-'}</Descriptions.Item>
                       <Descriptions.Item label="近30天中位播">{evidence.metrics?.median_views_30d?.toLocaleString() || '-'}</Descriptions.Item>
-                      <Descriptions.Item label="快照日期">{evidence.snapshot_date || '-'}</Descriptions.Item>
+                      <Descriptions.Item label={evidence.platform && evidence.platform !== 'youtube' ? '最新视频日期' : '快照日期'}>{evidence.snapshot_date || '-'}</Descriptions.Item>
                     </Descriptions>
                     <Table
-                      size="small" rowKey="youtube_video_id" pagination={false}
+                      size="small" rowKey={(v) => v.video_id || v.youtube_video_id} pagination={false}
                       dataSource={evidence.videos || []}
                       columns={[
                         { title: '引用视频', dataIndex: 'title', ellipsis: true },

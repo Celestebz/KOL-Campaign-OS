@@ -54,14 +54,19 @@ function findMetricMismatch(bodyText, evidenceVideos) {
   return null;
 }
 
-function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evidenceVideos = [], snapshotDate, hasEmail }) {
+// 证据视频 id 已泛化：YouTube 快照行带 youtube_video_id，Finder 证据行带 video_id，两者等价。
+function evidenceVideoId(v) {
+  return v.video_id ?? v.youtube_video_id;
+}
+
+function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evidenceVideos = [], snapshotDate, hasEmail, staleDays = STALE_DAYS }) {
   const reasons = [];
   const push = (code, message) => reasons.push({ code, message });
 
   if (!hasEmail) push('NO_EMAIL', '达人无邮箱地址');
 
-  const knownIds = new Set(evidenceVideos.map((v) => v.youtube_video_id));
-  const fabricated = citedVideoIds.filter((id) => !knownIds.has(id));
+  const knownIds = new Set(evidenceVideos.map((v) => String(evidenceVideoId(v))));
+  const fabricated = citedVideoIds.filter((id) => !knownIds.has(String(id)));
   if (fabricated.length) push('FABRICATED_EVIDENCE', `引用了快照中不存在的视频ID：${fabricated.join(', ')}`);
   if (!citedVideoIds.length) push('MISSING_VIDEO_REFERENCE', '正文未引用任何真实视频');
 
@@ -79,7 +84,7 @@ function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evide
 
   if (snapshotDate) {
     const ageDays = (Date.now() - new Date(snapshotDate).getTime()) / 86400000;
-    if (ageDays > STALE_DAYS) push('STALE_SNAPSHOT', `起草所用快照已 ${Math.floor(ageDays)} 天，超过 ${STALE_DAYS} 天阈值`);
+    if (ageDays > staleDays) push('STALE_SNAPSHOT', `起草所用快照已 ${Math.floor(ageDays)} 天，超过 ${staleDays} 天阈值`);
   }
 
   if (!COMMISSION_PATTERN.test(bodyText || '') || !NO_FIXED_FEE_PATTERN.test(bodyText || '')) {
