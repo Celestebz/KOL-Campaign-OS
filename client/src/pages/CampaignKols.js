@@ -3,7 +3,7 @@ import { Alert, Button, Card, Descriptions, Divider, Drawer, Empty, Form, Input,
 import { DeleteOutlined, EditOutlined, MailOutlined, ReloadOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { describeSyncResult } from './campaignKolSyncResult';
-import { USE_MOCK, getEmailTemplates, previewEmail, sendEmails, generateDrafts } from './emailApi';
+import { getEmailTemplates, previewEmail, sendEmails, generateDrafts } from './emailApi';
 
 const { TextArea } = Input;
 
@@ -343,9 +343,9 @@ const CampaignKols = () => {
       setEmailResult(result);
       if (result.failed === 0) message.success(`全部发送成功（${result.success} 封）`);
       else message.warning(`成功 ${result.success} 封，失败 ${result.failed} 封`);
-      if (!USE_MOCK) fetchRows();
+      fetchRows();
     } catch (error) {
-      message.error(error.response?.data?.error || '发送失败');
+      message.warning(error.response?.data?.error || error.message || '发送失败');
     } finally {
       setEmailSending(false);
     }

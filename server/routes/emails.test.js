@@ -176,6 +176,124 @@ test('GET /drafts returns counts', async () => {
   });
 });
 
+test('GET /replies filters by confirm_status', async () => {
+  let seenSql = '';
+  await withPatchedDb({
+    query: async (sql, params) => {
+      seenSql = sql;
+      assert.deepEqual(params, ['pending']);
+      return [{ id: 1, confirm_status: 'pending', kol_name: 'Alice' }];
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/replies');
+    const response = await callHandler(handler, { query: { confirm_status: 'pending' } });
+    assert.equal(response.payload.success, true);
+    assert.equal(response.payload.data.length, 1);
+  });
+  assert.match(seenSql, /er\.confirm_status = \?/);
+  assert.match(seenSql, /FROM email_replies er/);
+});
+
+test('POST /replies/:id/confirm maps intent and writes back campaign_kols', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/FROM email_replies/.test(sql)) {
+        return { id: 5, customer_id: 1, campaign_id: 2, ai_intent: 'question', ai_summary: '询问寄送', confirm_status: 'pending' };
+      }
+      if (/FROM campaign_kols/.test(sql)) return { id: 77, internal_notes: '旧备注' };
+      return null;
+    },
+    run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/confirm');
+    const response = await callHandler(handler, { params: { id: 5 }, body: {} });
+    assert.equal(response.payload.success, true);
+  });
+  const updateKol = statements.find((s) => /UPDATE campaign_kols/.test(s.sql));
+  assert.ok(updateKol.params.includes('negotiating'));
+  assert.ok(updateKol.params.includes('询问寄送'));
+  assert.match(updateKol.sql, /sync_status = 'sync_pending'/);
+  const updateReply = statements.find((s) => /UPDATE email_replies/.test(s.sql));
+  assert.match(updateReply.sql, /confirm_status = 'confirmed'/);
+});
+
+test('POST /replies/:id/confirm uses body summary override and maps interested to replied', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/FROM email_replies/.test(sql)) {
+        return { id: 6, customer_id: 1, campaign_id: 2, ai_intent: 'interested', ai_summary: 'AI摘要', confirm_status: 'pending' };
+      }
+      if (/FROM campaign_kols/.test(sql)) return { id: 78, internal_notes: null };
+      return null;
+    },
+    run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/confirm');
+    const response = await callHandler(handler, { params: { id: 6 }, body: { summary: '人工修正摘要' } });
+    assert.equal(response.payload.data.outreach_status, 'replied');
+  });
+  const updateKol = statements.find((s) => /UPDATE campaign_kols/.test(s.sql));
+  assert.ok(updateKol.params.includes('replied'));
+  assert.ok(updateKol.params.includes('人工修正摘要'));
+});
+
+test('POST /replies/:id/ignore sets confirm_status ignored', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async () => ({ id: 7, confirm_status: 'pending' }),
+    run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/ignore');
+    const response = await callHandler(handler, { params: { id: 7 } });
+    assert.equal(response.payload.success, true);
+  });
+  assert.match(statements[0].sql, /confirm_status = 'ignored'/);
+});
+
+test('POST /replies/:id/retry-summary re-runs summarizeReply and returns updated reply', async () => {
+  const poller = require('../services/emailReplyPoller');
+  const original = poller.summarizeReply;
+  const seen = [];
+  poller.summarizeReply = async (id) => { seen.push(id); };
+  try {
+    await withPatchedDb({
+      get: async () => ({ id: 8, ai_status: 'success', ai_summary: '重试后的摘要' })
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/replies/:id/retry-summary');
+      const response = await callHandler(handler, { params: { id: 8 } });
+      assert.equal(response.payload.success, true);
+      assert.equal(response.payload.data.ai_summary, '重试后的摘要');
+    });
+  } finally {
+    poller.summarizeReply = original;
+  }
+  assert.deepEqual(seen, [8]);
+});
+
+test('POST /replies/:id/draft-reply generates reply draft into review queue', async () => {
+  const drafter = require('../services/emailDrafter');
+  const original = drafter.draftForCustomer;
+  const seen = [];
+  drafter.draftForCustomer = async (args) => { seen.push(args); return { ok: true, draftId: 99 }; };
+  try {
+    await withPatchedDb({
+      get: async () => ({ id: 9, campaign_id: 2, customer_id: 1, body_text: '我想了解一下佣金细节' })
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/replies/:id/draft-reply');
+      const response = await callHandler(handler, { params: { id: 9 } });
+      assert.equal(response.payload.success, true);
+      assert.equal(response.payload.data.draftId, 99);
+    });
+  } finally {
+    drafter.draftForCustomer = original;
+  }
+  assert.equal(seen[0].kind, 'reply');
+  assert.equal(seen[0].sourceReplyId, 9);
+  assert.match(seen[0].feedback, /佣金细节/);
+});
+
 test('POST /drafts/generate calls drafter per customer and returns per-item results', async () => {
   const drafter = require('../services/emailDrafter');
   const original = drafter.draftBatch;

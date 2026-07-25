@@ -24,6 +24,8 @@ const finderTaskRoutes = require('./routes/finderTasks');
 const agentRoutes = require('./routes/agent');
 const finderSubtaskRoutes = require('./routes/finderSubtasks');
 const emailRoutes = require('./routes/emails');
+const { startReplyPoller } = require('./services/emailReplyPoller');
+const { startFollowUpTimer } = require('./services/emailFollowUp');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -108,6 +110,11 @@ async function startServer() {
       console.warn('[auth] APP_ACCESS_PASSWORD is not set; access control is DISABLED. Set it in .env before exposing the server on the LAN.');
     }
     await initDatabase();
+    // 测试环境（NODE_ENV=test）不启动真实 IMAP 轮询与跟进定时器
+    if (process.env.NODE_ENV !== 'test') {
+      await startReplyPoller();
+      startFollowUpTimer();
+    }
     app.listen(PORT, () => {
       console.log(`KOL Campaign OS server is running on http://localhost:${PORT}`);
     });

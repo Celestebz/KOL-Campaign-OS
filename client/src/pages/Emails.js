@@ -8,7 +8,6 @@ import {
   RobotOutlined, SendOutlined, WarningOutlined
 } from '@ant-design/icons';
 import {
-  USE_MOCK,
   getEmailSettings, saveEmailSettings, testEmailSettings,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft,
@@ -694,10 +693,6 @@ function SettingsTab() {
 function Emails() {
   return (
     <Card title="邮件中心">
-      {USE_MOCK && (
-        <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-          message="「审批台」「回复待确认」仍为 UI 预览假数据；邮箱配置、模板与口径、发送记录已接真实接口。" />
-      )}
       <Tabs
         defaultActiveKey="approval"
         items={[

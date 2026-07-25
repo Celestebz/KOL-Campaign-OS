@@ -1457,7 +1457,7 @@ git commit -m "feat: add draft review/approve/send APIs with campaign_kols write
 
 （列表查询返回的行应含 `customer_id`——实现时核对 `GET /api/campaign-kols` 返回字段，若没有则在该路由的 SELECT 中补上 `ck.customer_id`。）
 
-- [ ] **Step 2: emailApi.js 去 mock**
+- [x] **Step 2: emailApi.js 去 mock**
 
 删除 `USE_MOCK` 常量、全部 mock 数据与 mock 分支，每个函数只保留 axios 真实调用。`getDrafts` 返回 `res.data.data`（含 drafts 与 counts）。`Emails.js` 删除 `USE_MOCK` import 与顶部黄色提示条，`CampaignKols.js` 删除 `USE_MOCK` 引用（`if (!USE_MOCK) fetchRows()` 恢复为 `fetchRows()`）。
 
@@ -1469,11 +1469,11 @@ Expected: `Compiled successfully.`
 Run: `cd client && CI=true npx react-scripts test --watchAll=false`
 Expected: 现有测试全部通过。
 
-- [ ] **Step 4: 手动联调（真实配置）**
+- [ ] **Step 4: 手动联调（真实配置）**（未做：需要真实邮箱配置与人工操作，本次仅完成代码改造与自动化验证）
 
 配置真实邮箱 → 测试 SMTP 通过 → KOL 合作页勾选达人 → AI 起草邮件 → 审批台审阅 → 批准 → 发送 → 发送记录出现 success。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit**（未做：按任务要求不执行 git 操作，改动留在工作区）
 
 ```bash
 git add client/src/pages/emailApi.js client/src/pages/Emails.js client/src/pages/CampaignKols.js
@@ -1497,12 +1497,12 @@ git commit -m "feat: switch email center to real APIs"
   - `startReplyPoller()`：index.js 启动后按 `poll_interval_minutes` 轮询；imapflow 拉 UNSEEN，按 message-id 幂等（`email_replies.message_id` 已存在则跳过并标已读）；按发件人匹配 `email_records.to_address`（取最近一条）→ 写 `email_replies` → 异步 AI 摘要。未匹配的邮件不标已读。
   - `GET /replies?confirm_status=`、`POST /replies/:id/confirm` `{ summary? }`（interested→`replied`，question/other→`negotiating`，rejected→`replied` 之外：rejected 也置 `replied` 并把 `campaign_kols.last_reply_summary` 写入、置 sync_pending；注：确认映射为 interested→replied、question→negotiating、rejected→replied、other→negotiating）、`POST /replies/:id/ignore`、`POST /replies/:id/retry-summary`、`POST /replies/:id/draft-reply`（调 `draftForCustomer` kind='reply' 入审批队列）。
 
-- [ ] **Step 1: 安装依赖**
+- [x] **Step 1: 安装依赖**
 
 Run: `cd server && npm install imapflow`
 Expected: package.json 新增 `imapflow`，无报错。
 
-- [ ] **Step 2: 追加失败测试（confirm 回写）**
+- [x] **Step 2: 追加失败测试（confirm 回写）**
 
 ```js
 test('POST /replies/:id/confirm maps intent and writes back campaign_kols', async () => {
@@ -1530,7 +1530,7 @@ test('POST /replies/:id/confirm maps intent and writes back campaign_kols', asyn
 });
 ```
 
-- [ ] **Step 3: 实现 replies 路由（追加到 routes/emails.js）**
+- [x] **Step 3: 实现 replies 路由（追加到 routes/emails.js）**
 
 ```js
 // ---- 回复 ----
@@ -1639,7 +1639,7 @@ router.post('/replies/:id/draft-reply', async (req, res) => {
 });
 ```
 
-- [ ] **Step 4: 实现 server/services/emailReplyPoller.js**
+- [x] **Step 4: 实现 server/services/emailReplyPoller.js**
 
 ```js
 // IMAP 回复轮询（imapflow）：UNSEEN 邮件按发件人匹配发送记录，幂等去重，写 email_replies 后异步 AI 摘要。
@@ -1783,7 +1783,7 @@ async function startReplyPoller() {
 module.exports = { startReplyPoller, pollOnce, summarizeReply, normalizeAddress };
 ```
 
-- [ ] **Step 5: index.js 启动轮询**
+- [x] **Step 5: index.js 启动轮询**
 
 `startServer()` 中 `await initDatabase();` 后加：
 
@@ -1793,7 +1793,7 @@ const { startReplyPoller } = require('./services/emailReplyPoller');
     await startReplyPoller();
 ```
 
-- [ ] **Step 6: 测试 + 回归 + Commit**
+- [x] **Step 6: 测试 + 回归 + Commit**（测试/回归已通过；按任务要求未执行 git commit，改动留工作区）
 
 Run: `cd server && node --test routes/emails.test.js && npm test`
 Expected: 全部通过。
@@ -1891,7 +1891,7 @@ git commit -m "feat: sync outreach status and follow-up note to feishu"
 - Consumes: Task 5 `draftForCustomer`、Task 1 表。
 - Produces: `startFollowUpTimer()`：每 30 分钟扫描——`email_records` 发送成功、`campaign_kols.last_outreach_at` ≥48h、无 `confirm_status='confirmed'` 回复、`follow_up_count < 2` → 生成 follow_up 草稿（`follow_up_count+1`）；≥5 天不再起草（仅日志/后续 UI 标记，P1 不做候选池降级回写）。
 
-- [ ] **Step 1: 实现 server/services/emailFollowUp.js**
+- [x] **Step 1: 实现 server/services/emailFollowUp.js**
 
 ```js
 // 跟进自动化：48h 未回复生成跟进草稿进审批队列；5 天未回复不再自动起草。
@@ -1960,7 +1960,7 @@ module.exports = { startFollowUpTimer, scanOnce };
 
 `index.js` 的 `startServer()` 在 `startReplyPoller()` 后加 `startFollowUpTimer()`（require 顶部加）。
 
-- [ ] **Step 2: 验证 + 回归 + Commit**
+- [x] **Step 2: 验证 + 回归 + Commit**（验证/回归已通过；按任务要求未执行 git commit，改动留工作区）
 
 Run: `cd server && node -e "require('./services/emailFollowUp');console.log('followup loaded')" && npm test`
 Expected: 输出 `followup loaded`，测试全绿。

@@ -392,4 +392,109 @@ router.post('/drafts/:id/send', async (req, res) => {
   }
 });
 
+// ---- 回复 ----
+
+const INTENT_TO_OUTREACH = {
+  interested: 'replied',
+  question: 'negotiating',
+  rejected: 'replied',
+  other: 'negotiating'
+};
+
+router.get('/replies', async (req, res) => {
+  try {
+    const { confirm_status } = req.query || {};
+    const conditions = [];
+    const params = [];
+    if (confirm_status) { conditions.push('er.confirm_status = ?'); params.push(confirm_status); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const replies = await dbOperations.query(
+      `SELECT er.*, k.name AS kol_name, c.name AS campaign_name
+       FROM email_replies er
+       LEFT JOIN customers k ON k.id = er.customer_id
+       LEFT JOIN campaigns c ON c.id = er.campaign_id
+       ${where}
+       ORDER BY er.received_at DESC
+       LIMIT 200`,
+      params
+    );
+    res.json({ success: true, data: replies });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/replies/:id/confirm', async (req, res) => {
+  try {
+    const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
+    if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
+    const summary = (req.body?.summary || reply.ai_summary || '').trim();
+    const outreachStatus = INTENT_TO_OUTREACH[reply.ai_intent] || 'negotiating';
+
+    const kol = await dbOperations.get(
+      'SELECT id, internal_notes FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?',
+      [reply.campaign_id, reply.customer_id]
+    );
+    if (kol) {
+      const noteLine = `[邮件回复 ${new Date().toISOString().slice(0, 10)}] ${summary}`;
+      const internalNotes = kol.internal_notes ? `${kol.internal_notes}\n${noteLine}` : noteLine;
+      await dbOperations.run(
+        `UPDATE campaign_kols SET outreach_status = ?, last_reply_summary = ?, internal_notes = ?,
+         sync_status = 'sync_pending', updated_at = NOW() WHERE id = ?`,
+        [outreachStatus, summary, internalNotes, kol.id]
+      );
+    }
+    await dbOperations.run(
+      `UPDATE email_replies SET confirm_status = 'confirmed', confirmed_summary = ?, updated_at = NOW() WHERE id = ?`,
+      [summary, reply.id]
+    );
+    res.json({ success: true, message: '已确认', data: { outreach_status: outreachStatus } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/replies/:id/ignore', async (req, res) => {
+  try {
+    const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
+    if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
+    await dbOperations.run(
+      `UPDATE email_replies SET confirm_status = 'ignored', updated_at = NOW() WHERE id = ?`,
+      [reply.id]
+    );
+    res.json({ success: true, message: '已忽略' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/replies/:id/retry-summary', async (req, res) => {
+  try {
+    const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
+    if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
+    const { summarizeReply } = require('../services/emailReplyPoller');
+    await summarizeReply(reply.id);
+    const updated = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/replies/:id/draft-reply', async (req, res) => {
+  try {
+    const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
+    if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
+    const result = await emailDrafter.draftForCustomer({
+      campaignId: reply.campaign_id, customerId: reply.customer_id,
+      kind: 'reply', sourceReplyId: reply.id,
+      feedback: `对方回复内容：${(reply.body_text || '').slice(0, 2000)}`
+    });
+    if (!result.ok) return res.status(500).json({ success: false, error: result.error });
+    res.json({ success: true, message: '回复草稿已生成，请到审批台审阅', data: { draftId: result.draftId } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
