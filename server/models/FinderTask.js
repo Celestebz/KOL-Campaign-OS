@@ -19,6 +19,7 @@ module.exports = (sequelize, DataTypes) => {
     raw_request: DataTypes.TEXT,
     raw_response_summary: DataTypes.TEXT,
     source_agent: DataTypes.STRING(255),
+    checkpoint_json: DataTypes.TEXT,
     started_at: DataTypes.DATE,
     finished_at: DataTypes.DATE
   }, {

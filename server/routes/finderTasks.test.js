@@ -480,7 +480,7 @@ test('multi-product migration upgrades legacy raw candidate product fits safely'
   assert.equal(upgradedFit.next_analysis_version, 2);
 });
 
-async function startMockAiServer({ delayMs = 0 } = {}) {
+async function startMockAiServer({ delayMs = 0, shouldFail = null } = {}) {
   const requests = [];
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
@@ -489,6 +489,11 @@ async function startMockAiServer({ delayMs = 0 } = {}) {
         req.on('data', (chunk) => { body += chunk; });
         req.on('end', () => {
           requests.push(JSON.parse(body));
+          if (shouldFail && shouldFail(requests.length, requests[requests.length - 1])) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'mock AI failure' } }));
+            return;
+          }
           const content = JSON.stringify({
             hard_filter: {
               passed: true,
@@ -2182,6 +2187,194 @@ test('video_source reuse and snapshot TTL across campaigns', async () => {
   assert.equal(import3.status, 200);
   const snapshotsForSource3 = await models.VideoSnapshot.findAll({ where: { video_source_id: source1.id } });
   assert.equal(snapshotsForSource3.length, 2);
+});
+
+// ---- 阶段 D2：Finder 任务断点续跑（spec 第十一节“任务失败恢复”）----
+
+async function getTaskCheckpoint(taskId) {
+  const row = await dbOperations.get('SELECT checkpoint_json FROM finder_tasks WHERE id = ?', [taskId]);
+  return safeParseJson(row?.checkpoint_json);
+}
+
+function d2TikTokFixture() {
+  return {
+    search_item_list: [
+      { aweme_info: { aweme_id: '7334621391758642478', desc: 'Demo A', author: { unique_id: 'creator.a' }, statistics: { play_count: 100 } } },
+      { aweme_info: { aweme_id: '7334621391758642479', desc: 'Demo B', author: { unique_id: 'creator.b' }, statistics: { play_count: 200 } } }
+    ]
+  };
+}
+
+test('D2: 执行链逐节点写入检查点，retry 跳过已完成节点且不重复导入', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'tiktok', product: 'vocal processor' });
+  const { server: scrapeServer, port: scrapePort, requests: scrapeRequests } = await startMockScrapeCreatorsServer(() => ({ body: d2TikTokFixture() }));
+  const { server: aiServer, port: aiPort } = await startMockAiServer();
+  await seedMockScrapeCreatorsSettings(scrapePort, 'd2-checkpoint-key', 'tiktok');
+  await seedMockAiSettings(aiPort);
+
+  try {
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'tiktok',
+      limit: 10
+    });
+    const taskId = createRes.body.data.id;
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+
+    // 节点①②：搜索 + 导入检查点
+    let checkpoint = await getTaskCheckpoint(taskId);
+    assert.equal(checkpoint.search_completed, true);
+    assert.equal(checkpoint.search_candidates.length, 2);
+    assert.equal(checkpoint.videos_imported, 2);
+    assert.equal(checkpoint.imported_video_urls.length, 2);
+    assert.deepEqual(checkpoint.import_failures, []);
+    const scrapeCallsAfterDiscovery = scrapeRequests.length;
+    assert.ok(scrapeCallsAfterDiscovery > 0);
+
+    // 节点③：分析检查点
+    const analyze = await request.post(`/api/finder-tasks/${taskId}/evidence-analysis`).send({});
+    assert.equal(analyze.body.data.success_count, 2);
+    checkpoint = await getTaskCheckpoint(taskId);
+    assert.equal(checkpoint.videos_analyzed, 2);
+    assert.deepEqual(checkpoint.failed_video_ids, []);
+    assert.equal(checkpoint.candidates_generated, false);
+
+    // 节点④：候选检查点
+    const generate = await request.post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`).send({});
+    assert.equal(generate.status, 200);
+    checkpoint = await getTaskCheckpoint(taskId);
+    assert.equal(checkpoint.candidates_generated, true);
+
+    // retry：已完成节点不重跑——不重新调供应商、不重复导入、任务仍为成功
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+    assert.equal(scrapeRequests.length, scrapeCallsAfterDiscovery, 'retry 不应重新调用供应商');
+    assert.equal(await models.VideoSource.count(), 2, 'retry 不应重复建 video_sources');
+    assert.equal(await models.FinderVideoEvidence.count(), 2, 'retry 不应重复建 finder_video_evidence');
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'success');
+    assert.equal(task.success_count, 2);
+    const summary = safeParseJson(task.raw_response_summary);
+    assert.equal(summary[0].resumed_from_checkpoint, true);
+    assert.equal(summary[0].already_imported, 2);
+  } finally {
+    scrapeServer.close();
+    aiServer.close();
+  }
+});
+
+test('D2: 单条分析失败记入 failed_video_ids 不整批失败，重跑只分析失败项', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'tiktok', product: 'vocal processor' });
+  const { server: scrapeServer, port: scrapePort } = await startMockScrapeCreatorsServer(() => ({ body: d2TikTokFixture() }));
+  // 首轮分析放行 1 个请求后失败 1 次，之后全部放行
+  let failedOnce = false;
+  const { server: aiServer, port: aiPort, requests: aiRequests } = await startMockAiServer({
+    shouldFail: () => {
+      if (!failedOnce) {
+        failedOnce = true;
+        return true;
+      }
+      return false;
+    }
+  });
+  await seedMockScrapeCreatorsSettings(scrapePort, 'd2-analysis-key', 'tiktok');
+  await seedMockAiSettings(aiPort);
+
+  try {
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'tiktok',
+      limit: 10
+    });
+    const taskId = createRes.body.data.id;
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+    assert.equal(await models.FinderVideoEvidence.count(), 2);
+
+    // 首轮：2 条证据，1 成 1 败（AI 500 不中止整批）
+    const first = await request.post(`/api/finder-tasks/${taskId}/evidence-analysis`).send({});
+    assert.equal(first.status, 200);
+    assert.equal(first.body.data.success_count, 1);
+    assert.equal(first.body.data.failed_count, 1);
+    assert.equal(aiRequests.length, 2);
+
+    let checkpoint = await getTaskCheckpoint(taskId);
+    assert.equal(checkpoint.videos_analyzed, 1);
+    assert.equal(checkpoint.failed_video_ids.length, 1);
+    const failedEvidenceId = checkpoint.failed_video_ids[0];
+
+    // 重跑（默认无 evidence_ids）：只补分析失败项，已成功的 1 条不重复消耗 AI 额度
+    const second = await request.post(`/api/finder-tasks/${taskId}/evidence-analysis`).send({});
+    assert.equal(second.status, 200);
+    assert.equal(second.body.data.success_count, 1);
+    assert.equal(second.body.data.failed_count, 0);
+    assert.equal(aiRequests.length, 3, '重跑只应对失败项发起 1 次 AI 调用');
+    assert.equal(second.body.data.results[0].evidence_id, failedEvidenceId);
+
+    checkpoint = await getTaskCheckpoint(taskId);
+    assert.equal(checkpoint.videos_analyzed, 2);
+    assert.deepEqual(checkpoint.failed_video_ids, []);
+
+    const task = await models.FinderTask.findByPk(taskId);
+    assert.notEqual(task.status, 'failed', '单条分析失败不应整批置 failed');
+  } finally {
+    scrapeServer.close();
+    aiServer.close();
+  }
+});
+
+test('D2: 服务重启把遗留 running 任务标记为失败，retry 可从检查点续跑', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await strategy.update({ primary_platform: 'tiktok', product: 'vocal processor' });
+  const { server: scrapeServer, port: scrapePort, requests: scrapeRequests } = await startMockScrapeCreatorsServer(() => ({ body: d2TikTokFixture() }));
+  await seedMockScrapeCreatorsSettings(scrapePort, 'd2-recovery-key', 'tiktok');
+
+  try {
+    const createRes = await request.post('/api/finder-tasks').send({
+      strategy_id: strategy.id,
+      target_platform: 'tiktok',
+      limit: 10
+    });
+    const taskId = createRes.body.data.id;
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+    const scrapeCallsAfterDiscovery = scrapeRequests.length;
+
+    // 模拟服务重启时任务仍处于 running（进程中途退出）
+    await dbOperations.run('UPDATE finder_tasks SET status = ? WHERE id = ?', ['running', taskId]);
+    const marked = await finderTaskRoutes.markInterruptedFinderTasks();
+    assert.equal(marked, 1);
+    let task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error_message, '服务重启中断');
+
+    // 检查点在重启后仍然保留，retry 从断点续跑，不重调供应商
+    const checkpoint = await getTaskCheckpoint(taskId);
+    assert.equal(checkpoint.search_completed, true);
+    assert.equal(checkpoint.videos_imported, 2);
+    await finderTaskRoutes.runVideoEvidenceDiscovery(taskId);
+    assert.equal(scrapeRequests.length, scrapeCallsAfterDiscovery, '重启恢复后的 retry 不应重新调用供应商');
+    task = await models.FinderTask.findByPk(taskId);
+    assert.equal(task.status, 'success');
+    assert.equal(task.success_count, 2);
+    assert.equal(await models.FinderVideoEvidence.count(), 2);
+
+    // 再次标记应无可标记行（幂等）
+    assert.equal(await finderTaskRoutes.markInterruptedFinderTasks(), 0);
+  } finally {
+    scrapeServer.close();
+  }
 });
 
 // Cleanup after all tests

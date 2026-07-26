@@ -1880,6 +1880,41 @@ function failedQueryAudit(attempts = []) {
     }));
 }
 
+// ---- 阶段 D2：Finder 任务断点续跑检查点（spec 第十一节“任务失败恢复”）----
+// checkpoint_json 结构（存储方案：直接落在 finder_tasks，理由见迁移文件与阶段汇报）：
+//   search_completed     供应商发现是否完成；true 且候选缓存非空时 retry 不再调供应商（已完成节点不重跑）
+//   search_provider      发现用的供应商
+//   search_candidates    供应商原始候选缓存（limit 截断后），续跑时导入节点的数据来源
+//   videos_imported      已成功导入的视频证据数（去重后）
+//   imported_video_urls  导入成功的 video_url，用于续跑时区分“上次已导入”（幂等确认）与“批内重复/无效”
+//   import_failures      [{video_url, error}] 单条导入失败（不拖垮整批，spec 11.3 单失败不影响整批）
+//   videos_analyzed      AI 分析成功的证据数（evidence-analysis 路由维护）
+//   failed_video_ids     分析失败的证据 id（与 evidence-analysis 入参 evidence_ids 同粒度，可直接回喂重试）
+//   candidates_generated 候选达人是否已生成（generate-candidates-from-evidence 路由维护）
+//   updated_at           最近一次检查点写入时间
+function emptyFinderCheckpoint() {
+  return {
+    search_completed: false,
+    search_provider: '',
+    search_candidates: [],
+    videos_imported: 0,
+    imported_video_urls: [],
+    import_failures: [],
+    videos_analyzed: 0,
+    failed_video_ids: [],
+    candidates_generated: false
+  };
+}
+
+function readTaskCheckpoint(task) {
+  return { ...emptyFinderCheckpoint(), ...parseJson(task?.checkpoint_json, {}) };
+}
+
+async function saveTaskCheckpoint(taskId, checkpoint) {
+  checkpoint.updated_at = new Date().toISOString();
+  await updateTask(taskId, { checkpoint_json: JSON.stringify(checkpoint) });
+}
+
 async function processVideoEvidenceTask(taskId, options = {}) {
   const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
   if (!task) return;
@@ -1899,6 +1934,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   const allAttempts = [];
   const responseSummary = [];
   let insertedCount = 0;
+  let resumedCount = 0;
   let failedCount = 0;
   let discoveryError = '';
 
@@ -1910,74 +1946,147 @@ async function processVideoEvidenceTask(taskId, options = {}) {
     return;
   }
 
+  // 断点续跑：搜索节点已完成且候选缓存非空时不再调供应商（spec 11.3 已完成节点不重跑）。
+  // 缓存为空说明失败正发生在搜索节点本身（如供应商 0 结果/报错），retry 必须重新搜索。
+  const checkpoint = readTaskCheckpoint(task);
+  const canResumeSearch = checkpoint.search_completed === true
+    && Array.isArray(checkpoint.search_candidates)
+    && checkpoint.search_candidates.length > 0;
+  let importSource = null;
+  const importFailures = [];
+
   try {
-    const result = await runProvider(request, true);
-    allAttempts.push(...result.attempts.map((attempt) => ({
-      ...attempt,
-      discovery_route: 'target_platform_first',
-      source_platform: targetPlatform,
-      target_platform: targetPlatform
-    })));
+    if (canResumeSearch) {
+      importSource = { provider: checkpoint.search_provider || 'checkpoint', candidates: checkpoint.search_candidates, attempts: [] };
+    } else {
+      const result = await runProvider(request, true);
+      importSource = result;
+      allAttempts.push(...result.attempts.map((attempt) => ({
+        ...attempt,
+        discovery_route: 'target_platform_first',
+        source_platform: targetPlatform,
+        target_platform: targetPlatform
+      })));
+      // 节点检查点①：搜索完成。先缓存候选再进导入节点，此后任何失败 retry 都不重调供应商。
+      checkpoint.search_completed = true;
+      checkpoint.search_provider = result.provider;
+      checkpoint.search_candidates = result.candidates.slice(0, limit);
+      checkpoint.videos_imported = 0;
+      checkpoint.imported_video_urls = [];
+      checkpoint.import_failures = [];
+      await saveTaskCheckpoint(taskId, checkpoint);
+    }
     let skipped = 0;
-    for (const raw of result.candidates.slice(0, limit)) {
-      const normalized = normalizeCandidate(raw, request, result.provider);
+    const importedUrls = new Set(checkpoint.imported_video_urls);
+    for (const raw of importSource.candidates.slice(0, limit)) {
+      const normalized = normalizeCandidate(raw, request, importSource.provider);
       const videoUrl = clean(normalized.video_url || normalized.evidence_url);
       if (!isVideoEvidenceUrl(videoUrl) || detectPlatformFromUrl(videoUrl) !== targetPlatform) {
         skipped += 1;
         continue;
       }
-      const saved = await withActiveTaskBindingForWrite(taskId, ({ task: activeTask, transaction }) => saveVideoEvidence(activeTask, {
-        ...normalized,
-        video_url: videoUrl,
-        title: normalized.video_title || normalized.evidence_title,
-        author_name: normalized.kol_name,
-        author_profile_url: normalized.profile_url,
-        evidence_reason: normalized.ai_match_reason,
-        raw_data: { provider: result.provider, data: raw }
-      }, {
-        target_platform: targetPlatform,
-        evidence_platform: targetPlatform,
-        source_signal: 'unclassified',
-        source_query: normalized.source_query || keywords,
-        discovery_scope: 'target_platform_only',
-        discovery_route: 'target_platform_first'
-      }, transaction));
-      await ensureVideoSnapshot(saved.video);
-      if (saved.inserted) insertedCount += 1;
-      else skipped += 1;
+      try {
+        const saved = await withActiveTaskBindingForWrite(taskId, ({ task: activeTask, transaction }) => saveVideoEvidence(activeTask, {
+          ...normalized,
+          video_url: videoUrl,
+          title: normalized.video_title || normalized.evidence_title,
+          author_name: normalized.kol_name,
+          author_profile_url: normalized.profile_url,
+          evidence_reason: normalized.ai_match_reason,
+          raw_data: { provider: importSource.provider, data: raw }
+        }, {
+          target_platform: targetPlatform,
+          evidence_platform: targetPlatform,
+          source_signal: 'unclassified',
+          source_query: normalized.source_query || keywords,
+          discovery_scope: 'target_platform_only',
+          discovery_route: 'target_platform_first'
+        }, transaction));
+        await ensureVideoSnapshot(saved.video);
+        if (saved.inserted) {
+          insertedCount += 1;
+          importedUrls.add(videoUrl);
+        } else if (importedUrls.has(videoUrl)) {
+          // 上次运行已导入：saveVideoEvidence 按 (finder_task_id, video_source_id) 幂等去重，仅确认不重复建行
+          resumedCount += 1;
+        } else {
+          skipped += 1;
+        }
+      } catch (itemError) {
+        // 仅绑定失效（404/409，见 taskBindingError / withActiveTaskBindingForWrite）中止整批；
+        // 其余单条失败记入检查点继续（spec 11.3 单失败不影响整批）
+        if (itemError.status === 404 || itemError.status === 409) throw itemError;
+        importFailures.push({ video_url: videoUrl, error: itemError.message });
+      }
     }
+    // 节点检查点②：导入完成（含单条失败明细）
+    checkpoint.videos_imported = importedUrls.size;
+    checkpoint.imported_video_urls = [...importedUrls];
+    checkpoint.import_failures = importFailures;
+    await saveTaskCheckpoint(taskId, checkpoint);
     responseSummary.push({
       stage: 'video_evidence_discovery',
       target_platform: targetPlatform,
-      provider: result.provider,
-      returned: result.candidates.length,
+      provider: importSource.provider,
+      resumed_from_checkpoint: canResumeSearch,
+      returned: importSource.candidates.length,
       inserted: insertedCount,
+      already_imported: resumedCount,
       skipped,
-      query_failures: failedQueryAudit(result.attempts)
+      import_failures: importFailures,
+      query_failures: failedQueryAudit(importSource.attempts || [])
     });
   } catch (error) {
     failedCount = 1;
     discoveryError = error.message;
     allAttempts.push(...(error.attempts || [{ provider: 'unknown', ok: false, error: error.message }]));
+    // 搜索节点本身失败（importSource 尚未建立）→ 检查点标记搜索未完成，retry 重新搜索；
+    // 导入节点失败 → 保留搜索检查点，retry 跳过供应商从缓存候选续跑。
+    if (!importSource) {
+      checkpoint.search_completed = false;
+      checkpoint.search_candidates = [];
+    }
+    checkpoint.import_failures = importFailures;
+    await saveTaskCheckpoint(taskId, checkpoint);
     responseSummary.push({
       stage: 'video_evidence_discovery',
       target_platform: targetPlatform,
       error: error.message,
+      import_failures: importFailures,
       query_failures: failedQueryAudit(error.attempts)
     });
   }
 
-  const status = insertedCount > 0 && failedCount > 0 ? 'partial_failed' : insertedCount > 0 ? 'success' : 'failed';
+  const totalImported = insertedCount + resumedCount;
+  failedCount += importFailures.length;
+  const status = totalImported > 0 && failedCount > 0 ? 'partial_failed' : totalImported > 0 ? 'success' : 'failed';
   await updateTask(taskId, {
     status,
-    success_count: insertedCount,
+    success_count: totalImported,
     failed_count: failedCount,
-    result_count: insertedCount,
-    error_message: status === 'failed' ? (discoveryError || 'No target-platform video evidence was inserted.') : '',
+    result_count: totalImported,
+    error_message: status === 'failed'
+      ? (discoveryError || (importFailures.length ? `${importFailures.length} 条视频导入失败：${importFailures[0].error}` : 'No target-platform video evidence was inserted.'))
+      : '',
     finished_at: new Date().toISOString(),
     provider_attempts: JSON.stringify(allAttempts),
     raw_response_summary: JSON.stringify(responseSummary)
   });
+}
+
+// 服务重启恢复（阶段 D2，spec 11.3“服务重启后任务状态仍然存在”）：
+// 遗留 running 说明进程在任务中途退出，标记 failed（对齐 automationRuns.resumeInterruptedRuns 语义），
+// 工作台异常队列（exception:finder:{id}）即可见；retry 走 checkpoint_json 断点续跑，已完成节点不重跑。
+async function markInterruptedFinderTasks() {
+  // 注：dbOperations.run 的 changes 对 UPDATE 恒为 0（RAW 返回的是 ResultSetHeader 对象），
+  // 因此先查出待标记行数再更新。
+  const stale = await dbOperations.query("SELECT id FROM finder_tasks WHERE status = 'running'");
+  if (!stale.length) return 0;
+  await dbOperations.run(
+    `UPDATE finder_tasks SET status = 'failed', error_message = '服务重启中断', finished_at = NOW(), updated_at = NOW()
+     WHERE status = 'running'`
+  );
+  return stale.length;
 }
 
 router.get('/', async (req, res) => {
@@ -2136,6 +2245,13 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     if (ids.length) {
       sql += ` AND fve.id IN (${ids.map(() => '?').join(',')})`;
       params.push(...ids);
+    } else {
+      // 阶段 D2 断点续跑：默认只分析未分析和上次失败的证据，已成功的不重复消耗 AI 额度
+      //（spec 11.3 已完成节点不重跑）；显式传 evidence_ids 时仍按指定集合强制分析。
+      sql += ` AND NOT EXISTS (
+        SELECT 1 FROM video_ai_analysis_results vai
+        WHERE vai.analysis_scope_id = fve.id AND vai.analysis_type = 'finder_evidence' AND vai.status = 'success'
+      )`;
     }
     sql += ' ORDER BY fve.id ASC';
     const evidenceRows = await dbOperations.query(sql, params);
@@ -2180,7 +2296,9 @@ router.post('/:id/evidence-analysis', async (req, res) => {
         successCount += 1;
         results.push({ evidence_id: evidence.id, success: true });
       } catch (error) {
-        if (error.status) throw error;
+        // 仅绑定失效（404/409，见 taskBindingError）中止整批；单条 AI 调用失败（fetchJson 的
+        // HTTP 错误同样带 status）记为失败项继续分析其余证据（spec 11.3 单失败不影响整批）
+        if (error.status === 404 || error.status === 409) throw error;
         failedCount += 1;
         await dbOperations.run(
           `INSERT INTO video_ai_analysis_results
@@ -2192,6 +2310,27 @@ router.post('/:id/evidence-analysis', async (req, res) => {
         results.push({ evidence_id: evidence.id, success: false, error: error.message });
       }
     }
+    // 节点检查点③：分析完成。videos_analyzed 记全任务成功总数，failed_video_ids 记仍失败的证据，
+    // retry（默认无 evidence_ids 调用）只会重跑这些失败项和未分析项。
+    const analysisStats = await dbOperations.get(
+      `SELECT COUNT(*) AS analyzed FROM finder_video_evidence fve
+       JOIN video_ai_analysis_results vai
+         ON vai.analysis_scope_id = fve.id AND vai.analysis_type = 'finder_evidence' AND vai.status = 'success'
+       WHERE fve.finder_task_id = ?`,
+      [task.id]
+    );
+    const failedAnalysisRows = await dbOperations.query(
+      `SELECT fve.id FROM finder_video_evidence fve
+       JOIN video_ai_analysis_results vai
+         ON vai.analysis_scope_id = fve.id AND vai.analysis_type = 'finder_evidence' AND vai.status = 'failed'
+       WHERE fve.finder_task_id = ?
+       ORDER BY fve.id ASC`,
+      [task.id]
+    );
+    const analysisCheckpoint = readTaskCheckpoint(task);
+    analysisCheckpoint.videos_analyzed = Number(analysisStats?.analyzed || 0);
+    analysisCheckpoint.failed_video_ids = failedAnalysisRows.map((row) => row.id);
+    await saveTaskCheckpoint(task.id, analysisCheckpoint);
     res.json({ success: true, data: { success_count: successCount, failed_count: failedCount, results } });
   } catch (error) {
     if (error.status) await updateTask(req.params.id, { status: 'failed', error_message: `Finder task binding failed: ${error.message}`, finished_at: new Date().toISOString() });
@@ -2361,6 +2500,10 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
       return { inserted, skipped, productFits };
     });
     const { inserted, skipped, productFits } = generated;
+    // 节点检查点④：候选已生成。候选生成本身按 identity_key_hash 幂等 upsert，无需重跑门控，仅记录状态。
+    const candidateCheckpoint = readTaskCheckpoint(task);
+    candidateCheckpoint.candidates_generated = true;
+    await saveTaskCheckpoint(task.id, candidateCheckpoint);
     res.json({
       success: true,
       data: {
@@ -2403,7 +2546,8 @@ router.get('/:id', async (req, res) => {
       discovery_routes: parseJson(row.discovery_routes, parseList(row.discovery_routes)),
       target_platform: clean(row.platform),
       provider_attempts: parseJson(row.provider_attempts, []),
-      raw_response_summary: parseJson(row.raw_response_summary, [])
+      raw_response_summary: parseJson(row.raw_response_summary, []),
+      checkpoint: parseJson(row.checkpoint_json, null)
     } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -2509,3 +2653,4 @@ module.exports = router;
 module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
 module.exports.buildCandidateIdentity = buildCandidateIdentity;
 module.exports.createFinderTask = createFinderTask;
+module.exports.markInterruptedFinderTasks = markInterruptedFinderTasks;

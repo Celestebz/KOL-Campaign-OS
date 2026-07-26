@@ -224,6 +224,8 @@ async function runDraftReply(item) {
 }
 
 // exception retry（finder）→ 复用既有重跑入口重新执行失败的 Finder 任务。
+// 阶段 D2 起该入口按 finder_tasks.checkpoint_json 断点续跑：已完成节点（搜索/导入）不重跑，
+// 只补未完成部分，不重复消耗供应商额度。
 async function runRetryFinder(item) {
   const task = await dbOperations.get('SELECT id, status FROM finder_tasks WHERE id = ?', [item.subject_id]);
   if (!task) return followupEntry('retry_finder', false, 'Finder 任务不存在，无法重跑');
