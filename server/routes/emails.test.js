@@ -321,3 +321,30 @@ test('POST /drafts/generate dedupes existing pending drafts and queues the rest 
     automationRuns.executeEmailDraftBatch = originalExec;
   }
 });
+
+test('GET /records supports campaign_id filter alongside status', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql, params) => { statements.push({ sql, params }); return { total: 0 }; },
+    query: async (sql, params) => { statements.push({ sql, params }); return []; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/records');
+    const response = await callHandler(handler, { query: { status: 'sent', campaign_id: '5' } });
+    assert.equal(response.payload.success, true);
+    assert.ok(statements.every((s) => /er\.status = \?/.test(s.sql) && /er\.campaign_id = \?/.test(s.sql)));
+    assert.deepEqual(statements[0].params, ['sent', '5']);
+  });
+});
+
+test('GET /records without campaign_id keeps unfiltered query', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql, params) => { statements.push({ sql, params }); return { total: 0 }; },
+    query: async (sql, params) => { statements.push({ sql, params }); return []; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/records');
+    await callHandler(handler, { query: {} });
+    assert.ok(statements.every((s) => !/campaign_id/.test(s.sql)));
+    assert.deepEqual(statements[0].params, []);
+  });
+});

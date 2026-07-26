@@ -149,10 +149,11 @@ router.delete('/templates/:id', async (req, res) => {
 
 router.get('/records', async (req, res) => {
   try {
-    const { status } = req.query || {};
+    const { status, campaign_id } = req.query || {};
     const conditions = [];
     const params = [];
     if (status) { conditions.push('er.status = ?'); params.push(status); }
+    if (campaign_id) { conditions.push('er.campaign_id = ?'); params.push(campaign_id); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const totalRow = await dbOperations.get(`SELECT COUNT(*) AS total FROM email_records er ${where}`, params);
     const records = await dbOperations.query(

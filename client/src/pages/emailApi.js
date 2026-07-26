@@ -96,8 +96,8 @@ export async function getAutomationRun(id) {
 
 // ---- 发送记录 ----
 
-export async function getEmailRecords(status) {
-  const res = await axios.get('/api/emails/records', { params: status ? { status } : {} });
+export async function getEmailRecords(status, params = {}) {
+  const res = await axios.get('/api/emails/records', { params: { ...(status ? { status } : {}), ...params } });
   return res.data.data;
 }
 

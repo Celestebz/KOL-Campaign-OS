@@ -21,6 +21,7 @@ import Emails from './pages/Emails';
 import KolStrategy from './pages/KolStrategy';
 import Products from './pages/Products';
 import Campaigns from './pages/Campaigns';
+import CampaignDetail from './pages/CampaignDetail';
 import Login from './pages/Login';
 
 const { Header, Sider, Content } = Layout;
@@ -101,16 +102,22 @@ function App() {
     '/settings': 'system',
     '/templates': 'system'
   };
+  // 项目详情（/campaigns/:id）不进菜单，归属 project 分组并保持「项目与产品」选中态。
+  const resolveMenuGroup = (pathname) => (
+    pathToGroup[pathname] || (pathname.startsWith('/campaigns/') ? 'project' : undefined)
+  );
   const menuPathKeys = new Set(['/', ...Object.keys(pathToGroup)]);
-  const selectedKey = menuPathKeys.has(location.pathname) ? location.pathname : null;
+  const selectedKey = menuPathKeys.has(location.pathname)
+    ? location.pathname
+    : (location.pathname.startsWith('/campaigns/') ? '/campaigns' : null);
   const [openKeys, setOpenKeys] = useState(() => {
-    const group = pathToGroup[location.pathname];
+    const group = resolveMenuGroup(location.pathname);
     return group ? [group] : [];
   });
 
   // 切换到子菜单路由时自动展开对应父级；隐藏路由不改变展开状态。
   useEffect(() => {
-    const group = pathToGroup[location.pathname];
+    const group = resolveMenuGroup(location.pathname);
     if (group) {
       setOpenKeys((prev) => (prev.includes(group) ? prev : [...prev, group]));
     }
@@ -165,6 +172,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Workbench />} />
             <Route path="/campaigns" element={<Campaigns />} />
+            <Route path="/campaigns/:id" element={<CampaignDetail />} />
             <Route path="/products" element={<Products />} />
             <Route path="/strategy" element={<KolStrategy />} />
             <Route path="/finder" element={<RawCandidates />} />

@@ -3,6 +3,7 @@ import {
   Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, message, Popconfirm, Select, Space, Statistic, Table, Tag
 } from 'antd';
 import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import {
   normalizeCampaign,
@@ -205,9 +206,7 @@ const Campaigns = () => {
       dataIndex: 'name',
       key: 'name',
       render: (v, r) => (
-        <Button type="link" style={{ padding: 0, height: 'auto', whiteSpace: 'normal', textAlign: 'left' }} onClick={() => openDrawer(r)}>
-          {v || '-'}
-        </Button>
+        <Link to={`/campaigns/${r.id}`} style={{ whiteSpace: 'normal' }}>{v || '-'}</Link>
       )
     },
     { title: '品牌', dataIndex: 'brand', key: 'brand', render: (v) => v || '-' },
@@ -216,7 +215,14 @@ const Campaigns = () => {
       key: 'products',
       render: (_, r) => `${r.associatedProductCount} 个（活跃 ${r.activeProductCount} 个）`
     },
-    { title: '备注产品', dataIndex: 'product', key: 'product', render: (v) => v || '-' }
+    { title: '备注产品', dataIndex: 'product', key: 'product', render: (v) => v || '-' },
+    {
+      title: '操作',
+      key: 'action',
+      render: (_, record) => (
+        <Button type="link" style={{ padding: 0 }} onClick={() => openDrawer(record)}>管理产品</Button>
+      )
+    }
   ];
 
   const productColumns = [

@@ -98,6 +98,165 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ---- 项目详情聚合（老板工作台方案 18.2）----
+// 全部取数自现成表：campaigns / campaign_products+products / kol_strategies /
+// campaign_kols / email_drafts / email_replies / finder_tasks / automation_runs。
+
+const PROJECT_STATUS_KEYS = [
+  'pending_confirmation', 'pending_shipping', 'shipped', 'delivered',
+  'content_preparation', 'pending_publish', 'published', 'cancelled'
+];
+
+function toCount(value) {
+  return Number(value || 0);
+}
+
+// risks：可由现有数据推导的关键风险
+function buildDetailRisks({ candidates, highRiskDrafts, finderFailed, runsFailed, summary }) {
+  const risks = [];
+  if (highRiskDrafts > 0) {
+    risks.push(`有 ${highRiskDrafts} 封高风险邮件草稿待审批`);
+  }
+  if (finderFailed > 0) {
+    risks.push(`有 ${finderFailed} 个 Finder 任务执行失败`);
+  }
+  if (runsFailed > 0) {
+    risks.push(`有 ${runsFailed} 个自动化任务执行失败`);
+  }
+  const noPendingWork = summary.drafts_pending === 0 && summary.replies_pending === 0;
+  if (noPendingWork && candidates > 0) {
+    risks.push(`无待处理事项，但 ${candidates} 位候选达人积压待审核`);
+  }
+  return risks;
+}
+
+// next_step：按当前阶段推导下一步建议
+function buildDetailNextStep({ strategy, candidates, summary }) {
+  if (!strategy) {
+    return '尚无 KOL 策略，请先创建并完善策略';
+  }
+  if (strategy.status === 'draft') {
+    return '有待批准的策略草案，请先到工作台批准策略';
+  }
+  if (candidates > 0) {
+    return `有 ${candidates} 位候选达人待审核，请先去审核达人`;
+  }
+  if (summary.drafts_pending > 0) {
+    return `有 ${summary.drafts_pending} 封邮件草稿待审批，请先去审批台处理`;
+  }
+  if (summary.replies_pending > 0) {
+    return `有 ${summary.replies_pending} 条达人回复待确认，请先去确认回复`;
+  }
+  if (summary.kols_total === 0) {
+    return '项目下还没有达人，请先运行 Finder 或手动添加达人';
+  }
+  if (summary.finder_tasks_running > 0) {
+    return 'Finder 任务运行中，可稍后在项目页查看新候选';
+  }
+  return '当前无待处理事项，可持续跟进达人合作进度';
+}
+
+router.get('/:id/detail', async (req, res) => {
+  try {
+    const campaignId = parsePathId(req.params.id);
+    if (campaignId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
+    const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [campaignId]);
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const productRows = await dbOperations.query(
+      `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
+         p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
+         p.category AS product_category, p.product_url, p.description AS product_description,
+         p.selling_points AS product_selling_points, p.status AS product_status
+       FROM campaign_products cp
+       JOIN products p ON p.id = cp.product_id
+       WHERE cp.campaign_id = ?
+       ORDER BY cp.priority DESC, cp.created_at ASC, cp.id ASC`,
+      [campaignId]
+    );
+
+    // 最新一条策略（没有则 null）
+    const strategy = await dbOperations.get(
+      'SELECT * FROM kol_strategies WHERE campaign_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
+      [campaignId]
+    );
+
+    const kolAgg = await dbOperations.get(
+      `SELECT COUNT(*) AS kols_total,
+         COALESCE(SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END), 0) AS contacted,
+         COALESCE(SUM(CASE WHEN outreach_status = 'replied' THEN 1 ELSE 0 END), 0) AS replied,
+         COALESCE(SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END), 0) AS candidates
+       FROM campaign_kols WHERE campaign_id = ?`,
+      [campaignId]
+    );
+    const statusRows = await dbOperations.query(
+      'SELECT project_status, COUNT(*) AS count FROM campaign_kols WHERE campaign_id = ? GROUP BY project_status',
+      [campaignId]
+    );
+    const draftsPendingRow = await dbOperations.get(
+      "SELECT COUNT(*) AS count FROM email_drafts WHERE campaign_id = ? AND status = 'pending_review'",
+      [campaignId]
+    );
+    const highRiskDraftsRow = await dbOperations.get(
+      "SELECT COUNT(*) AS count FROM email_drafts WHERE campaign_id = ? AND status = 'pending_review' AND risk_level = 'high'",
+      [campaignId]
+    );
+    const repliesPendingRow = await dbOperations.get(
+      "SELECT COUNT(*) AS count FROM email_replies WHERE campaign_id = ? AND confirm_status = 'pending'",
+      [campaignId]
+    );
+    const finderRunningRow = await dbOperations.get(
+      "SELECT COUNT(*) AS count FROM finder_tasks WHERE campaign_id = ? AND status = 'running'",
+      [campaignId]
+    );
+    // exceptions = 该 campaign 的 finder 失败数 + automation_runs 失败数
+    const exceptionRow = await dbOperations.get(
+      `SELECT
+         (SELECT COUNT(*) FROM finder_tasks WHERE campaign_id = ? AND status IN ('failed', 'partial_failed')) AS finder_failed,
+         (SELECT COUNT(*) FROM automation_runs WHERE campaign_id = ? AND status IN ('failed', 'partial_failed')) AS runs_failed`,
+      [campaignId, campaignId]
+    );
+
+    const byProjectStatus = Object.fromEntries(PROJECT_STATUS_KEYS.map((key) => [key, 0]));
+    for (const row of statusRows) {
+      if (row.project_status) byProjectStatus[row.project_status] = toCount(row.count);
+    }
+
+    const candidates = toCount(kolAgg?.candidates);
+    const highRiskDrafts = toCount(highRiskDraftsRow?.count);
+    const finderFailed = toCount(exceptionRow?.finder_failed);
+    const runsFailed = toCount(exceptionRow?.runs_failed);
+    const summary = {
+      kols_total: toCount(kolAgg?.kols_total),
+      by_project_status: byProjectStatus,
+      contacted: toCount(kolAgg?.contacted),
+      replied: toCount(kolAgg?.replied),
+      drafts_pending: toCount(draftsPendingRow?.count),
+      replies_pending: toCount(repliesPendingRow?.count),
+      finder_tasks_running: toCount(finderRunningRow?.count),
+      exceptions: finderFailed + runsFailed
+    };
+
+    res.json({
+      success: true,
+      data: {
+        campaign,
+        products: productRows.map(toCampaignProduct),
+        strategy: strategy || null,
+        summary,
+        risks: buildDetailRisks({ candidates, highRiskDrafts, finderFailed, runsFailed, summary }),
+        next_step: buildDetailNextStep({ strategy, candidates, summary })
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/:id/products', async (req, res) => {
   try {
     const campaignId = parsePathId(req.params.id);
