@@ -3,31 +3,13 @@ import { Alert, Button, Card, Descriptions, Divider, Drawer, Empty, Form, Input,
 import { DeleteOutlined, EditOutlined, MailOutlined, ReloadOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { describeSyncResult } from './campaignKolSyncResult';
+import { getMainStatus, getSubStatusLabel, SUB_STATUS_LABELS } from './campaignKolStatus';
 import { getEmailTemplates, previewEmail, sendEmails, generateDrafts, getAutomationRun } from './emailApi';
 
 const { TextArea } = Input;
 
-const statusOptions = [
-  { value: 'pending_confirmation', label: '待确认' },
-  { value: 'pending_shipping', label: '待发货' },
-  { value: 'shipped', label: '已发货' },
-  { value: 'delivered', label: '已签收' },
-  { value: 'content_preparation', label: '内容准备中' },
-  { value: 'pending_publish', label: '待上线' },
-  { value: 'published', label: '已上线' },
-  { value: 'cancelled', label: '已取消' }
-];
-
-const statusColor = {
-  pending_confirmation: 'blue',
-  pending_shipping: 'gold',
-  shipped: 'cyan',
-  delivered: 'geekblue',
-  content_preparation: 'orange',
-  pending_publish: 'purple',
-  published: 'purple',
-  cancelled: 'red'
-};
+// 细分状态仍用于编辑表单/筛选；列表与详情展示收敛为主状态（见 campaignKolStatus.js）。
+const statusOptions = Object.entries(SUB_STATUS_LABELS).map(([value, label]) => ({ value, label }));
 
 const priorityOptions = [
   { value: 't1', label: 'T1｜优先联系' },
@@ -503,7 +485,16 @@ const CampaignKols = () => {
     { title: '合作SKU', dataIndex: 'product_sku', key: 'product_sku', width: 120, render: (v, r) => v || r.product_name || '-' },
     { title: '优先级', dataIndex: 'priority_level', key: 'priority_level', width: 150, render: (v) => priorityOptions.find((item) => item.value === v)?.label || v || '-' },
     { title: 'KOL合作费', dataIndex: 'final_fee', key: 'final_fee', width: 140, render: (v, r) => r.cooperation_type === 'product_exchange' ? '现金 0' : formatFee(v || r.price_rmb, r.currency || 'USD') },
-    { title: '项目状态', dataIndex: 'project_status', key: 'project_status', width: 120, render: (v) => <Tag color={statusColor[v] || 'default'}>{statusOptions.find((item) => item.value === v)?.label || v || '-'}</Tag> },
+    { title: '项目状态', dataIndex: 'project_status', key: 'project_status', width: 150, render: (v) => {
+      const main = getMainStatus(v);
+      const sub = getSubStatusLabel(v);
+      return (
+        <Space size={4}>
+          <Tag color={main.color}>{main.label}</Tag>
+          {sub && sub !== main.label && <span style={{ fontSize: 12, color: '#999' }}>{sub}</span>}
+        </Space>
+      );
+    } },
     { title: '跟进人', dataIndex: 'owner', key: 'owner', width: 100, render: (v) => v || '-' },
     { title: '物流单号', dataIndex: 'tracking_number', key: 'tracking_number', width: 150, render: (v) => v || '-' },
     { title: '合作发布视频', dataIndex: 'published_video_count', key: 'published_video_count', width: 130, render: (v) => `${v || 0} 条` },
@@ -587,7 +578,8 @@ const CampaignKols = () => {
             </Descriptions>
             <Descriptions title="当前项目" bordered column={2} size="small">
               <Descriptions.Item label="项目">{detailRow.campaign_name || '-'}</Descriptions.Item>
-              <Descriptions.Item label="项目状态">{statusOptions.find((item) => item.value === detailRow.project_status)?.label || detailRow.project_status || '-'}</Descriptions.Item>
+              <Descriptions.Item label="项目状态"><Tag color={getMainStatus(detailRow.project_status).color}>{getMainStatus(detailRow.project_status).label}</Tag></Descriptions.Item>
+              <Descriptions.Item label="细分阶段">{getSubStatusLabel(detailRow.project_status) || '-'}</Descriptions.Item>
               <Descriptions.Item label="合作方式">{cooperationTypeLabel(detailRow.cooperation_type)}</Descriptions.Item>
               <Descriptions.Item label="合作平台">{parsePlatforms(detailRow.cooperation_platforms, [detailRow.platform_account_platform].filter(Boolean)).join('、') || '-'}</Descriptions.Item>
               <Descriptions.Item label="KOL合作费">{formatFee(detailRow.final_fee || detailRow.price_rmb, detailRow.currency || 'USD')}</Descriptions.Item>

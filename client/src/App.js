@@ -9,7 +9,6 @@ import {
   SettingOutlined
 } from '@ant-design/icons';
 
-import Dashboard from './pages/Dashboard';
 import Workbench from './pages/workbench/Workbench';
 import Customers from './pages/Customers';
 import Templates from './pages/Templates';
@@ -55,7 +54,7 @@ function App() {
     setAuthState('guest');
   };
 
-  // 一级导航收缩为 4 项；/send、/records、/dashboard 不进菜单，路由保留。
+  // 一级导航收缩为 4 项；/send、/records 不进菜单，路由保留。
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: '工作台' },
     {
@@ -165,7 +164,6 @@ function App() {
         <Content style={{ margin: '0 16px' }}>
           <Routes>
             <Route path="/" element={<Workbench />} />
-            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/products" element={<Products />} />
             <Route path="/strategy" element={<KolStrategy />} />
