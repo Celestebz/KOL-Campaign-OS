@@ -1,6 +1,25 @@
 # KOL Campaign OS - 启动说明
 
-## 开机自启（推荐）
+## 开机自启 - Mac（推荐）
+
+一次配置后，每次登录 Mac 都会自动在后台启动工作台（launchd LaunchAgent），无需再双击任何脚本。浏览器收藏 `http://localhost:5001`，开机后直接打开书签即可。
+
+1. 确保已安装 Docker Desktop，并在其设置中勾选 **Start Docker Desktop when you sign in**。
+2. 项目目录不能放在 `~/Documents`、`~/Desktop`、`~/Downloads` 下（macOS 隐私保护会拦截后台服务读取这些目录）。当前已在 `~/KOL-Campaign-OS`。
+3. 双击 `注册开机自启-Mac.command`。它会：
+   - 检查 Node.js / Docker / 前端构建产物；
+   - 注册登录时自动启动的 LaunchAgent（后台运行、崩溃自动重启）；
+   - 并立即在后台启动一次服务。
+4. 建议关闭自动睡眠，否则电脑睡眠时链接会打不开。
+
+取消自启：双击 `取消开机自启-Mac.command`（同时停止当前后台实例）。
+
+- 你的书签：`http://localhost:5001`
+- 运行日志：`logs/service-<日期>.log`
+
+> 注意：自启运行的是生产模式（后端直接托管 `client/build`，单端口 5001）。前端代码更新后需要执行一次 `npm run build` 才会生效。
+
+## 开机自启 - Windows
 
 一次配置后，每次开机/登录 Windows 都会自动在后台启动工作台，无需再双击任何脚本。浏览器收藏 `http://localhost:5001`，开机后直接打开书签即可。
 
