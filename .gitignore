@@ -111,5 +111,5 @@ Desktop.ini
 server/scratch_*.js
 server/submit_candidates.js
 
-# Local brainstorming session credential
-.superpowers/brainstorm/.last-token
+# Superpowers dev workflow state (brainstorm sessions, SDD working docs)
+.superpowers/
