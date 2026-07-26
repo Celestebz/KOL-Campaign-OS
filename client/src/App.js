@@ -16,6 +16,7 @@ import VideoAnalysis from './pages/VideoAnalysis';
 import Records from './pages/Records';
 import Settings from './pages/Settings';
 import RawCandidates from './pages/RawCandidates';
+import FinderTabs from './pages/FinderTabs';
 import CampaignKols from './pages/CampaignKols';
 import Emails from './pages/Emails';
 import KolStrategy from './pages/KolStrategy';
@@ -64,7 +65,6 @@ function App() {
       label: '项目',
       children: [
         { key: '/campaigns', label: '项目与产品' },
-        { key: '/strategy', label: 'KOL 策略' },
         { key: '/finder', label: 'KOL 寻找' },
         { key: '/campaign-kols', label: 'KOL 合作' },
         { key: '/emails', label: '邮件中心' }
@@ -107,8 +107,10 @@ function App() {
     pathToGroup[pathname] || (pathname.startsWith('/campaigns/') ? 'project' : undefined)
   );
   const menuPathKeys = new Set(['/', ...Object.keys(pathToGroup)]);
-  const selectedKey = menuPathKeys.has(location.pathname)
-    ? location.pathname
+  // /strategy 已并入「KOL 寻找」入口（页面内 Tab 切换），菜单选中态归并到 /finder。
+  const selectedPath = location.pathname === '/strategy' ? '/finder' : location.pathname;
+  const selectedKey = menuPathKeys.has(selectedPath)
+    ? selectedPath
     : (location.pathname.startsWith('/campaigns/') ? '/campaigns' : null);
   const [openKeys, setOpenKeys] = useState(() => {
     const group = resolveMenuGroup(location.pathname);
@@ -174,8 +176,8 @@ function App() {
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/campaigns/:id" element={<CampaignDetail />} />
             <Route path="/products" element={<Products />} />
-            <Route path="/strategy" element={<KolStrategy />} />
-            <Route path="/finder" element={<RawCandidates />} />
+            <Route path="/strategy" element={<FinderTabs activeKey="strategy"><KolStrategy /></FinderTabs>} />
+            <Route path="/finder" element={<FinderTabs activeKey="finder"><RawCandidates /></FinderTabs>} />
             <Route path="/customers" element={<Customers />} />
             <Route path="/campaign-kols" element={<CampaignKols />} />
             <Route path="/emails" element={<Emails />} />
