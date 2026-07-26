@@ -5,6 +5,7 @@
 //   candidate approve → emailDrafter.draftForCustomer 生成 kind='first_touch' 草稿进审批队列
 //   reply     approve → 复用 /api/emails/replies/:id/draft-reply 逻辑生成 kind='reply' 回复草稿
 //   exception retry   → finder 异常复用 runVideoEvidenceDiscovery 重跑；email send_failed 本阶段只记录；
+//                        automation_run 异常调 automationRuns.retryFailedItems 只重跑失败项（阶段 D1）；
 //                        auto_followup 异常按父项类型与当时失败的 action 真重跑（见 runRetryAutoFollowup）
 //   budget    approve → 寄样/合同执行属 P3，本阶段只记录
 //
@@ -19,6 +20,7 @@
 const { dbOperations } = require('../database');
 const emailDrafter = require('./emailDrafter');
 const finderTasks = require('../routes/finderTasks');
+const automationRuns = require('./automationRuns');
 
 function parseJsonColumn(value, fallback) {
   if (value === undefined || value === null) return fallback;
@@ -55,6 +57,7 @@ const ACTION_LABELS = {
   draft_first_touch: '生成首轮触达邮件草稿',
   draft_reply: '生成回复草稿',
   retry_finder: '重跑 Finder 任务',
+  retry_run: '重跑后台任务失败项',
   record_only: '记录决定'
 };
 
@@ -73,7 +76,8 @@ const RETRY_OPINIONS = {
   draft_first_touch: '检查达人平台信息（主页链接/邮箱）后可点击重试。',
   create_finder_task: '检查策略绑定（Campaign Product 等）后可点击重试。',
   draft_reply: '检查回复内容与达人信息后可点击重试。',
-  retry_finder: '检查 Finder 任务配置后可点击重试。'
+  retry_finder: '检查 Finder 任务配置后可点击重试。',
+  retry_run: '排查失败原因后可点击重试（仍只重跑失败项）。'
 };
 
 // 父项类型 → 卡片“去处理”跳转（与 approvalItemService 的 href 口径一致）
@@ -229,12 +233,28 @@ async function runRetryFinder(item) {
     { finder_task_id: task.id });
 }
 
+// exception retry（automation_run，阶段 D1）→ retryFailedItems 只重跑 checkpoint 里 ok:false 的条目。
+// 重跑后 run 恢复 success/partial_failed/failed；仍失败时 builder 下次 sync 会按最新状态重建异常卡。
+async function runRetryAutomationRun(item) {
+  const run = await automationRuns.retryFailedItems(item.subject_id);
+  const progress = run.progress || {};
+  if (run.status === 'success') {
+    return followupEntry('retry_run', true,
+      `已重跑后台任务 #${run.id} 的失败项，全部成功（共 ${progress.total ?? 0} 条）`,
+      { run_id: run.id });
+  }
+  return followupEntry('retry_run', false,
+    `后台任务 #${run.id} 重跑后仍有 ${progress.failed ?? 0} 条失败${run.last_error ? `：${run.last_error}` : ''}`,
+    { run_id: run.id });
+}
+
 // auto_followup exception 卡 retry 时，按当时失败的 action 复用对应入口真重跑（以父项为参数）。
 const RETRYABLE_ACTIONS = {
   draft_first_touch: runDraftFirstTouch,
   create_finder_task: runCreateFinderTask,
   draft_reply: runDraftReply,
-  retry_finder: runRetryFinder
+  retry_finder: runRetryFinder,
+  retry_run: runRetryAutomationRun
 };
 
 // 重跑成功：卡关闭。decision='resolved' 是系统写入值（老板只能发 retry/skip/stop），
@@ -330,6 +350,7 @@ function resolveFollowUp(item, decision) {
       return { action: 'retry_auto_followup', run: runRetryAutoFollowup, selfRecorded: true };
     }
     if (item.subject_type === 'finder') return { action: 'retry_finder', run: runRetryFinder };
+    if (item.subject_type === 'automation_run') return { action: 'retry_run', run: runRetryAutomationRun };
     return {
       action: 'record_only',
       run: async () => followupEntry('record_only', true, '邮件发送失败的重试属后续阶段，本阶段仅记录决定')

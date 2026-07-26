@@ -29,6 +29,7 @@ function createFakeDb({ sources = {}, initialItems = [] } = {}) {
     if (/FROM campaign_kols ck/.test(sql) && /budget_approval_status/.test(sql)) return sources.budgets || [];
     if (/FROM campaign_kols ck/.test(sql)) return sources.candidates || [];
     if (/FROM finder_tasks/.test(sql)) return sources.finderExceptions || [];
+    if (/FROM automation_runs/.test(sql)) return sources.runExceptions || [];
     if (/FROM email_drafts d/.test(sql) && /send_failed/.test(sql)) return sources.emailExceptions || [];
     if (/FROM email_drafts d/.test(sql)) return sources.outreaches || [];
     if (/FROM email_replies/.test(sql)) return sources.replies || [];
@@ -431,5 +432,114 @@ test('syncApprovalItems GC 豁免：手工创建的 auto_followup 异常卡不�
     const card = fake2.store.get(98);
     assert.equal(card.status, 'pending', '手工卡豁免 source_gone');
     assert.equal(card.decision, null);
+  });
+});
+
+// ---- 阶段 D1：automation_runs 失败进异常队列 ----
+
+function failedRunRow(overrides = {}) {
+  return {
+    id: 31, campaign_id: 10, campaign_name: '春季推广', run_type: 'email_draft_batch',
+    status: 'failed', progress_json: JSON.stringify({ total: 3, completed: 3, succeeded: 0, failed: 3 }),
+    last_error: '达人 2：邮箱缺失', updated_at: '2026-07-25 03:00:00',
+    ...overrides
+  };
+}
+
+test('syncApprovalItems failed/partial_failed 的 automation_run 进异常队列', async () => {
+  const fake = createFakeDb({
+    sources: {
+      runExceptions: [
+        failedRunRow(),
+        failedRunRow({
+          id: 32, status: 'partial_failed',
+          progress_json: JSON.stringify({ total: 5, completed: 5, succeeded: 4, failed: 1 })
+        })
+      ]
+    }
+  });
+  await withPatchedDb(fake, async () => {
+    const result = await approvalItemService.syncApprovalItems();
+    assert.equal(result.inserted, 2);
+    const byKey = new Map([...fake.store.values()].map((row) => [row.dedupe_key, row]));
+
+    const failed = byKey.get('exception:run:31');
+    assert.ok(failed, 'failed run 应建卡');
+    assert.equal(failed.type, 'exception');
+    assert.equal(failed.subject_type, 'automation_run');
+    assert.equal(failed.subject_id, 31);
+    assert.equal(failed.campaign_id, 10);
+    assert.equal(failed.priority, 'high');
+    const failedFacts = JSON.parse(failed.facts_json);
+    assert.match(failedFacts.title, /批量邮件起草 #31 · 执行失败/);
+    assert.equal(failedFacts.campaign_name, '春季推广');
+    assert.ok(failedFacts.facts.some((f) => /失败节点：后台任务（批量邮件起草）/.test(f)));
+    assert.ok(failedFacts.facts.some((f) => /进度：3\/3 完成，成功 0 条，失败 3 条/.test(f)));
+    assert.ok(failedFacts.facts.some((f) => /达人 2：邮箱缺失/.test(f)));
+    assert.match(JSON.parse(failed.opinion_json), /重试失败项/);
+    assert.deepEqual(JSON.parse(failed.actions_json), [{ key: 'open', label: '去处理', href: '/emails' }]);
+
+    const partial = byKey.get('exception:run:32');
+    assert.ok(partial, 'partial_failed run 也要进队列（有失败项需处理）');
+    assert.match(JSON.parse(partial.facts_json).title, /部分失败/);
+    assert.ok(JSON.parse(partial.facts_json).facts.some((f) => /成功 4 条，失败 1 条/.test(f)));
+  });
+});
+
+test('syncApprovalItems 未知 run_type 的 href 回退 /', async () => {
+  const fake = createFakeDb({
+    sources: { runExceptions: [failedRunRow({ run_type: 'video_evidence_batch' })] }
+  });
+  await withPatchedDb(fake, async () => {
+    await approvalItemService.syncApprovalItems();
+    const row = [...fake.store.values()][0];
+    assert.deepEqual(JSON.parse(row.actions_json), [{ key: 'open', label: '去处理', href: '/' }]);
+    assert.ok(JSON.parse(row.facts_json).facts.some((f) => /video_evidence_batch/.test(f)));
+  });
+});
+
+test('run 恢复后异常卡被 source_gone GC，auto_followup 手工卡不误伤', async () => {
+  // 失败 run 建卡 + 一张 workflowOrchestrator 手工建的 auto_followup 卡
+  const manualCard = seededPendingItem({
+    id: 98, type: 'exception', subject_type: 'auto_followup', subject_id: 90,
+    priority: 'high',
+    facts_json: JSON.stringify({ title: 'Alice · 自动执行失败', campaign_name: '春季推广', facts: [] }),
+    dedupe_key: 'exception:auto_followup:90'
+  });
+  const fake = createFakeDb({ sources: { runExceptions: [failedRunRow()] }, initialItems: [manualCard] });
+  await withPatchedDb(fake, async () => {
+    const result = await approvalItemService.syncApprovalItems();
+    assert.equal(result.inserted, 1);
+    assert.equal(result.cancelled, 0);
+  });
+  // run 重跑恢复（不再 failed/partial_failed）→ builder 不再产出 → 卡 source_gone 取消；手工卡豁免
+  const fake2 = createFakeDb({ sources: {}, initialItems: [...fake.store.values()] });
+  await withPatchedDb(fake2, async () => {
+    const result = await approvalItemService.syncApprovalItems();
+    assert.equal(result.cancelled, 1, '只有 exception:run: 卡被 GC');
+    const runCard = [...fake2.store.values()].find((row) => row.dedupe_key === 'exception:run:31');
+    assert.equal(runCard.status, 'cancelled');
+    assert.equal(runCard.decision, 'source_gone');
+    const card = fake2.store.get(98);
+    assert.equal(card.status, 'pending', 'exception:run: 前缀不得误伤 exception:auto_followup: 手工卡');
+    assert.equal(card.decision, null);
+  });
+});
+
+test('listPendingWorkbenchItems automation_run 异常卡 legacy id 为 exception:run:{id}', async () => {
+  const fake = createFakeDb({
+    initialItems: [seededPendingItem({
+      id: 96, type: 'exception', subject_type: 'automation_run', subject_id: 31,
+      priority: 'high',
+      facts_json: JSON.stringify({ title: '批量邮件起草 #31 · 执行失败', campaign_name: '春季推广', facts: [] }),
+      dedupe_key: 'exception:run:31'
+    })]
+  });
+  await withPatchedDb(fake, async () => {
+    const items = await approvalItemService.listPendingWorkbenchItems();
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, 'exception:run:31');
+    assert.equal(items[0].subject_type, 'automation_run');
+    assert.equal(items[0].title, '批量邮件起草 #31 · 执行失败');
   });
 });

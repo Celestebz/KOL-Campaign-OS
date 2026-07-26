@@ -37,7 +37,7 @@ const DECISION_LABELS = {
 // 及未来任何非 builder 来源的卡不参与“源已消失”取消，避免被 sync 误伤。
 const BUILDER_DEDUPE_PREFIXES = [
   'strategy:', 'candidate:', 'budget:', 'outreach:', 'reply:',
-  'exception:finder:', 'exception:email:'
+  'exception:finder:', 'exception:email:', 'exception:run:'
 ];
 
 const TYPE_HREFS = {
@@ -65,11 +65,12 @@ function parseJsonColumn(value, fallback) {
   }
 }
 
-// 工作台卡片 legacy id（阶段 B 契约）：strategy:1 / exception:finder:6 等；
+// 工作台卡片 legacy id（阶段 B 契约）：strategy:1 / exception:finder:6 / exception:run:31 等；
 // auto_followup 失败卡沿用其 dedupe_key 形态，避免与 exception:email:{draft_id} 撞 id
 function legacyItemId(row) {
   if (row.type === 'exception') {
     if (row.subject_type === 'auto_followup') return `exception:auto_followup:${row.subject_id}`;
+    if (row.subject_type === 'automation_run') return `exception:run:${row.subject_id}`;
     return `exception:${row.subject_type === 'finder' ? 'finder' : 'email'}:${row.subject_id}`;
   }
   return `${row.type}:${row.subject_id}`;

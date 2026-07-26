@@ -3,6 +3,7 @@ const test = require('node:test');
 const { dbOperations } = require('../database');
 const emailDrafter = require('./emailDrafter');
 const finderTasks = require('../routes/finderTasks');
+const automationRuns = require('./automationRuns');
 const workflowOrchestrator = require('./workflowOrchestrator');
 const approvalItemService = require('./approvalItemService');
 
@@ -539,5 +540,83 @@ test('auto_followup exception skip/stop 只记录决定，编排层不触发任�
       assert.equal(appendedEntries(fake, 90).length, 1);
       assert.equal(fake.store.get(91).status, 'pending');
       assert.equal(fake.store.get(91).version, 1);
+    }));
+});
+
+// ---- 阶段 D1：automation_run 异常卡 retry → retryFailedItems 真重跑 ----
+
+test('exception retry（automation_run）→ 调 retryFailedItems 重跑，全部成功后记录 ok:true', async () => {
+  const fake = createFakeDb({
+    items: [seededItem({
+      type: 'exception', subject_type: 'automation_run', subject_id: 31,
+      dedupe_key: 'exception:run:31'
+    })]
+  });
+  const calls = [];
+  await withPatched(dbOperations, fake, () =>
+    withPatched(automationRuns, {
+      retryFailedItems: async (runId) => {
+        calls.push(runId);
+        return { id: runId, status: 'success', progress: { total: 3, completed: 3, succeeded: 3, failed: 0 } };
+      }
+    }, async () => {
+      const entry = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(90)), { decision: 'retry' });
+      assert.equal(entry.ok, true);
+      assert.equal(entry.action, 'retry_run');
+      assert.equal(entry.run_id, 31);
+      assert.deepEqual(calls, [31], '以 run id 调 retryFailedItems（只重跑失败项由该函数保证）');
+      assert.match(entry.summary, /全部成功/);
+      assert.equal(appendedEntries(fake, 90)[0].action, 'retry_run');
+      // 重跑成功不建 auto_followup 失败卡
+      assert.equal([...fake.store.values()].filter((row) => row.type === 'exception').length, 1);
+    }));
+});
+
+test('exception retry（automation_run）重跑仍失败 → 记录失败原因并建 auto_followup 异常卡', async () => {
+  const fake = createFakeDb({
+    items: [seededItem({
+      type: 'exception', subject_type: 'automation_run', subject_id: 31,
+      dedupe_key: 'exception:run:31'
+    })]
+  });
+  await withPatched(dbOperations, fake, () =>
+    withPatched(automationRuns, {
+      retryFailedItems: async (runId) => ({
+        id: runId, status: 'partial_failed',
+        progress: { total: 3, completed: 3, succeeded: 2, failed: 1 },
+        last_error: '达人 3：LLM 超时'
+      })
+    }, async () => {
+      const entry = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(90)), { decision: 'retry' });
+      assert.equal(entry.ok, false);
+      assert.equal(entry.action, 'retry_run');
+      assert.match(entry.summary, /仍有 1 条失败/);
+      assert.match(entry.summary, /LLM 超时/);
+      // 父项（run 异常卡）追加失败记录
+      assert.equal(appendedEntries(fake, 90)[0].ok, false);
+      // 失败可见化：建 auto_followup 异常卡，可再次重试（retry_run 已注册进 RETRYABLE_ACTIONS）
+      const cards = [...fake.store.values()].filter((row) => row.subject_type === 'auto_followup');
+      assert.equal(cards.length, 1);
+      assert.equal(cards[0].dedupe_key, 'exception:auto_followup:90');
+      assert.ok(JSON.parse(cards[0].facts_json).facts.some((f) => /尝试动作：重跑后台任务失败项/.test(f)));
+    }));
+});
+
+test('exception skip/stop（automation_run）只记录决定，不触发 retryFailedItems', async () => {
+  const fake = createFakeDb({
+    items: [seededItem({
+      type: 'exception', subject_type: 'automation_run', subject_id: 31,
+      dedupe_key: 'exception:run:31'
+    })]
+  });
+  await withPatched(dbOperations, fake, () =>
+    withPatched(automationRuns, {
+      retryFailedItems: async () => { throw new Error('不应被调用'); }
+    }, async () => {
+      for (const decision of ['skip', 'stop']) {
+        const result = await workflowOrchestrator.continueAfterDecision(apiItem(fake.store.get(90)), { decision });
+        assert.equal(result, null, `${decision} 无自动执行映射`);
+      }
+      assert.deepEqual(appendedEntries(fake, 90), []);
     }));
 });

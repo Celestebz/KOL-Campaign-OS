@@ -5,7 +5,7 @@
 // dedupe_key 规则（保证同一待办重复扫描不重复建行）：
 //   strategy:kol_strategy:{id}    candidate:campaign_kol:{id}   budget:campaign_kol:{id}
 //   outreach:email_draft:{id}     reply:email_reply:{id}
-//   exception:finder:{id}         exception:email:{id}
+//   exception:finder:{id}         exception:email:{id}          exception:run:{id}
 const { buildStrategyItems } = require('./strategyApprovalBuilder');
 const { buildCandidateItems } = require('./candidateApprovalBuilder');
 const { buildBudgetItems } = require('./budgetApprovalBuilder');
