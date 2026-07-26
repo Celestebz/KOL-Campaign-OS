@@ -53,7 +53,9 @@ test('edits Feishu project mappings with system campaign choices', async () => {
   await userEvent.click(screen.getByRole('tab', { name: '云端存储' }));
 
   expect(screen.queryByLabelText('默认项目 KOL 子表')).not.toBeInTheDocument();
-  expect(screen.getByText('无法匹配旧项目映射：Vivatrees EverJoy。子表 ID 已带入下方，请重新选择系统项目后保存。')).toBeInTheDocument();
+  expect(screen.getByText('候选池子表映射中存在无法匹配的旧项目：Vivatrees EverJoy。子表 ID 已带入下方，请重新选择系统项目后保存。')).toBeInTheDocument();
+  expect(screen.getByText('候选池子表映射（KOL 寻找 · 人工确认候选人）')).toBeInTheDocument();
+  expect(screen.getByText('项目跟进表映射（KOL 合作）')).toBeInTheDocument();
   const tableId = screen.getByLabelText('飞书子表 ID');
   expect(tableId).toHaveValue('tbliXAzgY46zjt3U');
   await userEvent.clear(tableId);

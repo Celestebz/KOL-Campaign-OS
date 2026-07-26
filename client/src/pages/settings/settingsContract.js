@@ -83,7 +83,7 @@ export const DEFAULT_SETTINGS = {
     feishu: {
       app_id: '', app_secret: '', base_url: 'https://open.feishu.cn', app_token: '',
       kol_table_id: '', campaign_table_id: '',
-      campaign_subtable_map: '', notes: ''
+      campaign_subtable_map: '', campaign_tracking_map: '', notes: ''
     }
   },
   externalAgent: { enabled: true, api_token: '', notes: '' },

@@ -104,9 +104,9 @@ function cleanFeishu(row) {
     base_url: row?.base_url || extra.base_url || 'https://open.feishu.cn',
     app_token: maskSecret(extra.app_token),
     kol_table_id: extra.kol_table_id || '',
-    campaign_kol_table_id: extra.campaign_kol_table_id || '',
     campaign_table_id: extra.campaign_table_id || '',
     campaign_subtable_map: extra.campaign_subtable_map || '',
+    campaign_tracking_map: extra.campaign_tracking_map || '',
     notes: extra.notes || ''
   };
 }
@@ -203,9 +203,9 @@ async function upsertFeishu(row = {}) {
     app_id: row.app_id || '',
     app_token: preserveSecret(row.app_token, currentExtra.app_token),
     kol_table_id: row.kol_table_id || '',
-    campaign_kol_table_id: row.campaign_kol_table_id || '',
     campaign_table_id: row.campaign_table_id || '',
     campaign_subtable_map: row.campaign_subtable_map || '',
+    campaign_tracking_map: row.campaign_tracking_map || '',
     notes: row.notes || ''
   };
 

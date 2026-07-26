@@ -1,6 +1,6 @@
 const express = require('express');
 const { dbOperations } = require('../database');
-const { getCampaignKolTableId, missingCampaignSubtableError } = require('../utils/feishuSubtableMapping');
+const { getCampaignKolTableId, getCampaignTrackingTableId, missingCampaignSubtableError, missingCampaignTrackingTableError } = require('../utils/feishuSubtableMapping');
 const { mapFeishuRecordToKol, findMatchingCustomer } = require('../utils/feishuKolImport');
 const { attachPlatformAccounts, attachKolInsights } = require('./customers');
 
@@ -120,9 +120,9 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
   { field_name: '达人系统编号', aliases: [], type: 1, accepted_types: [1] }
 ];
 
-// Statuses at or after the shipping stage sync to the project tracking table
-// (campaign_kol_table_id); earlier stages sync to the campaign's candidate pool
-// subtable from campaign_subtable_map.
+// Statuses at or after the shipping stage sync to the campaign's project
+// tracking table from campaign_tracking_map; earlier stages sync to the
+// campaign's candidate pool subtable from campaign_subtable_map.
 const EXECUTION_STATUSES = new Set([
   'pending_shipping', 'shipped', 'delivered', 'content_preparation',
   'pending_publish', 'published', 'cancelled'
@@ -259,9 +259,9 @@ async function getFeishuConfig() {
     app_secret: row?.api_key || extra.app_secret || '',
     app_token: extra.app_token || '',
     kol_table_id: extra.kol_table_id || '',
-    campaign_kol_table_id: extra.campaign_kol_table_id || '',
     campaign_table_id: extra.campaign_table_id || '',
-    campaign_subtable_map: parseCampaignSubtableMap(extra.campaign_subtable_map)
+    campaign_subtable_map: parseCampaignSubtableMap(extra.campaign_subtable_map),
+    campaign_tracking_map: parseCampaignSubtableMap(extra.campaign_tracking_map)
   };
 }
 
@@ -1061,16 +1061,15 @@ function isExecutionStatus(status) {
   return EXECUTION_STATUSES.has(compact(status));
 }
 
-// Execution-stage rows go to the project tracking table; earlier stages go to
-// the campaign's candidate pool subtable.
+// Execution-stage rows go to the campaign's project tracking table; earlier
+// stages go to the campaign's candidate pool subtable.
 function campaignKolTargetTableId(config, row) {
-  if (isExecutionStatus(row.project_status)) return compact(config.campaign_kol_table_id).trim();
+  if (isExecutionStatus(row.project_status)) return getCampaignTrackingTableId(config, row);
   return getCampaignKolTableId(config, row);
 }
 
 function isCandidatePoolTable(config, tableId) {
   if (!tableId) return false;
-  if (compact(config.campaign_kol_table_id).trim() === tableId) return false;
   return Object.values(config.campaign_subtable_map || {}).includes(tableId);
 }
 
@@ -1195,7 +1194,7 @@ async function syncCampaignKols(config, token, ids = []) {
   for (const row of rows) {
     try {
       const tableId = campaignKolTargetTableId(config, row);
-      if (!tableId) throw missingCampaignSubtableError(row);
+      if (!tableId) throw (isExecutionStatus(row.project_status) ? missingCampaignTrackingTableError(row) : missingCampaignSubtableError(row));
       const targetIsPool = isCandidatePoolTable(config, tableId);
       const recordId = await pushBitableRecord(
         config,
@@ -1480,10 +1479,18 @@ router.post('/feishu/ensure-project-fields', async (req, res) => {
   try {
     const config = await getFeishuConfig();
     requireFeishuConfig(config);
-    const tableId = compact(req.body?.table_id || config.campaign_kol_table_id).trim();
+    const explicit = compact(req.body?.table_id).trim();
+    const tableIds = explicit
+      ? [explicit]
+      : [...new Set(Object.values(config.campaign_tracking_map || {}))];
+    if (!tableIds.length) throw new Error('飞书项目跟进表未配置，请先在设置中配置项目跟进表映射');
     const token = await getTenantAccessToken(config);
-    const summary = await ensureProjectTrackingFields(config, token, tableId, { backfillPlatforms: true });
-    res.json({ success: true, data: summary });
+    const data = [];
+    for (const tableId of tableIds) {
+      const summary = await ensureProjectTrackingFields(config, token, tableId, { backfillPlatforms: true });
+      data.push({ table_id: tableId, summary });
+    }
+    res.json({ success: true, data: explicit ? data[0].summary : data });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message, data: error.field_summary || null });
   }
@@ -1493,18 +1500,32 @@ router.post('/feishu/inspect-project-fields', async (req, res) => {
   try {
     const config = await getFeishuConfig();
     requireFeishuConfig(config);
-    const tableId = compact(req.body?.table_id || config.campaign_kol_table_id).trim();
-    if (!tableId) throw new Error('飞书项目跟进表 ID 未配置');
+    const explicit = compact(req.body?.table_id).trim();
+    const tableIds = explicit
+      ? [explicit]
+      : [...new Set(Object.values(config.campaign_tracking_map || {}))];
+    if (!tableIds.length) throw new Error('飞书项目跟进表未配置，请先在设置中配置项目跟进表映射');
     const token = await getTenantAccessToken(config);
-    const fields = await listBitableFields(config, token, tableId);
-    const records = await listBitableRecords(config, token, tableId);
-    res.json({ success: true, data: fields.map((field) => ({
-      field_id: field.field_id, field_name: field.field_name, type: field.type, property: field.property,
-      populated_count: records.filter((record) => {
-        const value = record.fields?.[field.field_name];
-        return value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0);
-      }).length
-    })) });
+    const inspectOne = async (tableId) => {
+      const fields = await listBitableFields(config, token, tableId);
+      const records = await listBitableRecords(config, token, tableId);
+      return fields.map((field) => ({
+        field_id: field.field_id, field_name: field.field_name, type: field.type, property: field.property,
+        populated_count: records.filter((record) => {
+          const value = record.fields?.[field.field_name];
+          return value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0);
+        }).length
+      }));
+    };
+    if (explicit) {
+      res.json({ success: true, data: await inspectOne(explicit) });
+      return;
+    }
+    const data = [];
+    for (const tableId of tableIds) {
+      data.push({ table_id: tableId, fields: await inspectOne(tableId) });
+    }
+    res.json({ success: true, data });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }

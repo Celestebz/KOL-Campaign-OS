@@ -36,6 +36,7 @@ const Settings = () => {
   const [campaigns, setCampaigns] = useState([]);
   const [campaignLoadError, setCampaignLoadError] = useState('');
   const [unresolvedMappings, setUnresolvedMappings] = useState([]);
+  const [unresolvedTrackingMappings, setUnresolvedTrackingMappings] = useState([]);
 
   const fetchSettings = useCallback(async () => {
     setLoading(true);
@@ -51,12 +52,18 @@ const Settings = () => {
       setCampaignLoadError(campaignsResult.status === 'rejected' ? '项目列表加载失败，暂时无法编辑项目子表映射。' : '');
       const next = mergeSettings(DEFAULT_SETTINGS, settingsResult.value.data.data || {});
       const parsed = parseCampaignSubtableMap(next.cloudStorage.feishu.campaign_subtable_map, nextCampaigns);
+      const parsedTracking = parseCampaignSubtableMap(next.cloudStorage.feishu.campaign_tracking_map, nextCampaigns);
       const formSettings = mergeSettings(next, {});
       formSettings.cloudStorage.feishu.campaign_subtable_map = [
         ...parsed.rows,
         ...parsed.unresolved.map((item) => ({ campaign_id: null, table_id: item.table_id }))
       ];
+      formSettings.cloudStorage.feishu.campaign_tracking_map = [
+        ...parsedTracking.rows,
+        ...parsedTracking.unresolved.map((item) => ({ campaign_id: null, table_id: item.table_id }))
+      ];
       setUnresolvedMappings(parsed.unresolved);
+      setUnresolvedTrackingMappings(parsedTracking.unresolved);
       setSettings(next);
       form.setFieldsValue({ settings: formSettings });
       setDirty(false);
@@ -98,13 +105,18 @@ const Settings = () => {
       const values = form.getFieldsValue(true).settings || {};
       const nextValues = mergeSettings(values, {});
       if (activeSection === 'storage') {
-        const rows = values.cloudStorage?.feishu?.campaign_subtable_map || [];
-        const invalid = rows.some((row) => !row?.campaign_id || !/^tbl\S+$/.test(String(row?.table_id || '').trim()))
-          || new Set(rows.map((row) => row.campaign_id)).size !== rows.length;
-        if (invalid) throw new Error('请修正项目子表映射中的错误后再保存。');
-        nextValues.cloudStorage.feishu.campaign_subtable_map = serializeCampaignSubtableRows(rows);
+        const feishuValues = values.cloudStorage?.feishu || {};
+        const serializeRows = (rows, label) => {
+          const invalid = rows.some((row) => !row?.campaign_id || !/^tbl\S+$/.test(String(row?.table_id || '').trim()))
+            || new Set(rows.map((row) => row.campaign_id)).size !== rows.length;
+          if (invalid) throw new Error(`请修正${label}中的错误后再保存。`);
+          return serializeCampaignSubtableRows(rows);
+        };
+        nextValues.cloudStorage.feishu.campaign_subtable_map = serializeRows(feishuValues.campaign_subtable_map || [], '候选池子表映射');
+        nextValues.cloudStorage.feishu.campaign_tracking_map = serializeRows(feishuValues.campaign_tracking_map || [], '项目跟进表映射');
       } else if (nextValues.cloudStorage?.feishu) {
         nextValues.cloudStorage.feishu.campaign_subtable_map = settings.cloudStorage.feishu.campaign_subtable_map;
+        nextValues.cloudStorage.feishu.campaign_tracking_map = settings.cloudStorage.feishu.campaign_tracking_map;
       }
       await persistSettings(mergeSettings(settings, nextValues));
     } catch (error) {
@@ -279,7 +291,7 @@ const Settings = () => {
 
   const renderStorage = () => (
     <>
-      <SectionHeading title="云端存储" description="飞书多维表格作为已通过 KOL 的云端主库；候选池默认只保存在本地。" />
+      <SectionHeading title="云端存储" description="飞书多维表格作为云端主库：KOL 总表对应 KOL 管理；候选池表（每项目一张）对应 KOL 寻找的人工确认候选人；项目跟进表（每项目一张）对应 KOL 合作。" />
       <Row gutter={16}>
         <Col xs={24} md={8}><Form.Item label="Feishu App ID" name={['settings', 'cloudStorage', 'feishu', 'app_id']}><Input placeholder="cli_xxx" /></Form.Item></Col>
         <Col xs={24} md={8}><Form.Item label="Feishu App Secret" name={['settings', 'cloudStorage', 'feishu', 'app_secret']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 secret" /></Form.Item></Col>
@@ -290,9 +302,18 @@ const Settings = () => {
         <Col xs={24} md={12}><Form.Item label="飞书 KOL 总表 ID" name={['settings', 'cloudStorage', 'feishu', 'kol_table_id']}><Input placeholder="tbl..." /></Form.Item></Col>
         <Col xs={24} md={12}><Form.Item label="项目表 ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_table_id']}><Input placeholder="tbl...（预留）" /></Form.Item></Col>
       </Row>
-      {unresolvedMappings.length > 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`无法匹配旧项目映射：${unresolvedMappings.map((item) => item.key).join('、')}。子表 ID 已带入下方，请重新选择系统项目后保存。`} />}
-      <Form.Item label="项目子表映射" name={['settings', 'cloudStorage', 'feishu', 'campaign_subtable_map']}>
+      {unresolvedMappings.length > 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`候选池子表映射中存在无法匹配的旧项目：${unresolvedMappings.map((item) => item.key).join('、')}。子表 ID 已带入下方，请重新选择系统项目后保存。`} />}
+      {unresolvedTrackingMappings.length > 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`项目跟进表映射中存在无法匹配的旧项目：${unresolvedTrackingMappings.map((item) => item.key).join('、')}。表 ID 已带入下方，请重新选择系统项目后保存。`} />}
+      <Form.Item label="候选池子表映射（KOL 寻找 · 人工确认候选人）" name={['settings', 'cloudStorage', 'feishu', 'campaign_subtable_map']}>
         <FeishuSubtableMappings campaigns={campaigns} loadError={campaignLoadError} />
+      </Form.Item>
+      <Form.Item label="项目跟进表映射（KOL 合作）" name={['settings', 'cloudStorage', 'feishu', 'campaign_tracking_map']}>
+        <FeishuSubtableMappings
+          campaigns={campaigns}
+          loadError={campaignLoadError}
+          emptyText="尚未配置项目跟进表；需要同步的每个项目都必须单独配置。"
+          noteText="未配置映射的项目在同步执行阶段记录时会明确报错，不会写入其他项目的跟进表。"
+        />
       </Form.Item>
       <Form.Item label="同步备注" name={['settings', 'cloudStorage', 'feishu', 'notes']}><Input /></Form.Item>
       <SaveSectionButton />

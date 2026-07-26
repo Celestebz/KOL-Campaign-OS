@@ -4,7 +4,15 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
-const FeishuSubtableMappings = ({ campaigns = [], value = [], onChange = () => {}, disabled = false, loadError = '' }) => {
+const FeishuSubtableMappings = ({
+  campaigns = [],
+  value = [],
+  onChange = () => {},
+  disabled = false,
+  loadError = '',
+  emptyText = '尚未配置项目子表；需要同步的每个项目都必须单独配置。',
+  noteText = '未配置映射的项目在同步时会明确报错，不会写入其他项目的子表。'
+}) => {
   const rows = Array.isArray(value) ? value : [];
   const selectedCounts = rows.reduce((counts, row) => {
     if (row?.campaign_id) counts[row.campaign_id] = (counts[row.campaign_id] || 0) + 1;
@@ -19,7 +27,7 @@ const FeishuSubtableMappings = ({ campaigns = [], value = [], onChange = () => {
     <div className="feishu-subtable-mappings">
       {loadError && <Alert type="warning" showIcon message={loadError} className="feishu-subtable-mappings__alert" />}
       {!rows.length && !loadError && (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未配置项目子表；需要同步的每个项目都必须单独配置。" />
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} />
       )}
       {rows.map((row, index) => {
         const duplicate = row.campaign_id && selectedCounts[row.campaign_id] > 1;
@@ -72,7 +80,7 @@ const FeishuSubtableMappings = ({ campaigns = [], value = [], onChange = () => {
       >
         添加项目映射
       </Button>
-      <Text type="secondary" className="feishu-subtable-mappings__note">未配置映射的项目在同步时会明确报错，不会写入其他项目的子表。</Text>
+      <Text type="secondary" className="feishu-subtable-mappings__note">{noteText}</Text>
     </div>
   );
 };

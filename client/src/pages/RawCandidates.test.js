@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
+import userEvent from '@testing-library/user-event';
 import axios from 'axios';
 import { message } from 'antd';
 import RawCandidates from './RawCandidates';
@@ -93,6 +94,17 @@ describe('RawCandidates product-scoped UI', () => {
     const row = screen.getByText('Test Creator').closest('tr');
     const approveButton = row.querySelector('button');
     expect(approveButton).not.toBeDisabled();
+  });
+
+  test('syncs approved candidates to the Feishu candidate pool', async () => {
+    axios.post.mockResolvedValue({ data: { data: { success_count: 2, failed_count: 0, results: [] } } });
+    render(<RawCandidates />);
+
+    const button = await screen.findByRole('button', { name: /同步到飞书候选池/ });
+    await userEvent.click(button);
+
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/sync/feishu/push', { scope: 'campaign_kols' }));
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith('同步完成：成功 2，失败 0'));
   });
 });
 

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Card, Form, Input, InputNumber, message, Modal, Popconfirm, Progress, Select, Space, Table, Tag } from 'antd';
-import { CheckOutlined, DeleteOutlined, EyeOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloudUploadOutlined, DeleteOutlined, EyeOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { buildFinderTaskRequest, evidenceSignalLabels, normalizeEvidenceSignals } from './finderTaskContract';
+import { describeSyncResult } from './campaignKolSyncResult';
 
 const { TextArea } = Input;
 
@@ -177,6 +178,7 @@ const RawCandidates = () => {
   const [finderTasks, setFinderTasks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [taskLoading, setTaskLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [filters, setFilters] = useState({ status: 'pending' });
   const [taskModalOpen, setTaskModalOpen] = useState(false);
@@ -452,6 +454,21 @@ const RawCandidates = () => {
     fetchCandidates();
   };
 
+  // 把已通过、等待同步的候选人推送到飞书候选池子表（按项目映射分流）。
+  const syncCandidatePool = async () => {
+    setSyncing(true);
+    try {
+      const res = await axios.post('/api/sync/feishu/push', { scope: 'campaign_kols' });
+      const result = describeSyncResult(res.data.data);
+      message[result.type](result.content);
+      fetchCandidates();
+    } catch (error) {
+      message.warning(error.response?.data?.error || '飞书未配置或同步失败，本地数据已保留');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const ignoreOne = async (record) => {
     await axios.post(`/api/raw-candidates/${record.id}/ignore`);
     message.success('已忽略本项目');
@@ -697,6 +714,7 @@ const RawCandidates = () => {
           <Popconfirm title="确定删除选中的候选？" onConfirm={batchDelete}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
           </Popconfirm>
+          <Button icon={<CloudUploadOutlined />} loading={syncing} onClick={syncCandidatePool}>同步到飞书候选池</Button>
         </Space>
       </Card>
 

@@ -37,8 +37,8 @@ const feishuConfigRow = {
     app_id: 'cli_test',
     app_token: 'base-token',
     kol_table_id: 'tbl_kol_master',
-    campaign_kol_table_id: 'tbl_campaign_kols',
-    campaign_subtable_map: { 3: 'tbl_campaign_kols' }
+    campaign_subtable_map: { 3: 'tbl_pool_3' },
+    campaign_tracking_map: { 3: 'tbl_campaign_kols' }
   })
 };
 
@@ -248,7 +248,7 @@ test('KOL field initializer reports type conflicts without modifying the field',
 });
 
 test('campaign KOL push sends hyperlinks as link/text objects and numbers as numbers', async () => {
-  const { response, calls } = await runCampaignKolPush([buildCampaignKolRow()]);
+  const { response, calls } = await runCampaignKolPush([buildCampaignKolRow({ project_status: 'pending_shipping' })]);
   assert.equal(response.statusCode, 200);
   assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
 
@@ -259,7 +259,7 @@ test('campaign KOL push sends hyperlinks as link/text objects and numbers as num
   assert.deepEqual(fields['主平台主页'], {
     link: 'https://youtube.com/@alice', text: 'https://youtube.com/@alice'
   });
-  assert.equal(fields['项目状态'], '待确认');
+  assert.equal(fields['项目状态'], '待发货');
   assert.equal(typeof fields['项目状态'], 'string');
   assert.equal(fields['达人名称'], 'Alice');
   assert.equal(fields['邮箱'], 'alice@example.com');
@@ -273,6 +273,7 @@ test('campaign KOL push sends hyperlinks as link/text objects and numbers as num
 test('campaign KOL push updates Feishu notes from the latest project notes', async () => {
   const { response, calls } = await runCampaignKolPush([buildCampaignKolRow({
     feishu_record_id: 'rec_existing',
+    project_status: 'pending_shipping',
     project_notes: '修改后的项目备注'
   })]);
   assert.equal(response.statusCode, 200);
@@ -285,7 +286,6 @@ test('campaign KOL push updates Feishu notes from the latest project notes', asy
 
 test('campaign KOL push translates every project status to Chinese', async () => {
   const statuses = {
-    pending_confirmation: '待确认',
     pending_shipping: '待发货',
     shipped: '已发货',
     delivered: '已签收',
@@ -309,6 +309,7 @@ test('campaign KOL push translates every project status to Chinese', async () =>
 test('campaign KOL push omits empty hyperlink and number fields from the payload', async () => {
   const { response, calls } = await runCampaignKolPush([buildCampaignKolRow({
     id: 8,
+    project_status: 'pending_shipping',
     youtube_url: '',
     youtube_followers: '',
     instagram_url: null,
@@ -326,13 +327,14 @@ test('campaign KOL push omits empty hyperlink and number fields from the payload
   for (const name of ['粉丝数', '总预计成本', '近30天中位曝光', '预计合作曝光', '预估CPM']) {
     assert.equal(Object.prototype.hasOwnProperty.call(fields, name), false, `${name} should be omitted`);
   }
-  assert.equal(fields['项目状态'], '待确认');
+  assert.equal(fields['项目状态'], '待发货');
   assert.equal(fields['达人名称'], 'Alice');
 });
 
 test('campaign KOL push omits non-numeric values instead of sending NaN', async () => {
   const { response, calls } = await runCampaignKolPush([buildCampaignKolRow({
     id: 9,
+    project_status: 'pending_shipping',
     youtube_followers: '1.2万',
     quoted_price: '待议'
   })]);
@@ -346,7 +348,7 @@ test('campaign KOL push omits non-numeric values instead of sending NaN', async 
 
 test('campaign KOL push recreates a record when its saved record id belongs to an old table', async () => {
   const { response, calls, writes } = await runCampaignKolPush([
-    buildCampaignKolRow({ feishu_record_id: 'rec_from_old_table' })
+    buildCampaignKolRow({ feishu_record_id: 'rec_from_old_table', project_status: 'pending_shipping' })
   ], {
     recordHandler: async (url, options) => {
       if (options.method === 'PUT') {
@@ -535,8 +537,8 @@ const poolFeishuConfigRow = {
     app_id: 'cli_test',
     app_token: 'base-token',
     kol_table_id: 'tbl_kol_master',
-    campaign_kol_table_id: 'tbl_execution',
-    campaign_subtable_map: { 3: 'tbl_pool_3' }
+    campaign_subtable_map: { 3: 'tbl_pool_3' },
+    campaign_tracking_map: { 3: 'tbl_execution' }
   })
 };
 
@@ -588,6 +590,24 @@ test('execution-stage rows push to the tracking table and mark the old pool reco
   assert.equal(poolCalls[0].options.method, 'PUT');
   assert.ok(poolCalls[0].url.includes('/records/rec_pool_1'));
   assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 状态: '已确定' });
+});
+
+test('execution-stage rows fail with a clear error when the campaign has no tracking table mapping', async () => {
+  const configRow = {
+    ...poolFeishuConfigRow,
+    extra_config: JSON.stringify({
+      app_id: 'cli_test',
+      app_token: 'base-token',
+      kol_table_id: 'tbl_kol_master',
+      campaign_subtable_map: { 3: 'tbl_pool_3' }
+    })
+  };
+  const { response } = await runCampaignKolPush(
+    [buildCampaignKolRow({ project_status: 'shipped' })],
+    { configRow }
+  );
+  assert.equal(response.payload.data.failed_count, 1);
+  assert.ok(response.payload.data.results[0].error.includes('尚未配置飞书项目跟进表'));
 });
 
 test('candidatePoolKolFields maps internal statuses to pool labels', () => {

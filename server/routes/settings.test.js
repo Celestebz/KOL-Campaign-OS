@@ -235,7 +235,8 @@ test('POST /api/settings preserves existing secrets when masked values are submi
             feishu: {
               app_secret: '••••••••',
               app_token: '••••••••',
-              base_url: 'https://open.feishu.cn'
+              base_url: 'https://open.feishu.cn',
+              campaign_tracking_map: '{"3":"tbl_track_3"}'
             }
           },
           externalAgent: { enabled: true, api_token: '••••••••' },
@@ -252,6 +253,8 @@ test('POST /api/settings preserves existing secrets when masked values are submi
     assert.equal(youtubeWrite.params[1], 'youtube-secret');
     assert.equal(feishuWrite.params[1], 'feishu-secret');
     assert.equal(JSON.parse(feishuWrite.params[3]).app_token, 'base-token');
+    assert.equal(JSON.parse(feishuWrite.params[3]).campaign_tracking_map, '{"3":"tbl_track_3"}');
+    assert.equal(JSON.parse(feishuWrite.params[3]).campaign_kol_table_id, undefined);
     assert.equal(agentWrite.params[1], 'agent-token');
     assert.equal(
       writes.some((item) => String(item.params[0] || '').startsWith('agent.') && item.params[0] !== 'agent.external_api'),
