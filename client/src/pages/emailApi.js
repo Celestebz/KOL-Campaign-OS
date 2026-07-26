@@ -76,8 +76,21 @@ export async function sendDraft(id) {
   return res.data.data;
 }
 
+// 异步后台起草：接口立即返回 run_id + 排队/跳过明细，不再同步等待生成结果。
 export async function generateDrafts({ campaign_id, customer_ids, kind = 'first_touch' }) {
   const res = await axios.post('/api/emails/drafts/generate', { campaign_id, customer_ids, kind });
+  const data = res.data.data || {};
+  return {
+    run_id: data.run_id ?? null,
+    total_requested: data.total_requested ?? (customer_ids || []).length,
+    queued: data.queued ?? 0,
+    skipped: Array.isArray(data.skipped) ? data.skipped : []
+  };
+}
+
+// 轮询后台起草任务进度（GET /api/automation-runs/:id）。
+export async function getAutomationRun(id) {
+  const res = await axios.get(`/api/automation-runs/${id}`);
   return res.data.data;
 }
 

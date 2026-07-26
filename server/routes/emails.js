@@ -3,6 +3,7 @@ const { dbOperations } = require('../database');
 const mailer = require('../services/mailer');
 const emailDrafter = require('../services/emailDrafter');
 const emailReviewActions = require('../services/emailReviewActions');
+const automationRuns = require('../services/automationRuns');
 
 const router = express.Router();
 
@@ -188,6 +189,10 @@ async function resolveCustomerEmail(customerId) {
   return customer;
 }
 
+// 批量起草（阶段 D）：去重守卫 + 后台异步执行。
+// 同 campaign 同达人同 kind 已存在 pending_review 草稿的达人直接跳过（防重复点击生成重复草稿）；
+// 其余立即建行 automation_runs 并返回 run_id，起草由 setImmediate 后台执行，
+// 进度与结果经 GET /api/automation-runs/:id 轮询；全部跳过时不建 run，run_id 为 null。
 router.post('/drafts/generate', async (req, res) => {
   try {
     const { campaign_id, customer_ids, kind = 'first_touch' } = req.body || {};
@@ -195,10 +200,50 @@ router.post('/drafts/generate', async (req, res) => {
       return res.status(400).json({ success: false, error: '请提供 campaign_id 和 customer_ids' });
     }
     if (!DRAFT_KINDS.has(kind)) return res.status(400).json({ success: false, error: '无效的草稿类型' });
-    const results = await emailDrafter.draftBatch(
-      customer_ids.map((customerId) => ({ campaignId: campaign_id, customerId, kind }))
+
+    const placeholders = customer_ids.map(() => '?').join(', ');
+    const existingRows = await dbOperations.query(
+      `SELECT DISTINCT customer_id FROM email_drafts
+       WHERE campaign_id = ? AND kind = ? AND status = 'pending_review' AND customer_id IN (${placeholders})`,
+      [campaign_id, kind, ...customer_ids]
     );
-    res.json({ success: true, data: { results } });
+    const existingSet = new Set(existingRows.map((row) => Number(row.customer_id)));
+    const skipped = [];
+    const queuedIds = [];
+    for (const customerId of customer_ids) {
+      if (existingSet.has(Number(customerId))) {
+        skipped.push({ customer_id: customerId, reason: '已存在待审阅的同类型草稿' });
+      } else {
+        queuedIds.push(customerId);
+      }
+    }
+
+    if (!queuedIds.length) {
+      return res.json({
+        success: true,
+        data: { run_id: null, total_requested: customer_ids.length, queued: 0, skipped }
+      });
+    }
+
+    const run = await automationRuns.createRun({
+      run_type: 'email_draft_batch',
+      campaign_id,
+      subject_type: 'campaign',
+      subject_id: campaign_id,
+      current_node: 'draft',
+      idempotency_key: `email_draft_batch:${campaign_id}:${kind}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
+      total: queuedIds.length
+    });
+    res.json({
+      success: true,
+      data: { run_id: run.id, total_requested: customer_ids.length, queued: queuedIds.length, skipped }
+    });
+    const items = queuedIds.map((customerId) => ({ campaignId: campaign_id, customerId, kind }));
+    setImmediate(() => {
+      automationRuns.executeEmailDraftBatch(run.id, items).catch((error) => {
+        console.error(`批量邮件起草后台执行失败 (run ${run.id}):`, error.message);
+      });
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

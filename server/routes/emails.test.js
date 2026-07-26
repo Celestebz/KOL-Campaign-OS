@@ -294,24 +294,30 @@ test('POST /replies/:id/draft-reply generates reply draft into review queue', as
   assert.match(seen[0].feedback, /佣金细节/);
 });
 
-test('POST /drafts/generate calls drafter per customer and returns per-item results', async () => {
-  const drafter = require('../services/emailDrafter');
-  const original = drafter.draftBatch;
-  const seen = [];
-  drafter.draftBatch = async (items) => {
-    seen.push(...items);
-    return items.map((item) => ({ ok: item.customerId !== 2, customer_id: item.customerId, draftId: 100 + item.customerId, error: item.customerId === 2 ? 'AI 超时' : undefined }));
-  };
+test('POST /drafts/generate dedupes existing pending drafts and queues the rest as a background run', async () => {
+  const automationRuns = require('../services/automationRuns');
+  const originalCreate = automationRuns.createRun;
+  const originalExec = automationRuns.executeEmailDraftBatch;
+  const executed = [];
+  automationRuns.createRun = async (fields) => ({ id: 42, ...fields });
+  automationRuns.executeEmailDraftBatch = async (runId, items) => { executed.push({ runId, items }); };
   try {
-    await withPatchedDb({}, async () => {
+    await withPatchedDb({
+      query: async (sql) => (/FROM email_drafts/i.test(sql) ? [{ customer_id: 2 }] : [])
+    }, async () => {
       const handler = findHandler(require('./emails'), 'post', '/drafts/generate');
       const response = await callHandler(handler, { body: { campaign_id: 1, customer_ids: [1, 2] } });
-      assert.equal(response.payload.data.results.length, 2);
-      assert.equal(response.payload.data.results[1].ok, false);
-      assert.equal(response.payload.data.results[1].error, 'AI 超时');
+      assert.equal(response.payload.data.run_id, 42);
+      assert.equal(response.payload.data.total_requested, 2);
+      assert.equal(response.payload.data.queued, 1);
+      assert.deepEqual(response.payload.data.skipped, [{ customer_id: 2, reason: '已存在待审阅的同类型草稿' }]);
     });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(executed.length, 1);
+    assert.equal(executed[0].runId, 42);
+    assert.deepEqual(executed[0].items.map((item) => item.customerId), [1]);
   } finally {
-    drafter.draftBatch = original;
+    automationRuns.createRun = originalCreate;
+    automationRuns.executeEmailDraftBatch = originalExec;
   }
-  assert.deepEqual(seen.map((i) => i.customerId), [1, 2]);
 });

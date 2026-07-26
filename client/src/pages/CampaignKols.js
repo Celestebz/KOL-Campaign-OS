@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber, List, message, Modal, Popconfirm, Select, Space, Spin, Table, Tag } from 'antd';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Button, Card, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber, List, message, Modal, Popconfirm, Progress, Select, Space, Spin, Table, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, MailOutlined, ReloadOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { describeSyncResult } from './campaignKolSyncResult';
-import { getEmailTemplates, previewEmail, sendEmails, generateDrafts } from './emailApi';
+import { getEmailTemplates, previewEmail, sendEmails, generateDrafts, getAutomationRun } from './emailApi';
 
 const { TextArea } = Input;
 
@@ -104,6 +104,10 @@ const parsePlatforms = (value, fallback = []) => {
   return values.map((item) => labels[String(item).toLowerCase()] || item).filter(Boolean);
 };
 
+const RUN_TERMINAL_STATUSES = ['success', 'partial_failed', 'failed'];
+const RUN_STATUS_LABEL = { running: '进行中', success: '已完成', partial_failed: '部分失败', failed: '失败' };
+const RUN_POLL_INTERVAL_MS = 5000;
+
 const CampaignKols = () => {
   const [rows, setRows] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -119,6 +123,11 @@ const CampaignKols = () => {
   const [emailCc, setEmailCc] = useState('');
   const [emailSending, setEmailSending] = useState(false);
   const [emailResult, setEmailResult] = useState(null);
+  const [aiDrafting, setAiDrafting] = useState(false);
+  const [draftRunOpen, setDraftRunOpen] = useState(false);
+  const [draftRun, setDraftRun] = useState(null);
+  const [draftRunError, setDraftRunError] = useState('');
+  const draftPollTimerRef = useRef(null);
   const [filters, setFilters] = useState({});
   const [editing, setEditing] = useState(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -141,6 +150,11 @@ const CampaignKols = () => {
   useEffect(() => {
     fetchCampaigns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 组件卸载时清理 AI 起草进度轮询定时器。
+  useEffect(() => () => {
+    if (draftPollTimerRef.current) clearTimeout(draftPollTimerRef.current);
   }, []);
 
   const fetchCampaigns = async () => {
@@ -351,6 +365,44 @@ const CampaignKols = () => {
     }
   };
 
+  const kolNameByCustomerId = (customerId) => {
+    const row = rows.find((r) => r.customer_id === customerId);
+    return (row && (row.kol_name || row.kol_name_snapshot)) || `KOL #${customerId}`;
+  };
+
+  const stopDraftPolling = () => {
+    if (draftPollTimerRef.current) {
+      clearTimeout(draftPollTimerRef.current);
+      draftPollTimerRef.current = null;
+    }
+  };
+
+  const pollDraftRun = async (runId) => {
+    try {
+      const run = await getAutomationRun(runId);
+      setDraftRun(run);
+      setDraftRunError('');
+      if (RUN_TERMINAL_STATUSES.includes(run?.status)) return;
+    } catch (error) {
+      // 单次轮询失败不中断：提示后继续重试，Modal 不卡死。
+      setDraftRunError('进度查询失败，将继续重试；也可稍后到「邮件中心 → 审批台」查看结果');
+    }
+    draftPollTimerRef.current = setTimeout(() => pollDraftRun(runId), RUN_POLL_INTERVAL_MS);
+  };
+
+  const openDraftRunModal = (runId) => {
+    stopDraftPolling();
+    setDraftRun(null);
+    setDraftRunError('');
+    setDraftRunOpen(true);
+    pollDraftRun(runId);
+  };
+
+  const closeDraftRunModal = () => {
+    stopDraftPolling();
+    setDraftRunOpen(false);
+  };
+
   const handleAiDraft = async () => {
     if (!selectedRowKeys.length) {
       message.warning('请先勾选要起草的 KOL');
@@ -362,16 +414,46 @@ const CampaignKols = () => {
       message.warning('选中的 KOL 缺少 customer_id，无法起草');
       return;
     }
+    setAiDrafting(true);
     try {
       const result = await generateDrafts({
         campaign_id: selectedRows[0]?.campaign_id,
         customer_ids: customerIds,
         kind: 'first_touch'
       });
-      const okCount = (result?.results || []).filter((r) => r.ok).length;
-      message.success(`已生成 ${okCount} 条 AI 草稿，请到「邮件中心 → 审批台」审阅`);
+      const queued = result?.queued ?? 0;
+      const skipped = result?.skipped || [];
+      const reasonSummary = [...new Set(skipped.map((item) => item.reason || '已有待审草稿'))].join('、');
+      if (skipped.length) {
+        Modal.info({
+          title: `${skipped.length} 位 KOL 已跳过`,
+          width: 520,
+          content: (
+            <List
+              size="small"
+              dataSource={skipped}
+              renderItem={(item) => (
+                <List.Item>{kolNameByCustomerId(item.customer_id)}：{item.reason || '已有待审草稿'}</List.Item>
+              )}
+            />
+          ),
+          okText: '知道了'
+        });
+      }
+      if (result?.run_id) {
+        message.success(skipped.length
+          ? `成功提交后台起草 ${queued} 封（跳过 ${skipped.length} 封：${reasonSummary}）`
+          : `成功提交后台起草 ${queued} 封`);
+        openDraftRunModal(result.run_id);
+      } else {
+        message.info(skipped.length
+          ? `选中的 KOL 全部被跳过（${reasonSummary}），未创建后台起草任务`
+          : '没有可起草的 KOL，未创建后台起草任务');
+      }
     } catch (error) {
-      message.error('AI 起草失败');
+      message.error('AI 起草提交失败');
+    } finally {
+      setAiDrafting(false);
     }
   };
 
@@ -443,6 +525,14 @@ const CampaignKols = () => {
     }
   ];
 
+  const draftRunProgress = draftRun?.progress || {};
+  const draftRunTotal = draftRunProgress.total ?? 0;
+  const draftRunCompleted = draftRunProgress.completed ?? 0;
+  const draftRunSucceeded = draftRunProgress.succeeded ?? 0;
+  const draftRunFailedCount = draftRunProgress.failed ?? 0;
+  const draftRunTerminal = Boolean(draftRun && RUN_TERMINAL_STATUSES.includes(draftRun.status));
+  const draftRunFailedItems = (draftRun?.items || []).filter((item) => !item.ok);
+
   return (
     <div>
       <div className="page-header">
@@ -463,7 +553,7 @@ const CampaignKols = () => {
           <Button icon={<ReloadOutlined />} onClick={fetchRows}>刷新</Button>
           <Button icon={<SyncOutlined />} loading={syncing} onClick={syncSelected}>{selectedRowKeys.length ? '同步选中到飞书项目子表' : '同步待同步到飞书项目子表'}</Button>
           <Button icon={<MailOutlined />} onClick={openEmailModal} disabled={!selectedRowKeys.length}>发邮件</Button>
-          <Button type="primary" icon={<RobotOutlined />} onClick={handleAiDraft} disabled={!selectedRowKeys.length}>AI 起草邮件</Button>
+          <Button type="primary" icon={<RobotOutlined />} loading={aiDrafting} onClick={handleAiDraft} disabled={!selectedRowKeys.length}>AI 起草邮件</Button>
           <Popconfirm title="确定删除选中的项目 KOL？" onConfirm={batchDelete}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
           </Popconfirm>
@@ -614,6 +704,59 @@ const CampaignKols = () => {
             </>
           )}
         </Space>
+      </Modal>
+
+      <Modal
+        title="AI 草稿起草进度"
+        open={draftRunOpen}
+        onCancel={closeDraftRunModal}
+        maskClosable={false}
+        width={560}
+        footer={draftRunTerminal ? [
+          <Button key="close" onClick={closeDraftRunModal}>关闭</Button>,
+          <Button key="review" type="primary" onClick={() => { window.location.assign('/emails'); }}>去审批台查看</Button>
+        ] : [
+          <Button key="close" onClick={closeDraftRunModal}>后台运行并关闭</Button>
+        ]}
+      >
+        {!draftRun && !draftRunError ? <Spin /> : (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            {draftRunError && <Alert type="warning" showIcon message={draftRunError} />}
+            {draftRun && (
+              <>
+                <div>
+                  状态：<Tag color={draftRunTerminal ? (draftRun.status === 'success' ? 'green' : draftRun.status === 'failed' ? 'red' : 'orange') : 'blue'}>
+                    {RUN_STATUS_LABEL[draftRun.status] || draftRun.status}
+                  </Tag>
+                </div>
+                <Progress
+                  percent={draftRunTotal ? Math.round((draftRunCompleted / draftRunTotal) * 100) : 0}
+                  status={draftRun.status === 'failed' ? 'exception' : draftRunTerminal ? undefined : 'active'}
+                />
+                <div>已完成 {draftRunCompleted}/{draftRunTotal} ｜ 成功 {draftRunSucceeded} 封 ｜ 失败 {draftRunFailedCount} 封</div>
+                {draftRunTerminal && (
+                  <Alert
+                    type={draftRun.status === 'success' ? 'success' : draftRun.status === 'failed' ? 'error' : 'warning'}
+                    showIcon
+                    message={draftRun.status === 'success'
+                      ? `起草完成：成功 ${draftRunSucceeded} 封`
+                      : `起草结束：成功 ${draftRunSucceeded} 封、失败 ${draftRunFailedCount} 封${draftRun.last_error ? `（${draftRun.last_error}）` : ''}`}
+                  />
+                )}
+                {draftRunTerminal && draftRunFailedItems.length > 0 && (
+                  <List
+                    size="small"
+                    header="失败明细"
+                    dataSource={draftRunFailedItems}
+                    renderItem={(item) => (
+                      <List.Item>{kolNameByCustomerId(item.customer_id)}：{item.error || '起草失败'}</List.Item>
+                    )}
+                  />
+                )}
+              </>
+            )}
+          </Space>
+        )}
       </Modal>
 
       <Modal title="编辑 KOL 合作" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>

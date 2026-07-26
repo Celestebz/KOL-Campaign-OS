@@ -26,6 +26,7 @@ const finderSubtaskRoutes = require('./routes/finderSubtasks');
 const emailRoutes = require('./routes/emails');
 const workbenchRoutes = require('./routes/workbench');
 const approvalRoutes = require('./routes/approvals');
+const automationRunRoutes = require('./routes/automationRuns');
 const { startReplyPoller } = require('./services/emailReplyPoller');
 const { startFollowUpTimer } = require('./services/emailFollowUp');
 
