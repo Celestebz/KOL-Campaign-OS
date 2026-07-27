@@ -278,14 +278,14 @@ describe('CampaignKols 状态列按视图取舍', () => {
   test('candidate pool hides the constant 项目状态 column and keeps 外联状态', async () => {
     render(<CampaignKols view="candidate" />);
     expect(await screen.findByText('Alice')).toBeInTheDocument();
-    expect(screen.getByText('外联状态')).toBeInTheDocument();
+    expect(screen.getAllByText('外联状态').length).toBeGreaterThan(0);
     expect(screen.queryByText('项目状态')).not.toBeInTheDocument();
   });
 
   test('cooperation view keeps the 项目状态 column', async () => {
     render(<CampaignKols />);
     expect(await screen.findByText('Alice')).toBeInTheDocument();
-    expect(screen.getByText('项目状态')).toBeInTheDocument();
+    expect(screen.getAllByText('项目状态').length).toBeGreaterThan(0);
   });
 });
 
@@ -345,7 +345,7 @@ describe('CampaignKols 状态字段按阶段分离', () => {
   test('cooperation view hides the 外联状态 column', async () => {
     render(<CampaignKols />);
     expect(await screen.findByText('Alice')).toBeInTheDocument();
-    expect(screen.getByText('项目状态')).toBeInTheDocument();
+    expect(screen.getAllByText('项目状态').length).toBeGreaterThan(0);
     expect(screen.queryByText('外联状态')).not.toBeInTheDocument();
   });
 
@@ -374,5 +374,33 @@ describe('CampaignKols 状态字段按阶段分离', () => {
     expect(await screen.findByText('Bob')).toBeInTheDocument();
     expect(screen.getByText('待回复')).toBeInTheDocument();
     expect(screen.getByText('已终止')).toBeInTheDocument();
+  });
+});
+
+describe('CampaignKols 筛选栏按阶段使用对应状态', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockListRequests();
+  });
+
+  test('candidate view shows 外联状态 filter and fetches with outreach param', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    // 表格列 + 筛选占位，至少两处
+    expect(screen.getAllByText('外联状态').length).toBeGreaterThanOrEqual(2);
+
+    await userEvent.click(screen.getAllByRole('combobox')[1]);
+    await userEvent.click(await screen.findByText('待回复'));
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/campaign-kols', expect.objectContaining({
+      params: expect.objectContaining({ outreach_status: 'waiting_reply', pipeline_stage: 'candidate' })
+    })));
+  });
+
+  test('cooperation view shows 项目状态 filter instead of a generic 状态', async () => {
+    render(<CampaignKols />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getAllByText('项目状态').length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText('外联状态')).not.toBeInTheDocument();
+    expect(screen.queryByText('状态')).not.toBeInTheDocument();
   });
 });

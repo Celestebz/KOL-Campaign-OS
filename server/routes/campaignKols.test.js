@@ -10,7 +10,7 @@ function findHandler(router, method, path) {
   return layer.route.stack[0].handle;
 }
 
-function callHandler(handler, { body = {}, params = {} } = {}) {
+function callHandler(handler, { body = {}, params = {}, query = {} } = {}) {
   return new Promise((resolve, reject) => {
     const response = {
       statusCode: 200,
@@ -25,7 +25,7 @@ function callHandler(handler, { body = {}, params = {} } = {}) {
         return this;
       }
     };
-    Promise.resolve(handler({ body, params }, response, reject)).catch(reject);
+    Promise.resolve(handler({ body, params, query }, response, reject)).catch(reject);
   });
 }
 
@@ -234,4 +234,31 @@ test('PATCH rejects invalid outreach_status values', async () => {
 
   assert.equal(response.statusCode, 400);
   assert.ok(response.payload.error.includes('Invalid outreach_status'));
+});
+
+test('GET / filters by outreach_status with legacy alias expansion', async () => {
+  const queries = [];
+  const originalQuery = dbOperations.query;
+  dbOperations.query = async (sql, params = []) => {
+    queries.push({ sql: String(sql), params });
+    return [];
+  };
+  try {
+    const handler = findHandler(require('./campaignKols'), 'get', '/');
+
+    await callHandler(handler, { query: { outreach_status: 'waiting_reply' } });
+    assert.ok(queries[0].sql.includes('ck.outreach_status IN (?, ?)'), 'waiting_reply expands to legacy alias');
+    assert.deepEqual(queries[0].params, ['waiting_reply', 'replied']);
+
+    queries.length = 0;
+    await callHandler(handler, { query: { outreach_status: 'contacted' } });
+    assert.ok(queries[0].sql.includes('ck.outreach_status = ?'));
+    assert.deepEqual(queries[0].params, ['contacted']);
+
+    queries.length = 0;
+    await callHandler(handler, { query: { outreach_status: 'bogus' } });
+    assert.ok(!queries[0].sql.includes('ck.outreach_status'), 'invalid outreach_status is ignored');
+  } finally {
+    dbOperations.query = originalQuery;
+  }
 });

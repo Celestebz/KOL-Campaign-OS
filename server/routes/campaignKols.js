@@ -129,7 +129,7 @@ async function setBudgetApprovalStatus(id, status) {
 
 router.get('/', async (req, res) => {
   try {
-    const { campaign_id, status, sync_status, search, pipeline_stage } = req.query;
+    const { campaign_id, status, sync_status, search, pipeline_stage, outreach_status } = req.query;
     let sql = `
       SELECT ck.*, c.name as campaign_name, c.brand, c.product,
         (SELECT COUNT(*) FROM campaign_videos cv WHERE cv.campaign_kol_id = ck.id) published_video_count,
@@ -165,6 +165,15 @@ router.get('/', async (req, res) => {
     if (status) {
       sql += ' AND ck.project_status = ?';
       params.push(status);
+    }
+    if (outreach_status) {
+      // 旧值兼容：筛选“待回复/已终止”时同时命中 replied/rejected
+      const normalized = normalizeOutreachStatus(outreach_status);
+      if (OUTREACH_STATUSES.has(normalized)) {
+        const legacyAlias = { waiting_reply: 'replied', terminated: 'rejected' }[normalized];
+        sql += legacyAlias ? ' AND ck.outreach_status IN (?, ?)' : ' AND ck.outreach_status = ?';
+        params.push(...(legacyAlias ? [normalized, legacyAlias] : [normalized]));
+      }
     }
     if (sync_status) {
       sql += ' AND ck.sync_status = ?';

@@ -255,7 +255,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   useEffect(() => {
     fetchRows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.campaign_id, filters.status, filters.sync_status, isCandidatePool]);
+  }, [filters.campaign_id, filters.status, filters.outreach_status, filters.sync_status, isCandidatePool]);
 
   const confirmCooperation = async (record) => {
     setConfirmingId(record.id);
@@ -656,7 +656,11 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 180 }} />
-          <Select allowClear placeholder="状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={statusOptions} style={{ width: 150 }} />
+          {isCandidatePool ? (
+            <Select allowClear placeholder="外联状态" value={filters.outreach_status} onChange={(v) => updateFilter('outreach_status', v)} options={OUTREACH_STATUS_OPTIONS} style={{ width: 150 }} />
+          ) : (
+            <Select allowClear placeholder="项目状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={PROJECT_STATUS_OPTIONS} style={{ width: 150 }} />
+          )}
           <Select allowClear placeholder="同步状态" value={filters.sync_status} onChange={(v) => updateFilter('sync_status', v)} options={[
             { value: 'sync_pending', label: 'sync_pending' },
             { value: 'synced', label: 'synced' },
