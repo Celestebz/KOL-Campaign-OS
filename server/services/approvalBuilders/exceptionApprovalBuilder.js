@@ -16,7 +16,7 @@ const RUN_TYPE_HREFS = {
 async function buildExceptionItems() {
   const finderRows = await dbOperations.query(
     `SELECT ft.id, ft.campaign_id, ft.name, ft.platform, ft.status,
-            ft.error_message, ft.success_count, ft.failed_count, ft.updated_at,
+            ft.error_message, ft.result_count, ft.success_count, ft.failed_count, ft.updated_at,
             c.name AS campaign_name
      FROM finder_tasks ft
      LEFT JOIN campaigns c ON c.id = ft.campaign_id
@@ -49,10 +49,17 @@ async function buildExceptionItems() {
   );
 
   const finderItems = finderRows.map((row) => {
+    // Older Finder runs could be marked failed when result import succeeded but a
+    // later binding/finalization step failed. Treat those as partial success so
+    // the workbench does not encourage users to rerun the whole search and create
+    // duplicate candidates.
+    const successCount = Number(row.success_count || row.result_count || 0);
+    const failedCount = Number(row.failed_count || 0);
+    const isPartialSuccess = row.status === 'partial_failed' || successCount > 0;
     const facts = [`失败节点：Finder 任务（${clean(row.platform) || '未知平台'}）`];
     if (clean(row.error_message)) facts.push(`错误信息：${truncate(row.error_message, 200)}`);
-    if (row.status === 'partial_failed') {
-      facts.push(`部分完成：成功 ${row.success_count || 0} 条，失败 ${row.failed_count || 0} 条`);
+    if (isPartialSuccess) {
+      facts.push(`部分完成：成功 ${successCount} 条，失败 ${failedCount} 条`);
     }
     return {
       id: `exception:finder:${row.id}`,
@@ -61,12 +68,16 @@ async function buildExceptionItems() {
       subject_id: row.id,
       campaign_id: row.campaign_id,
       campaign_name: clean(row.campaign_name),
-      title: `${clean(row.name) || `Finder 任务 #${row.id}`} · 执行失败`,
+      title: `${clean(row.name) || `Finder 任务 #${row.id}`} · ${isPartialSuccess ? '部分成功（收尾失败）' : '执行失败'}`,
       dedupe_key: `exception:finder:${row.id}`,
-      risk_level: 'high',
+      risk_level: isPartialSuccess ? 'medium' : 'high',
       facts,
-      opinion: '建议重试失败节点；如多次失败请人工处理。',
-      risks: ['任务中断，后续达人搜索/分析流程未推进'],
+      opinion: isPartialSuccess
+        ? '已有结果，请只处理失败的收尾节点；不要重新执行整个 Finder，以免重复导入候选。'
+        : '建议重试失败节点；如多次失败请人工处理。',
+      risks: isPartialSuccess
+        ? ['已有搜索结果，整任务重跑可能重复导入候选']
+        : ['任务中断，后续达人搜索/分析流程未推进'],
       actions: openAction('/finder'),
       updated_at: iso(row.updated_at)
     };

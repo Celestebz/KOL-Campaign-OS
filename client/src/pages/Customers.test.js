@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import axios from 'axios';
@@ -98,4 +98,101 @@ test('initializes missing Feishu fields from the KOL management page', async () 
   await userEvent.click(screen.getByRole('button', { name: /检查\/初始化飞书字段/ }));
   await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/sync/feishu/ensure-kol-fields'));
   await waitFor(() => expect(message.success).toHaveBeenCalledWith('飞书字段检查完成：新建 1，已存在 1'));
+});
+
+describe('KOL 总表加入项目候选池', () => {
+  function mockWithCampaigns() {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/customers') return Promise.resolve({ data: { data: [{ id: 11, name: 'Alice', platform: 'YouTube' }] } });
+      if (url === '/api/customers/filter-options') return Promise.resolve({ data: { data: { countries: [], platforms: [] } } });
+      if (url === '/api/campaigns') {
+        return Promise.resolve({
+          data: {
+            data: [
+              { id: 2, name: 'TMB-1401｜Finishing Mower', period: '2026 Q3' },
+              { id: 3, name: 'TRA-0429｜Wood Chipper', period: '2026 Q3' },
+              { id: 59, name: 'TSA-0512', period: '2026 Q3' }
+            ]
+          }
+        });
+      }
+      if (url === '/api/campaigns/2/products') {
+        return Promise.resolve({
+          data: { data: [{ id: 1, role: 'hero', product: { sku: 'TMB-1401', name: '48-inch PTO Finish Mower' } }] }
+        });
+      }
+      return Promise.resolve({ data: { data: [] } });
+    });
+  }
+
+  async function openPoolModalForAlice() {
+    render(<Customers />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    const buttons = screen.getAllByRole('button', { name: '加入项目候选池' });
+    // antd 固定列会克隆一份 pointer-events:none 的按钮，fireEvent 绕过该限制
+    fireEvent.click(buttons[buttons.length - 1]);
+    expect(await screen.findByText('加入项目候选池（1 个 KOL）')).toBeInTheDocument();
+  }
+
+  async function selectTmbCampaign() {
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getAllByRole('combobox')[0]);
+    await userEvent.click(await screen.findByText('TMB-1401｜Finishing Mower'));
+  }
+
+  test('行内按钮打开弹窗，选择项目后显示 SKU、产品名称与项目周期', async () => {
+    mockWithCampaigns();
+    await openPoolModalForAlice();
+    await selectTmbCampaign();
+    expect(await screen.findByText('TMB-1401')).toBeInTheDocument();
+    expect(screen.getByText('48-inch PTO Finish Mower')).toBeInTheDocument();
+    expect(screen.getByText('2026 Q3')).toBeInTheDocument();
+    expect(screen.getByText('合作平台（可选）')).toBeInTheDocument();
+    expect(screen.getByText('优先级（可选）')).toBeInTheDocument();
+    expect(screen.getByText('推荐理由/备注（可选）')).toBeInTheDocument();
+  });
+
+  test('提交后调用 candidate-pool 接口并提示成功', async () => {
+    mockWithCampaigns();
+    axios.post.mockResolvedValue({
+      data: { success: true, data: { id: 501 }, message: '已加入项目候选池', warning: null }
+    });
+    await openPoolModalForAlice();
+    await selectTmbCampaign();
+    await userEvent.click(screen.getByRole('button', { name: '加入候选池' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/candidate-pool', expect.objectContaining({
+      campaign_id: 2,
+      priority_level: 't2'
+    })));
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith('已将 1 个 KOL 加入项目候选池'));
+    expect(message.error).not.toHaveBeenCalled();
+  });
+
+  test('重复加入同一项目显示明确提示', async () => {
+    mockWithCampaigns();
+    axios.post.mockResolvedValue({
+      data: { success: true, duplicate: true, data: { id: 88 }, message: '该 KOL 已在此项目候选池中' }
+    });
+    await openPoolModalForAlice();
+    await selectTmbCampaign();
+    await userEvent.click(screen.getByRole('button', { name: '加入候选池' }));
+    await waitFor(() => expect(message.warning).toHaveBeenCalledWith('1 个 KOL 已在此项目候选池中'));
+    expect(message.success).not.toHaveBeenCalled();
+  });
+
+  test('KOL 缺少主平台主页时显示醒目警告', async () => {
+    mockWithCampaigns();
+    axios.post.mockResolvedValue({
+      data: {
+        success: true,
+        data: { id: 501 },
+        message: '已加入项目候选池',
+        warning: '该 KOL 尚未填写主平台主页，飞书中的主页和粉丝数据将为空。'
+      }
+    });
+    await openPoolModalForAlice();
+    await selectTmbCampaign();
+    await userEvent.click(screen.getByRole('button', { name: '加入候选池' }));
+    await waitFor(() => expect(message.warning).toHaveBeenCalledWith('该 KOL 尚未填写主平台主页，飞书中的主页和粉丝数据将为空。'));
+  });
 });

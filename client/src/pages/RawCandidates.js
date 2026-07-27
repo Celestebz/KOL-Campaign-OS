@@ -17,7 +17,7 @@ const statusOptions = [
   { value: 'pending', label: '待审核' },
   { value: 'manual_review', label: '人工审核' },
   { value: 'new', label: '待审核（旧）' },
-  { value: 'approved', label: '已通过' },
+  { value: 'approved', label: '已加入项目候选池' },
   { value: 'duplicate', label: '重复' },
   { value: 'risk_review', label: '历史风险' },
   { value: 'ignored', label: '已忽略' },
@@ -419,7 +419,7 @@ const RawCandidates = () => {
       message.success('已加入 KOL 管理和当前项目子表');
       fetchCandidates();
     } catch (error) {
-      message.error(error.response?.data?.error || '通过候选失败');
+      message.error(error.response?.data?.error || '加入项目候选池失败');
       fetchCandidates();
     }
   };
@@ -591,7 +591,7 @@ const RawCandidates = () => {
       render: (_, record) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />} onClick={() => setDetail(record)}>详情</Button>
-          <Button size="small" type="primary" icon={<CheckOutlined />} disabled={['approved', 'duplicate'].includes(record.status) || (!record.strategy_id && !selectedStrategy)} onClick={() => approveOne(record)}>通过</Button>
+          <Button size="small" type="primary" icon={<CheckOutlined />} disabled={['approved', 'duplicate'].includes(record.status) || (!record.strategy_id && !selectedStrategy)} onClick={() => approveOne(record)}>加入候选池</Button>
           <Button size="small" icon={<StopOutlined />} disabled={record.status === 'ignored'} onClick={() => ignoreOne(record)}>忽略本项目</Button>
           <Button size="small" danger onClick={() => openGlobalRiskModal(record)}>标记不合作</Button>
         </Space>
@@ -608,7 +608,7 @@ const RawCandidates = () => {
     <div>
       <div className="page-header">
         <h1 className="page-title">KOL 寻找</h1>
-        <p className="page-subtitle">这里承接搜索找到的候选 KOL，人工通过后进入 KOL 管理和当前项目子表。</p>
+        <p className="page-subtitle">这里保留 Finder 找到的原始候选；人工确认后进入项目候选池，不代表已经确认合作。</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
@@ -709,7 +709,7 @@ const RawCandidates = () => {
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <span>已选 {selectedRowKeys.length} 个候选</span>
-          <Button icon={<CheckOutlined />} disabled={!selectedRowKeys.length || !selectedStrategy} onClick={batchApprove}>批量通过</Button>
+          <Button icon={<CheckOutlined />} disabled={!selectedRowKeys.length || !selectedStrategy} onClick={batchApprove}>批量加入候选池</Button>
           <Button icon={<StopOutlined />} disabled={!selectedRowKeys.length} onClick={batchIgnore}>批量忽略本项目</Button>
           <Popconfirm title="确定删除选中的候选？" onConfirm={batchDelete}>
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>

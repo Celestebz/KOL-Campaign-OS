@@ -95,6 +95,7 @@ function App() {
     '/campaigns': 'project',
     '/strategy': 'project',
     '/finder': 'project',
+    '/candidate-pool': 'project',
     '/campaign-kols': 'project',
     '/emails': 'project',
     '/products': 'library',
@@ -108,7 +109,7 @@ function App() {
   );
   const menuPathKeys = new Set(['/', ...Object.keys(pathToGroup)]);
   // /strategy 已并入「KOL 寻找」入口（页面内 Tab 切换），菜单选中态归并到 /finder。
-  const selectedPath = location.pathname === '/strategy' ? '/finder' : location.pathname;
+  const selectedPath = ['/strategy', '/candidate-pool'].includes(location.pathname) ? '/finder' : location.pathname;
   const selectedKey = menuPathKeys.has(selectedPath)
     ? selectedPath
     : (location.pathname.startsWith('/campaigns/') ? '/campaigns' : null);
@@ -178,6 +179,7 @@ function App() {
             <Route path="/products" element={<Products />} />
             <Route path="/strategy" element={<FinderTabs activeKey="strategy"><KolStrategy /></FinderTabs>} />
             <Route path="/finder" element={<FinderTabs activeKey="finder"><RawCandidates /></FinderTabs>} />
+            <Route path="/candidate-pool" element={<FinderTabs activeKey="candidate"><CampaignKols view="candidate" /></FinderTabs>} />
             <Route path="/customers" element={<Customers />} />
             <Route path="/campaign-kols" element={<CampaignKols />} />
             <Route path="/emails" element={<Emails />} />

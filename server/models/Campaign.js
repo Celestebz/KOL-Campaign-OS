@@ -4,6 +4,9 @@ module.exports = (sequelize, DataTypes) => {
     name: { type: DataTypes.STRING(255), allowNull: false },
     brand: DataTypes.STRING(255),
     product: DataTypes.STRING(255),
+    campaign_type: { type: DataTypes.STRING(30), allowNull: false, defaultValue: 'active_project' },
+    status: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'active' },
+    period: DataTypes.STRING(50),
     brand_keywords: DataTypes.TEXT,
     purchase_keywords: DataTypes.TEXT,
     negative_keywords: DataTypes.TEXT

@@ -589,7 +589,7 @@ test('execution-stage rows push to the tracking table and mark the old pool reco
   assert.equal(poolCalls.length, 1);
   assert.equal(poolCalls[0].options.method, 'PUT');
   assert.ok(poolCalls[0].url.includes('/records/rec_pool_1'));
-  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 状态: '已确定' });
+  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 状态: '已转项目跟进' });
 });
 
 test('execution-stage rows fail with a clear error when the campaign has no tracking table mapping', async () => {
@@ -640,4 +640,154 @@ test('candidate pool schema declares the follow-up note field; outreach status f
       assert.ok(optionNames.includes(name), `外联状态 missing option ${name}`);
     }
   }
+});
+
+const stageConfig = {
+  campaign_subtable_map: { 3: 'tbl_pool_3' },
+  campaign_tracking_map: { 3: 'tbl_execution' }
+};
+
+test('campaignKolTargetTableId routes by pipeline_stage, not by legacy project_status', () => {
+  const { campaignKolTargetTableId } = require('./sync');
+  // Candidate-stage rows must stay in the pool even when an old execution-like
+  // project_status survived from before the pipeline split.
+  assert.equal(campaignKolTargetTableId(stageConfig, {
+    campaign_id: 3, pipeline_stage: 'candidate', project_status: 'shipped'
+  }), 'tbl_pool_3');
+  assert.equal(campaignKolTargetTableId(stageConfig, {
+    campaign_id: 3, pipeline_stage: 'candidate', project_status: 'published'
+  }), 'tbl_pool_3');
+  // Confirmed rows always go to the tracking table, whatever project_status says.
+  assert.equal(campaignKolTargetTableId(stageConfig, {
+    campaign_id: 3, pipeline_stage: 'confirmed', project_status: 'pending_confirmation'
+  }), 'tbl_execution');
+  assert.equal(campaignKolTargetTableId(stageConfig, {
+    campaign_id: 3, pipeline_stage: 'confirmed', project_status: 'pending_shipping'
+  }), 'tbl_execution');
+  // Rows without pipeline_stage keep the legacy execution-status fallback.
+  assert.equal(campaignKolTargetTableId(stageConfig, {
+    campaign_id: 3, project_status: 'shipped'
+  }), 'tbl_execution');
+  assert.equal(campaignKolTargetTableId(stageConfig, {
+    campaign_id: 3, project_status: 'pending_confirmation'
+  }), 'tbl_pool_3');
+});
+
+test('candidate-stage row with an execution-looking status still pushes to the pool table', async () => {
+  const { response, calls } = await runCampaignKolPush(
+    [buildCampaignKolRow({ pipeline_stage: 'candidate', project_status: 'shipped' })],
+    { configRow: poolFeishuConfigRow }
+  );
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+  assert.equal(recordCallsTo(calls, 'tbl_pool_3').length, 1);
+  assert.equal(recordCallsTo(calls, 'tbl_execution').length, 0);
+});
+
+test('confirmed push keeps candidate and tracking record ids in separate columns', async () => {
+  const { response, calls, writes } = await runCampaignKolPush(
+    [buildCampaignKolRow({
+      pipeline_stage: 'confirmed',
+      project_status: 'pending_shipping',
+      feishu_record_id: 'rec_legacy',
+      candidate_feishu_record_id: 'rec_candidate_1',
+      tracking_feishu_record_id: null
+    })],
+    { configRow: poolFeishuConfigRow }
+  );
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+
+  // A new record is created in the tracking table, distinct from the pool record.
+  const trackingCalls = recordCallsTo(calls, 'tbl_execution');
+  assert.equal(trackingCalls.length, 1);
+  assert.equal(trackingCalls[0].options.method, 'POST');
+  const trackingRecordId = response.payload.data.results[0].record_id;
+  assert.ok(trackingRecordId);
+  assert.notEqual(trackingRecordId, 'rec_candidate_1');
+
+  // The old pool record is marked via candidate_feishu_record_id, not the legacy id.
+  const poolCalls = recordCallsTo(calls, 'tbl_pool_3');
+  assert.equal(poolCalls.length, 1);
+  assert.equal(poolCalls[0].options.method, 'PUT');
+  assert.ok(poolCalls[0].url.includes('/records/rec_candidate_1'));
+  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 状态: '已转项目跟进' });
+
+  // The tracking write must not overwrite candidate_feishu_record_id.
+  const trackingWrite = writes.find((write) => write.sql.includes('tracking_feishu_record_id = ?'));
+  assert.ok(trackingWrite, 'expected an UPDATE writing tracking_feishu_record_id');
+  assert.ok(!trackingWrite.sql.includes('candidate_feishu_record_id'),
+    'tracking sync must not overwrite candidate_feishu_record_id');
+  assert.equal(trackingWrite.params[0], trackingRecordId);
+});
+
+test('repeat confirmed sync updates the tracking record via tracking_feishu_record_id', async () => {
+  const { response, calls } = await runCampaignKolPush(
+    [buildCampaignKolRow({
+      pipeline_stage: 'confirmed',
+      project_status: 'shipped',
+      feishu_record_id: 'rec_legacy',
+      candidate_feishu_record_id: 'rec_candidate_1',
+      tracking_feishu_record_id: 'rec_tracking_1'
+    })],
+    {
+      configRow: poolFeishuConfigRow,
+      recordHandler: async (url, options) => {
+        if (options.method === 'PUT' && url.includes('/records/rec_tracking_1')) {
+          return { ok: true, text: async () => JSON.stringify({ code: 0, data: { record: { record_id: 'rec_tracking_1' } } }) };
+        }
+        return { ok: true, text: async () => JSON.stringify({ code: 0, data: { record: { record_id: 'rec_created' } } }) };
+      }
+    }
+  );
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+
+  const trackingCalls = recordCallsTo(calls, 'tbl_execution');
+  assert.equal(trackingCalls.length, 1);
+  assert.equal(trackingCalls[0].options.method, 'PUT');
+  assert.ok(trackingCalls[0].url.includes('/records/rec_tracking_1'));
+  assert.equal(response.payload.data.results[0].record_id, 'rec_tracking_1');
+});
+
+test('historical cooperation rows are never pushed to the candidate pool', async () => {
+  const { response, calls } = await runCampaignKolPush(
+    [buildCampaignKolRow({ pipeline_stage: 'historical', project_status: 'published' })],
+    { configRow: poolFeishuConfigRow }
+  );
+  assert.equal(response.payload.data.failed_count, 1);
+  assert.ok(response.payload.data.results[0].error.includes('历史合作记录不同步飞书候选池'));
+  assert.equal(recordCallsTo(calls, 'tbl_pool_3').length, 0);
+  assert.equal(recordCallsTo(calls, 'tbl_execution').length, 0);
+});
+
+test('all active projects share one unified candidate pool table', async () => {
+  const unifiedConfigRow = {
+    ...poolFeishuConfigRow,
+    extra_config: JSON.stringify({
+      app_id: 'cli_test',
+      app_token: 'base-token',
+      kol_table_id: 'tbl_kol_master',
+      campaign_subtable_map: { 2: 'tblhk2nDkERA6jM4', 3: 'tblhk2nDkERA6jM4', 59: 'tblhk2nDkERA6jM4' },
+      campaign_tracking_map: { 2: 'tbl_execution' }
+    })
+  };
+  const { campaignKolTargetTableId } = require('./sync');
+  const config = {
+    campaign_subtable_map: { 2: 'tblhk2nDkERA6jM4', 3: 'tblhk2nDkERA6jM4', 59: 'tblhk2nDkERA6jM4' },
+    campaign_tracking_map: {}
+  };
+  for (const campaignId of [2, 3, 59]) {
+    assert.equal(
+      campaignKolTargetTableId(config, { campaign_id: campaignId, pipeline_stage: 'candidate', project_status: 'pending_confirmation' }),
+      'tblhk2nDkERA6jM4'
+    );
+  }
+
+  // TSA-0512（campaign 59）候选写入同一张表，合作SKU 来自正式产品关系
+  const { response, calls } = await runCampaignKolPush(
+    [buildCampaignKolRow({ campaign_id: 59, pipeline_stage: 'candidate', project_status: 'pending_confirmation', product_sku: 'TSA-0512' })],
+    { configRow: unifiedConfigRow }
+  );
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+  const poolCalls = calls.filter((call) => call.url.includes('/tables/tblhk2nDkERA6jM4/records'));
+  assert.equal(poolCalls.length, 1);
+  assert.equal(JSON.parse(poolCalls[0].options.body).fields['合作SKU'], 'TSA-0512');
 });

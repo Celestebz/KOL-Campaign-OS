@@ -113,3 +113,6 @@ server/submit_candidates.js
 
 # Superpowers dev workflow state (brainstorm sessions, SDD working docs)
 .superpowers/
+
+# Local database backups
+backups/

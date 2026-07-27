@@ -10,6 +10,9 @@ module.exports = (sequelize, DataTypes) => {
     target_platform: DataTypes.STRING(100),
     source: DataTypes.STRING(255),
 
+    pipeline_stage: { type: DataTypes.STRING(30), allowNull: false, defaultValue: 'candidate' },
+    confirmed_at: DataTypes.DATE,
+
     project_status: { type: DataTypes.STRING(50), defaultValue: 'pending_confirmation' },
     priority_level: { type: DataTypes.STRING(50), defaultValue: 't2' },
     candidate_priority_score: DataTypes.INTEGER,
@@ -17,7 +20,7 @@ module.exports = (sequelize, DataTypes) => {
     quoted_fee: DataTypes.STRING(255),
     final_fee: DataTypes.STRING(255),
     currency: DataTypes.STRING(50),
-    cooperation_type: { type: DataTypes.STRING(50), defaultValue: 'paid_product' },
+    cooperation_type: { type: DataTypes.STRING(50), defaultValue: 'product_exchange' },
     deliverables: DataTypes.TEXT,
     shipping_address: DataTypes.TEXT,
     expected_publish_at: DataTypes.DATE,
@@ -71,6 +74,8 @@ module.exports = (sequelize, DataTypes) => {
     tiktok_video_link: DataTypes.STRING(1024),
     notes: DataTypes.TEXT,
     feishu_record_id: DataTypes.STRING(255),
+    candidate_feishu_record_id: DataTypes.STRING(255),
+    tracking_feishu_record_id: DataTypes.STRING(255),
     sync_status: { type: DataTypes.STRING(50), defaultValue: 'sync_pending' },
     last_synced_at: DataTypes.DATE
   }, {

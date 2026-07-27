@@ -83,12 +83,19 @@ function validateCampaignProductValues(role, status) {
 
 router.get('/', async (req, res) => {
   try {
+    // 默认只返回当前业务项目（active_project + active）；历史归档与系统默认
+    // 项目通过 ?scope=historical / ?scope=all 显式查询。
+    const scope = ['active', 'historical', 'all'].includes(req.query.scope) ? req.query.scope : 'active';
+    let where = "c.campaign_type = 'active_project' AND c.status = 'active'";
+    if (scope === 'historical') where = "c.campaign_type = 'historical_archive'";
+    if (scope === 'all') where = '1=1';
     const rows = await dbOperations.query(`
       SELECT c.*,
         COUNT(cp.id) AS associated_product_count,
         COALESCE(SUM(CASE WHEN cp.status = 'active' THEN 1 ELSE 0 END), 0) AS active_product_count
       FROM campaigns c
       LEFT JOIN campaign_products cp ON cp.campaign_id = c.id
+      WHERE ${where}
       GROUP BY c.id
       ORDER BY CASE WHEN c.id = 1 THEN 0 ELSE 1 END, c.created_at DESC, c.id DESC
     `);
@@ -189,7 +196,9 @@ router.get('/:id/detail', async (req, res) => {
       `SELECT COUNT(*) AS kols_total,
          COALESCE(SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END), 0) AS contacted,
          COALESCE(SUM(CASE WHEN outreach_status = 'replied' THEN 1 ELSE 0 END), 0) AS replied,
-         COALESCE(SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END), 0) AS candidates
+         COALESCE(SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END), 0) AS candidates,
+         COALESCE(SUM(CASE WHEN pipeline_stage = 'candidate' THEN 1 ELSE 0 END), 0) AS kols_candidate,
+         COALESCE(SUM(CASE WHEN pipeline_stage = 'confirmed' THEN 1 ELSE 0 END), 0) AS kols_confirmed
        FROM campaign_kols WHERE campaign_id = ?`,
       [campaignId]
     );
@@ -232,6 +241,8 @@ router.get('/:id/detail', async (req, res) => {
     const runsFailed = toCount(exceptionRow?.runs_failed);
     const summary = {
       kols_total: toCount(kolAgg?.kols_total),
+      kols_candidate: toCount(kolAgg?.kols_candidate),
+      kols_confirmed: toCount(kolAgg?.kols_confirmed),
       by_project_status: byProjectStatus,
       contacted: toCount(kolAgg?.contacted),
       replied: toCount(kolAgg?.replied),

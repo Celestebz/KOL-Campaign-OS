@@ -158,7 +158,7 @@ const CANDIDATE_POOL_FIELD_SCHEMA = [
   { field_name: '国家地区', type: 1 },
   { field_name: '邮箱', type: 1, ui_type: 'Email' },
   { field_name: '主平台主页', type: 15 },
-  { field_name: '状态', type: 3, property: { options: [{ name: '候选' }, { name: '已联络' }, { name: '已回复' }, { name: '没回复' }, { name: '沟通中' }, { name: '已确定' }, { name: '不合适' }] } },
+  { field_name: '状态', type: 3, property: { options: [{ name: '候选' }, { name: '已联络' }, { name: '已回复' }, { name: '没回复' }, { name: '沟通中' }, { name: '已确定' }, { name: '已转项目跟进' }, { name: '不合适' }] } },
   { field_name: '合作SKU', type: 1 },
   { field_name: '合作平台', type: 4, property: { options: [{ name: 'YouTube' }, { name: 'Instagram' }, { name: 'TikTok' }, { name: 'Facebook' }, { name: 'X' }] } },
   { field_name: '粉丝数', type: 2 },
@@ -1064,7 +1064,10 @@ function isExecutionStatus(status) {
 // Execution-stage rows go to the campaign's project tracking table; earlier
 // stages go to the campaign's candidate pool subtable.
 function campaignKolTargetTableId(config, row) {
-  if (isExecutionStatus(row.project_status)) return getCampaignTrackingTableId(config, row);
+  const confirmed = row.pipeline_stage
+    ? compact(row.pipeline_stage) === 'confirmed'
+    : isExecutionStatus(row.project_status);
+  if (confirmed) return getCampaignTrackingTableId(config, row);
   return getCampaignKolTableId(config, row);
 }
 
@@ -1080,7 +1083,7 @@ async function markCandidatePoolConfirmed(config, token, tableId, recordId) {
   await fetchJson(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ fields: { 状态: '已确定' } })
+    body: JSON.stringify({ fields: { 状态: '已转项目跟进' } })
   });
 }
 
@@ -1180,7 +1183,7 @@ async function syncCampaignKols(config, token, ids = []) {
     sql += ` AND ck.id IN (${ids.map(() => '?').join(',')})`;
     params.push(...ids);
   } else {
-    sql += " AND (ck.sync_status IS NULL OR ck.sync_status IN ('sync_pending', 'sync_failed'))";
+    sql += " AND (ck.sync_status IS NULL OR ck.sync_status IN ('sync_pending', 'sync_failed')) AND ck.pipeline_stage <> 'historical'";
   }
   const rows = await dbOperations.query(sql, params);
   const results = [];
@@ -1193,33 +1196,55 @@ async function syncCampaignKols(config, token, ids = []) {
 
   for (const row of rows) {
     try {
+      // 防御：显式指定 ids 时历史合作记录也禁止同步候选池。
+      if (compact(row.pipeline_stage) === 'historical') {
+        throw new Error('历史合作记录不同步飞书候选池');
+      }
       const tableId = campaignKolTargetTableId(config, row);
-      if (!tableId) throw (isExecutionStatus(row.project_status) ? missingCampaignTrackingTableError(row) : missingCampaignSubtableError(row));
+      const confirmed = row.pipeline_stage
+        ? compact(row.pipeline_stage) === 'confirmed'
+        : isExecutionStatus(row.project_status);
+      if (!tableId) throw (confirmed ? missingCampaignTrackingTableError(row) : missingCampaignSubtableError(row));
       const targetIsPool = isCandidatePoolTable(config, tableId);
+      // Pool rows update via candidate_feishu_record_id; tracking rows via
+      // tracking_feishu_record_id. feishu_record_id is only a fallback for
+      // legacy rows where it is not yet known to belong to the pool table.
+      const existingRecordId = targetIsPool
+        ? (row.candidate_feishu_record_id || row.feishu_record_id)
+        : (row.tracking_feishu_record_id || (row.candidate_feishu_record_id ? null : row.feishu_record_id));
       const recordId = await pushBitableRecord(
         config,
         token,
         tableId,
-        row.feishu_record_id,
+        existingRecordId,
         targetIsPool ? candidatePoolKolFields(row) : campaignKolFields(row)
       );
       // The row moved from the candidate pool to the execution table: mark the
       // old pool record as confirmed (best effort, the pool record may be gone).
-      if (!targetIsPool && row.feishu_record_id && recordId !== row.feishu_record_id) {
+      const candidateRecordId = row.candidate_feishu_record_id || row.feishu_record_id;
+      if (!targetIsPool && candidateRecordId) {
         const poolTableId = getCampaignKolTableId(config, row);
         if (poolTableId && isCandidatePoolTable(config, poolTableId)) {
           try {
-            await markCandidatePoolConfirmed(config, token, poolTableId, row.feishu_record_id);
+            await markCandidatePoolConfirmed(config, token, poolTableId, candidateRecordId);
           } catch (error) {
             // best effort
           }
         }
       }
-      await dbOperations.run(
-        `UPDATE campaign_kols SET feishu_record_id = ?, sync_status = ?, last_synced_at = CURRENT_TIMESTAMP,
-         updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        [recordId, 'synced', row.id]
-      );
+      if (targetIsPool) {
+        await dbOperations.run(
+          `UPDATE campaign_kols SET feishu_record_id = ?, candidate_feishu_record_id = ?,
+           sync_status = ?, last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [recordId, recordId, 'synced', row.id]
+        );
+      } else {
+        await dbOperations.run(
+          `UPDATE campaign_kols SET tracking_feishu_record_id = ?, sync_status = ?,
+           last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [recordId, 'synced', row.id]
+        );
+      }
       results.push({ type: 'campaign_kol', id: row.id, success: true, record_id: recordId });
     } catch (error) {
       await dbOperations.run('UPDATE campaign_kols SET sync_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['sync_failed', row.id]);

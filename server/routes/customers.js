@@ -724,6 +724,120 @@ router.post('/', async (req, res) => {
   }
 });
 
+router.post('/:id/candidate-pool', async (req, res) => {
+  try {
+    const customerId = Number(req.params.id);
+    if (!Number.isSafeInteger(customerId) || customerId <= 0) {
+      return res.status(400).json({ success: false, error: 'KOL id must be a positive integer' });
+    }
+    const campaignId = Number(req.body.campaign_id);
+    if (!Number.isSafeInteger(campaignId) || campaignId <= 0) {
+      return res.status(400).json({ success: false, error: 'campaign_id 为必填字段' });
+    }
+
+    const customer = await dbOperations.get('SELECT * FROM customers WHERE id = ?', [customerId]);
+    if (!customer) return res.status(404).json({ success: false, error: 'KOL not found' });
+
+    const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [campaignId]);
+    if (!campaign) return res.status(404).json({ success: false, error: '项目不存在' });
+    if (campaign.campaign_type !== 'active_project' || campaign.status !== 'active') {
+      return res.status(400).json({ success: false, error: '只有进行中的当前项目才能加入候选池' });
+    }
+
+    // 防重复：同一个 KOL 在同一个 Campaign 下只能有一条记录
+    const existing = await dbOperations.get(
+      'SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?',
+      [campaignId, customerId]
+    );
+    if (existing) {
+      return res.json({ success: true, data: existing, message: '该 KOL 已在此项目候选池中', duplicate: true });
+    }
+
+    const { PRIORITY_LEVELS, normalizePriorityLevel } = require('../utils/campaignKolEnums');
+    const priority = normalizePriorityLevel(req.body.priority_level) || 't2';
+    if (!PRIORITY_LEVELS.has(priority)) {
+      return res.status(400).json({ success: false, error: 'Invalid priority_level' });
+    }
+    const allowedPlatforms = new Set(['youtube', 'instagram', 'tiktok', 'facebook', 'x']);
+    const platforms = (Array.isArray(req.body.cooperation_platforms) ? req.body.cooperation_platforms : [])
+      .map((item) => String(item).toLowerCase())
+      .filter((item) => allowedPlatforms.has(item));
+    const notes = String(req.body.notes || '').trim();
+
+    let result;
+    try {
+      result = await dbOperations.run(
+        `INSERT INTO campaign_kols
+         (campaign_id, customer_id, pipeline_stage, project_status, source, priority_level,
+          cooperation_platforms, notes, project_notes,
+          kol_name_snapshot, contact_name_snapshot, email_snapshot, country_region_snapshot,
+          youtube_url_snapshot, youtube_followers_snapshot, instagram_url_snapshot, instagram_followers_snapshot,
+          tiktok_url_snapshot, tiktok_followers_snapshot,
+          posts_30d_snapshot, avg_views_30d_snapshot, median_views_30d_snapshot,
+          engagement_rate_30d_snapshot, youtube_snapshot_updated_at, sync_status)
+         VALUES (?, ?, 'candidate', 'pending_confirmation', 'kol_master_manual', ?, ?, ?, ?,
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sync_pending')`,
+        [
+          campaignId,
+          customerId,
+          priority,
+          JSON.stringify(platforms),
+          notes,
+          notes,
+          customer.name || '',
+          customer.contact_name || '',
+          customer.email || '',
+          customer.country_region || '',
+          customer.youtube_url || '',
+          customer.youtube_followers || '',
+          customer.instagram_url || '',
+          customer.instagram_followers || '',
+          customer.tiktok_url || '',
+          customer.tiktok_followers || '',
+          customer.youtube_posts_30d,
+          customer.youtube_avg_views_30d,
+          customer.youtube_median_views_30d,
+          customer.youtube_engagement_rate_30d,
+          customer.youtube_snapshot_updated_at
+        ]
+      );
+    } catch (error) {
+      // 并发下撞唯一索引：按已存在处理
+      const code = error?.original?.code || error?.parent?.code || error?.code;
+      if (code === 'ER_DUP_ENTRY' || String(error.message).includes('Duplicate entry')) {
+        const dup = await dbOperations.get(
+          'SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?',
+          [campaignId, customerId]
+        );
+        return res.json({ success: true, data: dup, message: '该 KOL 已在此项目候选池中', duplicate: true });
+      }
+      throw error;
+    }
+
+    await dbOperations.run(
+      "UPDATE customers SET sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [customerId]
+    );
+    const created = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [result.id]);
+
+    const accounts = await dbOperations.query(
+      'SELECT profile_url FROM kol_platform_accounts WHERE customer_id = ?',
+      [customerId]
+    );
+    const hasProfile = accounts.some((account) => account.profile_url)
+      || Boolean(customer.youtube_url || customer.instagram_url || customer.tiktok_url);
+
+    res.json({
+      success: true,
+      data: created,
+      message: '已加入项目候选池',
+      warning: hasProfile ? null : '该 KOL 尚未填写主平台主页，飞书中的主页和粉丝数据将为空。'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post('/:id/youtube-snapshot', async (req, res) => {
   try {
     const data = await runYoutubeIntakeSnapshot(Number(req.params.id));

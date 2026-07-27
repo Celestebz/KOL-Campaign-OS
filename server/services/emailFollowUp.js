@@ -11,25 +11,30 @@ const SCAN_INTERVAL_MINUTES = Number(process.env.EMAIL_FOLLOWUP_INTERVAL_MINUTES
 // 返回 { drafted, giveUps }，便于测试与日志核对。
 async function scanOnce() {
   const candidates = await dbOperations.query(
-    `SELECT er.campaign_id, er.customer_id, ck.follow_up_count, ck.last_outreach_at
-     FROM email_records er
-     JOIN campaign_kols ck ON ck.campaign_id = er.campaign_id AND ck.customer_id = er.customer_id
-     WHERE er.status = 'success'
-       AND ck.last_outreach_at IS NOT NULL
+    `SELECT ck.campaign_id, ck.customer_id,
+       MAX(ck.follow_up_count) AS follow_up_count,
+       MAX(ck.last_outreach_at) AS last_outreach_at
+     FROM campaign_kols ck
+     WHERE ck.last_outreach_at IS NOT NULL
        AND ck.last_outreach_at <= DATE_SUB(NOW(), INTERVAL ? HOUR)
        AND ck.last_outreach_at > DATE_SUB(NOW(), INTERVAL ? DAY)
        AND COALESCE(ck.follow_up_count, 0) < ?
+       AND EXISTS (
+         SELECT 1 FROM email_records er
+         WHERE er.campaign_id = ck.campaign_id AND er.customer_id = ck.customer_id
+           AND er.status = 'success'
+       )
        AND NOT EXISTS (
          SELECT 1 FROM email_replies r
-         WHERE r.campaign_id = er.campaign_id AND r.customer_id = er.customer_id
+         WHERE r.campaign_id = ck.campaign_id AND r.customer_id = ck.customer_id
            AND r.confirm_status = 'confirmed'
        )
        AND NOT EXISTS (
          SELECT 1 FROM email_drafts d
-         WHERE d.campaign_id = er.campaign_id AND d.customer_id = er.customer_id
+         WHERE d.campaign_id = ck.campaign_id AND d.customer_id = ck.customer_id
            AND d.kind = 'follow_up' AND d.status IN ('pending_review', 'approved')
        )
-     GROUP BY er.campaign_id, er.customer_id`,
+     GROUP BY ck.campaign_id, ck.customer_id`,
     [FOLLOW_UP_AFTER_HOURS, GIVE_UP_AFTER_DAYS, MAX_FOLLOW_UPS]
   );
 
@@ -54,18 +59,21 @@ async function scanOnce() {
 
   // ≥5 天未回复：不再自动起草，标记"建议转下一批"（P1 仅日志，UI/回写后续做）
   const giveUps = await dbOperations.query(
-    `SELECT er.campaign_id, er.customer_id, ck.last_outreach_at
-     FROM email_records er
-     JOIN campaign_kols ck ON ck.campaign_id = er.campaign_id AND ck.customer_id = er.customer_id
-     WHERE er.status = 'success'
-       AND ck.last_outreach_at IS NOT NULL
+    `SELECT ck.campaign_id, ck.customer_id, MAX(ck.last_outreach_at) AS last_outreach_at
+     FROM campaign_kols ck
+     WHERE ck.last_outreach_at IS NOT NULL
        AND ck.last_outreach_at <= DATE_SUB(NOW(), INTERVAL ? DAY)
+       AND EXISTS (
+         SELECT 1 FROM email_records er
+         WHERE er.campaign_id = ck.campaign_id AND er.customer_id = ck.customer_id
+           AND er.status = 'success'
+       )
        AND NOT EXISTS (
          SELECT 1 FROM email_replies r
-         WHERE r.campaign_id = er.campaign_id AND r.customer_id = er.customer_id
+         WHERE r.campaign_id = ck.campaign_id AND r.customer_id = ck.customer_id
            AND r.confirm_status = 'confirmed'
        )
-     GROUP BY er.campaign_id, er.customer_id`,
+     GROUP BY ck.campaign_id, ck.customer_id`,
     [GIVE_UP_AFTER_DAYS]
   );
   for (const item of giveUps) {

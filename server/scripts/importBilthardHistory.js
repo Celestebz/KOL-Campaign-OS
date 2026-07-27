@@ -76,10 +76,10 @@ async function main() {
       const returned = /已返|已发布|可用/.test(statusText);
       const kolResult = await dbOperations.run(
         `INSERT INTO campaign_kols
-         (campaign_id, customer_id, target_platform, source, project_status, content_status, project_notes,
+         (campaign_id, customer_id, target_platform, source, pipeline_stage, project_status, content_status, project_notes,
           internal_notes, best_evidence_url, youtube_video_link, sync_status, created_at, updated_at)
-         VALUES (?, ?, 'youtube', ?, ?, ?, ?, ?, ?, ?, 'sync_pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        [campaignResult.id, customer.id, source, returned ? 'published' : 'confirmed', returned ? 'published' : 'pending',
+         VALUES (?, ?, 'youtube', ?, 'candidate', 'pending_confirmation', ?, ?, ?, ?, ?, 'sync_pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [campaignResult.id, customer.id, source, returned ? 'published' : 'pending',
           review || null, `来源：BILTHARD 历史资料，第 ${index + 2} 行`, videoUrl, videoUrl]
       );
       for (const sku of skus) {

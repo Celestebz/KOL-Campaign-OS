@@ -1,6 +1,13 @@
 const express = require('express');
 const { dbOperations } = require('../database');
 const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
+const {
+  PROJECT_STATUSES,
+  PRIORITY_LEVELS,
+  PIPELINE_STAGES,
+  normalizeProjectStatus,
+  normalizePriorityLevel
+} = require('../utils/campaignKolEnums');
 
 const router = express.Router();
 
@@ -56,12 +63,6 @@ const EDITABLE_FIELDS = [
   'tracking_number',
   'cooperation_platforms'
 ];
-
-const PROJECT_STATUSES = new Set([
-  'pending_confirmation', 'pending_shipping', 'shipped', 'delivered',
-  'content_preparation', 'pending_publish', 'published', 'cancelled'
-]);
-const PRIORITY_LEVELS = new Set(['t1', 't2', 't3', 't4']);
 
 const CAMPAIGN_KOL_PRODUCT_STATUSES = {
   fit_status: new Set(['pending', 'approved', 'rejected']),
@@ -126,7 +127,7 @@ async function setBudgetApprovalStatus(id, status) {
 
 router.get('/', async (req, res) => {
   try {
-    const { campaign_id, status, sync_status, search } = req.query;
+    const { campaign_id, status, sync_status, search, pipeline_stage } = req.query;
     let sql = `
       SELECT ck.*, c.name as campaign_name, c.brand, c.product,
         (SELECT COUNT(*) FROM campaign_videos cv WHERE cv.campaign_kol_id = ck.id) published_video_count,
@@ -166,6 +167,10 @@ router.get('/', async (req, res) => {
     if (sync_status) {
       sql += ' AND ck.sync_status = ?';
       params.push(sync_status);
+    }
+    if (PIPELINE_STAGES.has(pipeline_stage)) {
+      sql += ' AND ck.pipeline_stage = ?';
+      params.push(pipeline_stage);
     }
     if (search) {
       sql += ` AND (
@@ -380,10 +385,10 @@ router.post('/', async (req, res) => {
        (campaign_id, customer_id, kol_name_snapshot, contact_name_snapshot,
         youtube_url_snapshot, youtube_followers_snapshot, instagram_url_snapshot, instagram_followers_snapshot,
         tiktok_url_snapshot, tiktok_followers_snapshot, email_snapshot, country_region_snapshot,
-        quoted_price, exchange_rate, price_rmb, project_status, owner, notes,
+        quoted_price, exchange_rate, price_rmb, pipeline_stage, project_status, owner, notes,
         posts_30d_snapshot, avg_views_30d_snapshot, median_views_30d_snapshot,
         engagement_rate_30d_snapshot, youtube_snapshot_updated_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         campaignId,
         customerId,
@@ -400,7 +405,7 @@ router.post('/', async (req, res) => {
         clean(req.body.quoted_price || customer.video_price),
         clean(req.body.exchange_rate || customer.exchange_rate),
         clean(req.body.price_rmb || customer.price_rmb),
-        clean(req.body.project_status) || 'pending_confirmation',
+        'candidate', 'pending_confirmation',
         clean(req.body.owner),
         clean(req.body.notes),
         customer.youtube_posts_30d,
@@ -428,13 +433,18 @@ router.patch('/:id', async (req, res) => {
     const updates = {};
     for (const field of EDITABLE_FIELDS) {
       if (req.body[field] !== undefined) {
-        if (field === 'project_status' && !PROJECT_STATUSES.has(req.body[field])) {
+        const value = field === 'project_status'
+          ? normalizeProjectStatus(req.body[field])
+          : field === 'priority_level'
+            ? normalizePriorityLevel(req.body[field])
+            : req.body[field];
+        if (field === 'project_status' && !PROJECT_STATUSES.has(value)) {
           return res.status(400).json({ success: false, error: 'Invalid project_status' });
         }
-        if (field === 'priority_level' && !PRIORITY_LEVELS.has(req.body[field])) {
+        if (field === 'priority_level' && !PRIORITY_LEVELS.has(value)) {
           return res.status(400).json({ success: false, error: 'Invalid priority_level' });
         }
-        updates[field] = JSON_FIELDS.has(field) ? normalizeJsonField(req.body[field]) : req.body[field];
+        updates[field] = JSON_FIELDS.has(field) ? normalizeJsonField(value) : value;
       }
     }
 
@@ -462,6 +472,37 @@ router.patch('/:id', async (req, res) => {
     await markCustomerSyncPending(row.customer_id);
     const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
     res.json({ success: true, data: updated, message: 'Campaign KOL updated' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/confirm-cooperation', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: 'Campaign KOL id must be a positive integer' });
+    }
+    const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+    if (!row) return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
+    if (row.pipeline_stage === 'confirmed') {
+      return res.json({ success: true, data: row, message: 'KOL cooperation already confirmed' });
+    }
+    if (row.pipeline_stage !== 'candidate') {
+      return res.status(409).json({ success: false, error: '只有项目候选可以确认合作；历史合作记录不能确认合作' });
+    }
+
+    await dbOperations.run(
+      `UPDATE campaign_kols
+       SET pipeline_stage = 'confirmed', project_status = 'pending_shipping',
+           confirmed_at = CURRENT_TIMESTAMP, sync_status = 'sync_pending',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [id]
+    );
+    await markCustomerSyncPending(row.customer_id);
+    const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+    res.json({ success: true, data: updated, message: 'KOL cooperation confirmed' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

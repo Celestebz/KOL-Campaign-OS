@@ -101,6 +101,8 @@ test('GET /:id/detail 空项目（无产品无策略无 KOL）不报错且全零
   assert.equal(data.strategy, null);
   assert.deepEqual(data.summary, {
     kols_total: 0,
+    kols_candidate: 0,
+    kols_confirmed: 0,
     by_project_status: {
       pending_confirmation: 0, pending_shipping: 0, shipped: 0, delivered: 0,
       content_preparation: 0, pending_publish: 0, published: 0, cancelled: 0
@@ -126,7 +128,7 @@ test('GET /:id/detail summary 各计数口径正确', async () => {
       product_description: 'desc', product_selling_points: '辣', product_status: 'active'
     }],
     strategy: { id: 1, status: 'ready', target_market: 'US', campaign_goal: 'g', product_context: 'c' },
-    kolAgg: { kols_total: 25, contacted: 3, replied: 1, candidates: 0 },
+    kolAgg: { kols_total: 25, contacted: 3, replied: 1, candidates: 0, kols_candidate: 20, kols_confirmed: 5 },
     statusRows: [
       { project_status: 'pending_confirmation', count: 24 },
       { project_status: 'published', count: 1 }
@@ -143,6 +145,8 @@ test('GET /:id/detail summary 各计数口径正确', async () => {
   assert.equal(data.products[0].product.sku, 'SKU-1');
   assert.equal(data.strategy.status, 'ready');
   assert.equal(data.summary.kols_total, 25);
+  assert.equal(data.summary.kols_candidate, 20);
+  assert.equal(data.summary.kols_confirmed, 5);
   assert.equal(data.summary.by_project_status.pending_confirmation, 24);
   assert.equal(data.summary.by_project_status.published, 1);
   assert.equal(data.summary.by_project_status.shipped, 0);
@@ -240,4 +244,31 @@ test('GET /:id/detail next_step 推导分支', async () => {
     finderRunning: 1
   }));
   assert.match(response.payload.data.next_step, /Finder 任务运行中/);
+});
+
+test('GET / 默认只返回进行中的当前项目，历史项目需显式 scope 查询', async () => {
+  const handler = findHandler(require('./campaigns'), 'get', '/');
+  const captured = [];
+  const db = {
+    query: async (sql) => { captured.push(String(sql)); return []; }
+  };
+
+  await withPatchedDb(db, async () => {
+    let response = await callHandler(handler, { query: {} });
+    assert.equal(response.statusCode, 200);
+    assert.match(captured[0], /c\.campaign_type = 'active_project' AND c\.status = 'active'/);
+
+    response = await callHandler(handler, { query: { scope: 'historical' } });
+    assert.equal(response.statusCode, 200);
+    assert.match(captured[1], /c\.campaign_type = 'historical_archive'/);
+    assert.doesNotMatch(captured[1], /active_project/);
+
+    response = await callHandler(handler, { query: { scope: 'all' } });
+    assert.equal(response.statusCode, 200);
+    assert.doesNotMatch(captured[2], /campaign_type =/);
+
+    response = await callHandler(handler, { query: { scope: 'bogus' } });
+    assert.equal(response.statusCode, 200);
+    assert.match(captured[3], /active_project/, 'unknown scope falls back to active projects');
+  });
 });

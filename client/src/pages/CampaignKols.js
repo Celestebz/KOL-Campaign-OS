@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber, List, message, Modal, Popconfirm, Progress, Select, Space, Spin, Table, Tag } from 'antd';
-import { DeleteOutlined, EditOutlined, MailOutlined, ReloadOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons';
+import { CheckOutlined, DeleteOutlined, EditOutlined, MailOutlined, ReloadOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { describeSyncResult } from './campaignKolSyncResult';
 import { getMainStatus, getSubStatusLabel, SUB_STATUS_LABELS } from './campaignKolStatus';
@@ -86,11 +86,23 @@ const parsePlatforms = (value, fallback = []) => {
   return values.map((item) => labels[String(item).toLowerCase()] || item).filter(Boolean);
 };
 
+export const normalizeLegacyProjectStatus = (value) => ({
+  confirmed: 'pending_shipping',
+  candidate: 'pending_confirmation'
+}[String(value || '').toLowerCase()] || value);
+
+export const normalizeLegacyPriority = (value) => ({
+  normal: 't2'
+}[String(value || '').toLowerCase()] || String(value || '').toLowerCase() || undefined);
+
+export const defaultCooperationType = (value) => value || 'product_exchange';
+
 const RUN_TERMINAL_STATUSES = ['success', 'partial_failed', 'failed'];
 const RUN_STATUS_LABEL = { running: '进行中', success: '已完成', partial_failed: '部分失败', failed: '失败' };
 const RUN_POLL_INTERVAL_MS = 5000;
 
-const CampaignKols = () => {
+const CampaignKols = ({ view = 'cooperation' }) => {
+  const isCandidatePool = view === 'candidate';
   const [rows, setRows] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -112,6 +124,8 @@ const CampaignKols = () => {
   const draftPollTimerRef = useRef(null);
   const [filters, setFilters] = useState({});
   const [editing, setEditing] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [confirmingId, setConfirmingId] = useState(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailRow, setDetailRow] = useState(null);
   const [masterDetail, setMasterDetail] = useState(null);
@@ -147,7 +161,9 @@ const CampaignKols = () => {
   const fetchRows = async () => {
     setLoading(true);
     try {
-      const res = await axios.get('/api/campaign-kols', { params: filters });
+      const res = await axios.get('/api/campaign-kols', {
+        params: { ...filters, pipeline_stage: isCandidatePool ? 'candidate' : 'confirmed' }
+      });
       setRows(res.data.data || []);
     } catch (error) {
       message.error(error.response?.data?.error || '获取项目 KOL 失败');
@@ -166,6 +182,9 @@ const CampaignKols = () => {
     values.currency = normalizeCurrency(values.currency);
     values.expected_publish_at = values.expected_publish_at ? String(values.expected_publish_at).slice(0, 10) : undefined;
     values.shipping_date = values.shipping_date ? String(values.shipping_date).slice(0, 10) : undefined;
+    values.project_status = normalizeLegacyProjectStatus(values.project_status);
+    values.priority_level = normalizeLegacyPriority(values.priority_level);
+    values.cooperation_type = defaultCooperationType(values.cooperation_type);
     values.cooperation_platforms = parsePlatforms(values.cooperation_platforms, [values.platform_account_platform].filter(Boolean));
     if (values.project_override && typeof values.project_override === 'object') {
       values.project_override = JSON.stringify(values.project_override, null, 2);
@@ -185,7 +204,33 @@ const CampaignKols = () => {
   useEffect(() => {
     fetchRows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.campaign_id, filters.status, filters.sync_status]);
+  }, [filters.campaign_id, filters.status, filters.sync_status, isCandidatePool]);
+
+  const confirmCooperation = async (record) => {
+    setConfirmingId(record.id);
+    try {
+      await axios.post(`/api/campaign-kols/${record.id}/confirm-cooperation`);
+      try {
+        const syncResponse = await axios.post('/api/sync/feishu/push', {
+          scope: 'campaign_kols', ids: [record.id]
+        });
+        const failed = syncResponse.data?.data?.failed_count || 0;
+        if (failed) {
+          const reason = syncResponse.data?.data?.results?.find((item) => !item.success)?.error;
+          message.warning(`已确认合作，但飞书项目跟进同步失败：${reason || '请稍后重试'}`);
+        } else {
+          message.success('已确认合作，并同步到飞书项目跟进表');
+        }
+      } catch (syncError) {
+        message.warning(`已确认合作，但飞书项目跟进同步失败：${syncError.response?.data?.error || syncError.message || '请稍后重试'}`);
+      }
+      fetchRows();
+    } catch (error) {
+      message.error(error.response?.data?.error || error.message || '确认合作失败');
+    } finally {
+      setConfirmingId(null);
+    }
+  };
 
   const openDetail = async (record) => {
     setDetailOpen(true);
@@ -212,20 +257,34 @@ const CampaignKols = () => {
   };
 
   const saveEdit = async () => {
-    const values = await form.validateFields();
-    const publishedVideoUrls = values.published_video_urls || '';
-    delete values.published_video_urls;
-    if (values.cooperation_type === 'product_exchange') {
-      values.final_fee = 0;
-      values.currency = null;
+    if (!editing || savingEdit) return;
+    setSavingEdit(true);
+    try {
+      const formValues = await form.validateFields();
+      const publishedVideoUrls = formValues.published_video_urls || '';
+      const values = { ...formValues };
+      delete values.published_video_urls;
+      if (values.cooperation_type === 'product_exchange') {
+        values.final_fee = 0;
+        values.currency = null;
+      }
+      await axios.patch(`/api/campaign-kols/${editing.id}`, values);
+      try {
+        await axios.put(`/api/campaign-kols/${editing.id}/published-videos`, {
+          urls: publishedVideoUrls.split(/\r?\n/).map((url) => url.trim()).filter(Boolean)
+        });
+        message.success('项目 KOL 已更新');
+      } catch (videoError) {
+        message.warning(`合作信息已保存，但发布视频保存失败：${videoError.response?.data?.error || videoError.message || '未知错误'}`);
+      }
+      setEditing(null);
+      fetchRows();
+    } catch (error) {
+      if (error?.errorFields) return;
+      message.error(error.response?.data?.error || error.message || '保存 KOL 合作失败');
+    } finally {
+      setSavingEdit(false);
     }
-    await axios.patch(`/api/campaign-kols/${editing.id}`, values);
-    await axios.put(`/api/campaign-kols/${editing.id}/published-videos`, {
-      urls: publishedVideoUrls.split(/\r?\n/).map((url) => url.trim()).filter(Boolean)
-    });
-    message.success('项目 KOL 已更新');
-    setEditing(null);
-    fetchRows();
   };
 
   const openEditAssignment = (record) => {
@@ -268,9 +327,12 @@ const CampaignKols = () => {
   const syncSelected = async () => {
     setSyncing(true);
     try {
+      const ids = selectedRowKeys.length
+        ? selectedRowKeys
+        : rows.filter((row) => !row.sync_status || ['sync_pending', 'sync_failed'].includes(row.sync_status)).map((row) => row.id);
       const res = await axios.post('/api/sync/feishu/push', {
-        scope: selectedRowKeys.length ? 'campaign_kols' : 'all',
-        ids: selectedRowKeys
+        scope: 'campaign_kols',
+        ids
       });
       const data = res.data.data;
       const result = describeSyncResult(data);
@@ -507,6 +569,11 @@ const CampaignKols = () => {
       fixed: 'right',
       render: (_, record) => (
         <Space direction="vertical" size={0} align="start">
+          {isCandidatePool && (
+            <Popconfirm title="确认后将进入 KOL 合作，并同步至飞书项目跟进表；候选池记录会保留。" onConfirm={() => confirmCooperation(record)}>
+              <Button type="link" icon={<CheckOutlined />} loading={confirmingId === record.id}>确认合作</Button>
+            </Popconfirm>
+          )}
           <Button type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
           <Popconfirm title="确定从项目中删除这个 KOL？" onConfirm={() => deleteOne(record.id)}>
             <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
@@ -527,8 +594,10 @@ const CampaignKols = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">KOL 合作</h1>
-        <p className="page-subtitle">按项目管理 KOL 的报价、跟进、交付与合作状态。</p>
+        <h1 className="page-title">{isCandidatePool ? '项目候选池' : 'KOL 合作'}</h1>
+        <p className="page-subtitle">{isCandidatePool
+          ? '人工确认入池、正在联络与沟通的项目候选；确认合作后转入项目跟进。'
+          : '仅显示已经人工确认合作、进入发货与内容履约流程的 KOL。'}</p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
@@ -542,7 +611,9 @@ const CampaignKols = () => {
           ]} style={{ width: 160 }} />
           <Input.Search allowClear placeholder="搜索 KOL、Email、国家、备注、视频链接" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchRows} style={{ width: 320 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchRows}>刷新</Button>
-          <Button icon={<SyncOutlined />} loading={syncing} onClick={syncSelected}>{selectedRowKeys.length ? '同步选中到飞书项目子表' : '同步待同步到飞书项目子表'}</Button>
+          <Button icon={<SyncOutlined />} loading={syncing} onClick={syncSelected}>{selectedRowKeys.length
+            ? `同步选中到飞书${isCandidatePool ? '候选池' : '项目跟进表'}`
+            : `同步待同步到飞书${isCandidatePool ? '候选池' : '项目跟进表'}`}</Button>
           <Button icon={<MailOutlined />} onClick={openEmailModal} disabled={!selectedRowKeys.length}>发邮件</Button>
           <Button type="primary" icon={<RobotOutlined />} loading={aiDrafting} onClick={handleAiDraft} disabled={!selectedRowKeys.length}>AI 起草邮件</Button>
           <Popconfirm title="确定删除选中的项目 KOL？" onConfirm={batchDelete}>
@@ -751,13 +822,13 @@ const CampaignKols = () => {
         )}
       </Modal>
 
-      <Modal title="编辑 KOL 合作" open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} width={760}>
+      <Modal title={isCandidatePool ? '编辑项目候选' : '编辑 KOL 合作'} open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} confirmLoading={savingEdit} width={760}>
         <Form form={form} layout="vertical">
           <Space align="start" style={{ width: '100%' }}>
             <Form.Item label="合作平台" name="cooperation_platforms">
               <Select mode="multiple" allowClear options={platformOptions} style={{ width: 260 }} placeholder="可多选" />
             </Form.Item>
-            <Form.Item label="合作方式" name="cooperation_type" initialValue="paid_product">
+            <Form.Item label="合作方式" name="cooperation_type" initialValue="product_exchange">
               <Select options={cooperationTypeOptions} style={{ width: 190 }} />
             </Form.Item>
             <Form.Item label="KOL合作费" name="final_fee">

@@ -191,6 +191,37 @@ test('syncApprovalItems 迁移后为六类来源各生成一条 pending approval
   });
 });
 
+test('Finder 已产出结果但收尾失败时显示为部分成功并禁止整任务重跑', async () => {
+  const fake = createFakeDb({
+    sources: {
+      finderExceptions: [{
+        id: 22,
+        campaign_id: 3,
+        campaign_name: 'TRA-0429',
+        name: 'TRA-0429 YouTube 碎枝机 KOL Strategy Finder',
+        platform: 'youtube',
+        status: 'failed',
+        result_count: 15,
+        success_count: 15,
+        failed_count: 1,
+        error_message: 'binding failed',
+        updated_at: '2026-07-22 08:52:50'
+      }]
+    }
+  });
+
+  await withPatchedDb(fake, async () => {
+    await approvalItemService.syncApprovalItems();
+    const row = [...fake.store.values()][0];
+    const facts = JSON.parse(row.facts_json);
+    assert.equal(row.priority, 'medium');
+    assert.match(facts.title, /部分成功（收尾失败）/);
+    assert.ok(facts.facts.some((fact) => /成功 15 条，失败 1 条/.test(fact)));
+    assert.match(JSON.parse(row.opinion_json), /不要重新执行整个 Finder/);
+    assert.match(JSON.parse(row.risks_json)[0], /重复导入候选/);
+  });
+});
+
 test('syncApprovalItems dedupe 幂等：重复扫描不重复建行、version 不变', async () => {
   const fake = createFakeDb({ sources: fullSources });
   await withPatchedDb(fake, async () => {

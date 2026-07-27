@@ -201,6 +201,15 @@ const CampaignDetail = () => {
       render: (_, r) => r.platform_account_platform || '-'
     },
     {
+      title: '阶段',
+      dataIndex: 'pipeline_stage',
+      key: 'pipeline_stage',
+      width: 110,
+      render: (v) => (v === 'confirmed'
+        ? <Tag color="green">KOL合作</Tag>
+        : <Tag color="blue">项目候选</Tag>)
+    },
+    {
       title: '主状态',
       dataIndex: 'project_status',
       key: 'project_status',
@@ -294,7 +303,8 @@ const CampaignDetail = () => {
         <Col xs={24} lg={12}>
           <Card title="关键数据" size="small">
             <Row gutter={[16, 16]}>
-              <Col span={8}><Statistic title="达人总数" value={summary.kols_total ?? 0} /></Col>
+              <Col span={8}><Statistic title="项目候选" value={summary.kols_candidate ?? 0} /></Col>
+              <Col span={8}><Statistic title="KOL合作" value={summary.kols_confirmed ?? 0} /></Col>
               <Col span={8}><Statistic title="已联系" value={summary.contacted ?? 0} /></Col>
               <Col span={8}><Statistic title="已回复" value={summary.replied ?? 0} /></Col>
               <Col span={8}><Statistic title="待审草稿" value={summary.drafts_pending ?? 0} /></Col>
@@ -331,7 +341,7 @@ const CampaignDetail = () => {
   );
 
   const progressTab = (
-    <Card size="small" title={`合作达人（${kols.length}）`}>
+    <Card size="small" title={`项目达人（${kols.length}）`}>
       <Table
         size="small"
         rowKey="id"
@@ -339,7 +349,7 @@ const CampaignDetail = () => {
         dataSource={kols}
         loading={loading}
         pagination={{ defaultPageSize: 20, showSizeChanger: true }}
-        locale={{ emptyText: <Empty description="该项目暂无合作达人" /> }}
+        locale={{ emptyText: <Empty description="该项目暂无达人" /> }}
         onRow={() => ({ onClick: () => navigate('/campaign-kols'), style: { cursor: 'pointer' } })}
       />
     </Card>
