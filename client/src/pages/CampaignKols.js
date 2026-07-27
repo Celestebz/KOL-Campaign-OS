@@ -184,6 +184,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     values.shipping_date = values.shipping_date ? String(values.shipping_date).slice(0, 10) : undefined;
     values.project_status = normalizeLegacyProjectStatus(values.project_status);
     values.priority_level = normalizeLegacyPriority(values.priority_level);
+    values.contact_name_override = values.contact_name_override || values.contact_name || values.contact_name_snapshot || '';
     values.cooperation_type = defaultCooperationType(values.cooperation_type);
     values.cooperation_platforms = parsePlatforms(values.cooperation_platforms, [values.platform_account_platform].filter(Boolean));
     if (values.project_override && typeof values.project_override === 'object') {
@@ -517,10 +518,10 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           >
             <strong>{r.kol_name || r.kol_name_snapshot}</strong>
           </Button>
-          <span style={{ color: '#666', maxWidth: '100%', overflowWrap: 'anywhere' }}>{r.contact_name || r.contact_name_snapshot || '-'}</span>
         </Space>
       )
     },
+    { title: '联系人', key: 'contact_name', width: 130, render: (_, r) => r.contact_name_override || r.contact_name || r.contact_name_snapshot || '-' },
     { title: 'YouTube', key: 'youtube', width: 130, render: (_, r) => platformLink(r.youtube_url || r.youtube_url_snapshot, r.youtube_followers || r.youtube_followers_snapshot) },
     { title: 'Instagram', key: 'instagram', width: 130, render: (_, r) => platformLink(r.instagram_url || r.instagram_url_snapshot, r.instagram_followers || r.instagram_followers_snapshot) },
     { title: 'TikTok', key: 'tiktok', width: 130, render: (_, r) => platformLink(r.tiktok_url || r.tiktok_url_snapshot, r.tiktok_followers || r.tiktok_followers_snapshot) },
@@ -547,7 +548,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     { title: '合作SKU', dataIndex: 'product_sku', key: 'product_sku', width: 120, render: (v, r) => v || r.product_name || '-' },
     { title: '优先级', dataIndex: 'priority_level', key: 'priority_level', width: 150, render: (v) => priorityOptions.find((item) => item.value === v)?.label || v || '-' },
     { title: 'KOL合作费', dataIndex: 'final_fee', key: 'final_fee', width: 140, render: (v, r) => r.cooperation_type === 'product_exchange' ? '现金 0' : formatFee(v || r.price_rmb, r.currency || 'USD') },
-    { title: '项目状态', dataIndex: 'project_status', key: 'project_status', width: 150, render: (v) => {
+    ...(isCandidatePool ? [] : [    { title: '项目状态', dataIndex: 'project_status', key: 'project_status', width: 150, render: (v) => {
       const main = getMainStatus(v);
       const sub = getSubStatusLabel(v);
       return (
@@ -556,7 +557,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           {sub && sub !== main.label && <span style={{ fontSize: 12, color: '#999' }}>{sub}</span>}
         </Space>
       );
-    } },
+    } }]),
     { title: '跟进人', dataIndex: 'owner', key: 'owner', width: 100, render: (v) => v || '-' },
     { title: '物流单号', dataIndex: 'tracking_number', key: 'tracking_number', width: 150, render: (v) => v || '-' },
     { title: '合作发布视频', dataIndex: 'published_video_count', key: 'published_video_count', width: 130, render: (v) => `${v || 0} 条` },
@@ -825,6 +826,9 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       <Modal title={isCandidatePool ? '编辑项目候选' : '编辑 KOL 合作'} open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} confirmLoading={savingEdit} width={760}>
         <Form form={form} layout="vertical">
           <Space align="start" style={{ width: '100%' }}>
+            <Form.Item label="联系人" name="contact_name_override" extra="该项目下使用的联系人名称，不影响 KOL 总表">
+              <Input style={{ width: 200 }} placeholder="联系人姓名" />
+            </Form.Item>
             <Form.Item label="合作平台" name="cooperation_platforms">
               <Select mode="multiple" allowClear options={platformOptions} style={{ width: 260 }} placeholder="可多选" />
             </Form.Item>

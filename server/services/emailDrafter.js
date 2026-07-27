@@ -6,7 +6,7 @@ const aiClient = require('./aiClient');
 const { evaluateDraft } = require('./emailRiskRules');
 const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 
-const PROMPT_VERSION = 'p1.0';
+const PROMPT_VERSION = 'p1.1';
 const SNAPSHOT_STALE_DAYS = 7;
 // IG/TT 证据没有快照回抓，新鲜度以证据视频最新发布日期衡量，阈值 30 天
 const FINDER_EVIDENCE_STALE_DAYS = 30;
@@ -17,16 +17,23 @@ const DRAFT_CONCURRENCY = 3;
 const PLATFORM_LABELS = { youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' };
 const SUPPORTED_PLATFORMS = Object.keys(PLATFORM_LABELS);
 
-const SYSTEM_PROMPT = 'You are an outreach copywriter for a brand marketing team. Write personalized first-touch emails to content creators. Return valid JSON only. No Markdown, no explanations.';
+const SYSTEM_PROMPT = 'You are an outreach copywriter for a brand marketing team. Write natural, professional emails to content creators. Return valid JSON only. No Markdown, no explanations.';
 
-function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null }) {
+function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '' }) {
   const videoLines = videos.map((v) =>
     `- [${v.video_id ?? v.youtube_video_id}] "${v.title}" | ${Number(v.play_count || 0).toLocaleString()} views | published ${v.published_at ? new Date(v.published_at).toISOString().slice(0, 10) : 'unknown'}`
   ).join('\n');
   const platformLabel = PLATFORM_LABELS[platform] || platform;
   const followerCount = followers ?? customer.youtube_followers;
-  return `Write a first-touch outreach email (JSON: {"subject": "...", "body_text": "...", "cited_video_ids": ["..."], "personalization_note": "..."}).
+  const stageRules = kind === 'first_touch'
+    ? `This is the first contact. Its only goal is to ask whether the creator is interested in learning more.
+- Do not state or promise shipping, a free unit, commission, fees, a contract, deliverables, or a deadline.
+- Do not imply that the collaboration is already agreed or that a unit will be shipped after one reply.
+- Briefly identify the product and ask a low-pressure interest question. Offer to share specifications and collaboration details if interested.`
+    : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
+  return `Write a ${kind.replace('_', ' ')} outreach email (JSON: {"subject": "...", "body_text": "...", "cited_video_ids": ["..."], "personalization_note": "..."}).
 
+Sender name: ${senderName || 'not provided'}. Use this exact name in the introduction and signature. Never output placeholders such as [Name].
 Creator: ${customer.name} (${customer.country_region || 'unknown region'}), ${platformLabel} followers: ${followerCount || 'unknown'}.
 Recent real videos (ONLY these may be cited):
 ${videoLines || '(no videos available)'}
@@ -36,7 +43,16 @@ Writing rules (must follow strictly):
 ${styleGuide}
 ${feedback ? `\nHuman feedback on previous version (address it): ${feedback}` : ''}
 
-Requirements: cite 1-2 videos from the list above by their exact titles; keep body under 120 English words; write in English.`;
+Stage rules (override any conflicting general style-guide instruction):
+${stageRules}
+
+Requirements:
+- Cite 1-2 videos from the list above by their exact titles.
+- Do not infer property conditions, cleanup needs, equipment, or use cases that the cited titles do not explicitly support.
+- Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
+- Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", and "get one shipped your way".
+- Format body_text as exactly three short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
+- Keep body under 140 English words and write in English.`;
 }
 
 // 平台判定：campaign_kols.target_platform 优先，其次 customers 的平台主页 url，再次 customers.platform + profile_url
@@ -200,11 +216,13 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
     const styleGuide = await dbOperations.get(
       "SELECT * FROM email_templates WHERE kind = 'style_guide' ORDER BY id LIMIT 1"
     );
+    const emailSettings = await dbOperations.get('SELECT sender_name FROM email_settings ORDER BY id LIMIT 1');
 
     const userPrompt = buildUserPrompt({
       customer, campaign, strategy,
       styleGuide: styleGuide?.body_html || '',
-      videos, feedback, platform, followers
+      videos, feedback, platform, followers, kind,
+      senderName: emailSettings?.sender_name || ''
     });
     const { parsed, model } = await aiClient.callActiveAi(SYSTEM_PROMPT, userPrompt);
 
@@ -218,7 +236,8 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       evidenceVideos: videos,
       snapshotDate,
       hasEmail: Boolean(toAddress),
-      staleDays
+      staleDays,
+      kind
     });
 
     const evidence = JSON.stringify({

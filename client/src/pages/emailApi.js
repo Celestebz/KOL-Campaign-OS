@@ -18,6 +18,21 @@ export async function testEmailSettings() {
   return res.data.message;
 }
 
+export async function testImapSettings() {
+  const res = await axios.post('/api/emails/settings/test-imap');
+  return res.data.message;
+}
+
+export async function syncEmailNow() {
+  const res = await axios.post('/api/emails/settings/sync-now');
+  return res.data.message;
+}
+
+export async function getEmailSyncStatus() {
+  const res = await axios.get('/api/emails/settings/sync-status');
+  return res.data.data;
+}
+
 // ---- 模板与口径 ----
 
 export async function getEmailTemplates() {
@@ -106,6 +121,16 @@ export async function getEmailRecords(status, params = {}) {
 export async function getEmailReplies(confirmStatus) {
   const res = await axios.get('/api/emails/replies', { params: confirmStatus ? { confirm_status: confirmStatus } : {} });
   return res.data.data || [];
+}
+
+export async function getUnmatchedReplies() {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'unmatched' } });
+  return res.data.data || [];
+}
+
+export async function bindReply(id, customerId) {
+  const res = await axios.post(`/api/emails/replies/${id}/bind`, { customer_id: customerId });
+  return res.data.data;
 }
 
 export async function confirmReply(id, summary) {

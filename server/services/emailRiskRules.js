@@ -13,9 +13,9 @@ const RISK_CODES = {
 
 const PRICE_COMMITMENT_PATTERN = /\$\s?\d|fee|rate card|guarantee|contract|固定费|报价|合同/i;
 // 写作规范要求正文必须出现"无固定费"表述，价格承诺检测前先把这类否定表述剔除，避免误报。
-const NEGATED_FEE_PATTERN = /no fixed fee|无固定费/gi;
+const NEGATED_COMMITMENT_PATTERN = /no\s+contract\s+or\s+(?:a\s+)?fixed\s+fees?|no\s+(?:fixed\s+)?fees?|no\s+contract|without\s+(?:a\s+)?(?:fixed\s+)?fee|无固定费/gi;
 const COMMISSION_PATTERN = /commission|佣金/i;
-const NO_FIXED_FEE_PATTERN = /no fixed fee|无固定费/i;
+const NO_FIXED_FEE_PATTERN = /no\s+(?:contract\s+or\s+)?(?:a\s+)?fixed\s+fees?|without\s+(?:a\s+)?fixed\s+fee|无固定费/i;
 
 const STALE_DAYS = 7;
 
@@ -59,7 +59,7 @@ function evidenceVideoId(v) {
   return v.video_id ?? v.youtube_video_id;
 }
 
-function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evidenceVideos = [], snapshotDate, hasEmail, staleDays = STALE_DAYS }) {
+function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evidenceVideos = [], snapshotDate, hasEmail, staleDays = STALE_DAYS, kind = 'first_touch' }) {
   const reasons = [];
   const push = (code, message) => reasons.push({ code, message });
 
@@ -77,7 +77,7 @@ function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evide
     push('MARKET_MISMATCH', `达人国家 ${customer.country_region} 与目标市场 ${strategy.target_market} 不符`);
   }
 
-  const priceCheckText = String(bodyText || '').replace(NEGATED_FEE_PATTERN, '');
+  const priceCheckText = String(bodyText || '').replace(NEGATED_COMMITMENT_PATTERN, '');
   if (PRICE_COMMITMENT_PATTERN.test(priceCheckText)) {
     push('PRICE_COMMITMENT', '正文出现金额/fee/guarantee/contract 等承诺性表述');
   }
@@ -87,7 +87,7 @@ function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evide
     if (ageDays > staleDays) push('STALE_SNAPSHOT', `起草所用快照已 ${Math.floor(ageDays)} 天，超过 ${staleDays} 天阈值`);
   }
 
-  if (!COMMISSION_PATTERN.test(bodyText || '') || !NO_FIXED_FEE_PATTERN.test(bodyText || '')) {
+  if (kind !== 'first_touch' && (!COMMISSION_PATTERN.test(bodyText || '') || !NO_FIXED_FEE_PATTERN.test(bodyText || ''))) {
     push('MISSING_REQUIRED_TERM', '缺少佣金说明或"无固定费"表述');
   }
 

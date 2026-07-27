@@ -13,7 +13,7 @@ import ExceptionCard from './ExceptionCard';
 import DecisionDrawer from './DecisionDrawer';
 import RecentDecisions from './RecentDecisions';
 
-const POLL_INTERVAL = 60 * 1000;
+const POLL_INTERVAL = 30 * 1000;
 
 // 老板工作台首页：第一屏四计数 + 决策队列（事实/观点/风险/行动）+ 最近已处理。
 // 无欢迎语、无大输入框、无系统统计图表（见 spec 第五节）。

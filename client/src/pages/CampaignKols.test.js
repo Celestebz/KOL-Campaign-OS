@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import axios from 'axios';
@@ -39,6 +39,7 @@ const kolRow = {
   campaign_name: 'Lobster Co',
   customer_id: 11,
   kol_name: 'Alice',
+  contact_name: 'Alice Manager',
   project_status: 'candidate',
   sync_status: 'sync_pending',
   published_video_count: 0
@@ -243,5 +244,46 @@ describe('CampaignKols confirm cooperation', () => {
     expect(message.warning.mock.calls[0][0]).toContain('飞书连接超时');
     expect(message.success).not.toHaveBeenCalled();
     expect(message.error).not.toHaveBeenCalled();
+  });
+});
+
+describe('CampaignKols 联系人列与编辑', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockListRequests();
+  });
+
+  test('candidate pool shows a dedicated 联系人 column and the edit form exposes it', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('联系人')).toBeInTheDocument();
+    expect(screen.getByText('Alice Manager')).toBeInTheDocument();
+
+    const editButtons = screen.getAllByRole('button', { name: /编辑/ });
+    // antd 固定列克隆节点 pointer-events:none，用 fireEvent 触发
+    fireEvent.click(editButtons[editButtons.length - 1]);
+    expect(await screen.findByText('编辑项目候选')).toBeInTheDocument();
+    expect(screen.getByText('该项目下使用的联系人名称，不影响 KOL 总表')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByPlaceholderText('联系人姓名')).toHaveValue('Alice Manager'));
+  });
+});
+
+describe('CampaignKols 状态列按视图取舍', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockListRequests();
+  });
+
+  test('candidate pool hides the constant 项目状态 column and keeps 外联状态', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('外联状态')).toBeInTheDocument();
+    expect(screen.queryByText('项目状态')).not.toBeInTheDocument();
+  });
+
+  test('cooperation view keeps the 项目状态 column', async () => {
+    render(<CampaignKols />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('项目状态')).toBeInTheDocument();
   });
 });

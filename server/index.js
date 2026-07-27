@@ -27,7 +27,7 @@ const emailRoutes = require('./routes/emails');
 const workbenchRoutes = require('./routes/workbench');
 const approvalRoutes = require('./routes/approvals');
 const automationRunRoutes = require('./routes/automationRuns');
-const { startReplyPoller } = require('./services/emailReplyPoller');
+const { startEmailSync } = require('./services/emailLiveSync');
 const { startFollowUpTimer } = require('./services/emailFollowUp');
 
 const app = express();
@@ -125,7 +125,7 @@ async function startServer() {
       if (interruptedRuns || interruptedFinderTasks) {
         console.log(`[recovery] 服务重启中断标记：automation_runs ${interruptedRuns} 条，finder_tasks ${interruptedFinderTasks} 条`);
       }
-      await startReplyPoller();
+      await startEmailSync();
       startFollowUpTimer();
     }
     app.listen(PORT, () => {

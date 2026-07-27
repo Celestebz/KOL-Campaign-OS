@@ -3,6 +3,8 @@ const { dbOperations } = require('../database');
 const mailer = require('../services/mailer');
 const emailDrafter = require('../services/emailDrafter');
 const emailReviewActions = require('../services/emailReviewActions');
+const emailDraftSender = require('../services/emailDraftSender');
+const emailLiveSync = require('../services/emailLiveSync');
 const automationRuns = require('../services/automationRuns');
 
 const router = express.Router();
@@ -46,28 +48,66 @@ router.put('/settings', async (req, res) => {
     const password = body.password === MASKED_SECRET || body.password === undefined
       ? (existing?.password || null)
       : body.password;
+    const syncMode = ['idle', 'poll', 'off'].includes(body.sync_mode) ? body.sync_mode : (existing?.sync_mode || 'idle');
     const values = [
       body.smtp_host || null, Number(body.smtp_port) || 465, body.smtp_secure === undefined ? 1 : (body.smtp_secure ? 1 : 0),
       body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure === undefined ? 1 : (body.imap_secure ? 1 : 0),
       body.username || null, password,
       body.sender_name || null, body.default_cc || null,
-      Number(body.poll_interval_minutes ?? 5)
+      Number(body.poll_interval_minutes ?? 5),
+      syncMode
     ];
     if (existing) {
       await dbOperations.run(
         `UPDATE email_settings SET smtp_host=?, smtp_port=?, smtp_secure=?, imap_host=?, imap_port=?, imap_secure=?,
-         username=?, password=?, sender_name=?, default_cc=?, poll_interval_minutes=?, updated_at=NOW() WHERE id=?`,
+         username=?, password=?, sender_name=?, default_cc=?, poll_interval_minutes=?, sync_mode=?, updated_at=NOW() WHERE id=?`,
         [...values, existing.id]
       );
     } else {
       await dbOperations.run(
         `INSERT INTO email_settings (smtp_host, smtp_port, smtp_secure, imap_host, imap_port, imap_secure,
-         username, password, sender_name, default_cc, poll_interval_minutes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+         username, password, sender_name, default_cc, poll_interval_minutes, sync_mode, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
         values
       );
     }
-    res.json({ success: true, message: '邮箱设置已保存' });
+    // 修改邮箱配置后自动重启监听，无须重启整个系统
+    try {
+      await emailLiveSync.restartEmailSync();
+    } catch (error) {
+      console.error('[email] 重启收信监听失败:', error.message);
+    }
+    res.json({ success: true, message: '邮箱设置已保存，收信监听已重启' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/settings/sync-status', async (req, res) => {
+  try {
+    res.json({ success: true, data: emailLiveSync.getEmailSyncStatus() });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/settings/test-imap', async (req, res) => {
+  try {
+    const info = await emailLiveSync.testImapConnection();
+    res.json({ success: true, message: `IMAP 连接成功（收件箱 ${info.exists} 封邮件）`, data: info });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/settings/sync-now', async (req, res) => {
+  try {
+    const result = await emailLiveSync.syncNow();
+    res.json({
+      success: true,
+      message: `同步完成：新收 ${result.fetched}，匹配 ${result.matched}，未识别 ${result.unmatched}`,
+      data: result
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -355,7 +395,8 @@ router.post('/drafts/:id/regenerate', async (req, res) => {
 router.post('/drafts/:id/approve', async (req, res) => {
   try {
     await emailReviewActions.approveDraft(req.params.id);
-    res.json({ success: true, message: '已批准' });
+    const result = await emailDraftSender.sendApprovedDraft(req.params.id);
+    res.json({ success: true, message: '发送成功', data: result });
   } catch (error) {
     sendActionError(res, error);
   }
@@ -372,58 +413,10 @@ router.post('/drafts/:id/reject', async (req, res) => {
 
 router.post('/drafts/:id/send', async (req, res) => {
   try {
-    const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
-    if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
-    if (draft.status !== 'approved') {
-      return res.status(409).json({ success: false, error: '草稿未批准，不能发送' });
-    }
-
-    const settings = await getEmailSettings();
-    if (!settings) return res.status(400).json({ success: false, error: '请先配置邮箱设置' });
-
-    const customer = await resolveCustomerEmail(draft.customer_id);
-    if (!customer?.email) {
-      await dbOperations.run(`UPDATE email_drafts SET status = 'send_failed', updated_at = NOW() WHERE id = ?`, [draft.id]);
-      return res.status(400).json({ success: false, error: '达人无邮箱地址' });
-    }
-
-    try {
-      const { messageId } = await mailer.sendMail({
-        settings,
-        to: customer.email,
-        cc: mailer.parseCc(settings.default_cc),
-        subject: draft.subject,
-        text: draft.body_text
-      });
-      await dbOperations.run(
-        `INSERT INTO email_records
-         (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, NOW())`,
-        [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
-         mailer.parseCc(settings.default_cc).join(',') || null, draft.subject, draft.body_text, messageId]
-      );
-      await dbOperations.run(`UPDATE email_drafts SET status = 'sent', updated_at = NOW() WHERE id = ?`, [draft.id]);
-      // 回写 campaign_kols：按 campaign_id + customer_id 定位
-      await dbOperations.run(
-        `UPDATE campaign_kols SET outreach_status = ?, last_outreach_at = NOW(),
-         sync_status = 'sync_pending', updated_at = NOW()
-         WHERE campaign_id = ? AND customer_id = ?`,
-        ['contacted', draft.campaign_id, draft.customer_id]
-      );
-      res.json({ success: true, message: '发送成功' });
-    } catch (sendError) {
-      await dbOperations.run(
-        `INSERT INTO email_records
-         (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, NOW())`,
-        [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
-         draft.subject, draft.body_text, sendError.message]
-      );
-      await dbOperations.run(`UPDATE email_drafts SET status = 'send_failed', updated_at = NOW() WHERE id = ?`, [draft.id]);
-      res.status(500).json({ success: false, error: `发送失败：${sendError.message}` });
-    }
+    const result = await emailDraftSender.sendApprovedDraft(req.params.id);
+    res.json({ success: true, message: '发送成功', data: result });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendActionError(res, error);
   }
 });
 
@@ -431,9 +424,10 @@ router.post('/drafts/:id/send', async (req, res) => {
 
 router.get('/replies', async (req, res) => {
   try {
-    const { confirm_status } = req.query || {};
+    const { confirm_status, scope } = req.query || {};
     const conditions = [];
     const params = [];
+    if (scope === 'unmatched') conditions.push('er.customer_id IS NULL');
     if (confirm_status) { conditions.push('er.confirm_status = ?'); params.push(confirm_status); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const replies = await dbOperations.query(
@@ -494,6 +488,43 @@ router.post('/replies/:id/draft-reply', async (req, res) => {
     });
     if (!result.ok) return res.status(500).json({ success: false, error: result.error });
     res.json({ success: true, message: '回复草稿已生成，请到审批台审阅', data: { draftId: result.draftId } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/replies/:id/bind', async (req, res) => {
+  try {
+    const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
+    if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
+
+    const customerId = Number(req.body?.customer_id);
+    if (!Number.isSafeInteger(customerId) || customerId <= 0) {
+      return res.status(400).json({ success: false, error: 'customer_id 为必填字段' });
+    }
+    const customer = await dbOperations.get('SELECT id FROM customers WHERE id = ?', [customerId]);
+    if (!customer) return res.status(404).json({ success: false, error: 'KOL 不存在' });
+
+    // 未显式指定项目时，归属到该 KOL 最近的项目关系
+    let campaignId = Number(req.body?.campaign_id) || null;
+    if (!campaignId) {
+      const kol = await dbOperations.get(
+        'SELECT campaign_id FROM campaign_kols WHERE customer_id = ? ORDER BY updated_at DESC LIMIT 1',
+        [customerId]
+      );
+      campaignId = kol?.campaign_id || null;
+    }
+
+    await dbOperations.run(
+      'UPDATE email_replies SET customer_id = ?, campaign_id = ?, updated_at = NOW() WHERE id = ?',
+      [customerId, campaignId, reply.id]
+    );
+    // 绑定后补 AI 摘要（未识别回复此前不做摘要，避免广告消耗 AI）
+    const { summarizeReply } = require('../services/emailReplyPoller');
+    summarizeReply(reply.id).catch(() => {});
+
+    const updated = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [reply.id]);
+    res.json({ success: true, message: '已绑定 KOL', data: updated });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

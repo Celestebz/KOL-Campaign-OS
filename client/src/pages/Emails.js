@@ -1,18 +1,19 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert, Button, Card, Col, Descriptions, Empty, Form, Input, InputNumber, List,
-  message, Modal, Popconfirm, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Tooltip
+  message, Modal, Popconfirm, Radio, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Tooltip
 } from 'antd';
 import {
   DeleteOutlined, EditOutlined, MailOutlined, PlusOutlined, ReloadOutlined,
   RobotOutlined, SendOutlined, WarningOutlined
 } from '@ant-design/icons';
+import axios from 'axios';
 import {
-  getEmailSettings, saveEmailSettings, testEmailSettings,
+  getEmailSettings, saveEmailSettings, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft,
   getEmailRecords,
-  getEmailReplies, confirmReply, ignoreReply, retryReplySummary, draftReply
+  getEmailReplies, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, retryReplySummary, draftReply
 } from './emailApi';
 
 const { TextArea } = Input;
@@ -124,10 +125,10 @@ function ApprovalTab() {
     setActionLoading(true);
     try {
       await approveDraft(selected.id);
-      message.success('已批准，可以发送');
+      message.success('邮件已发送，外联状态已同步');
       fetchDrafts();
     } catch (error) {
-      message.error('操作失败');
+      message.error(error.response?.data?.error || '发送失败');
     } finally {
       setActionLoading(false);
     }
@@ -219,7 +220,7 @@ function ApprovalTab() {
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               {selected.status === 'pending_review' && (
                 <Alert type="warning" showIcon icon={<RobotOutlined />}
-                  message="AI 生成，未经人工批准" description="请核对证据面板后再批准；批准后才会进入可发送状态。" />
+                  message="AI 生成，尚未发送" description="请先核对收件人、主题和正文。点击“发送”即代表批准，邮件会立即对外发送。" />
               )}
               <Input addonBefore="主题" value={editSubject}
                 disabled={selected.status !== 'pending_review'}
@@ -232,7 +233,15 @@ function ApprovalTab() {
                   <>
                     <Button onClick={handleSave}>保存修改</Button>
                     <Button onClick={() => setRegenOpen(true)}>重新生成</Button>
-                    <Button type="primary" loading={actionLoading} onClick={handleApprove}>批准</Button>
+                    <Popconfirm
+                      title="确认立即发送这封邮件？"
+                      description="点击确认后，邮件将立即对外发送，且无法撤回。"
+                      okText="确认发送"
+                      cancelText="取消"
+                      onConfirm={handleApprove}
+                    >
+                      <Button type="primary" icon={<SendOutlined />} loading={actionLoading}>发送</Button>
+                    </Popconfirm>
                     <Button danger onClick={() => setRejectOpen(true)}>驳回</Button>
                   </>
                 )}
@@ -350,19 +359,42 @@ function RepliesTab() {
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(null);
   const [editedSummary, setEditedSummary] = useState('');
+  const [viewMode, setViewMode] = useState('pending'); // pending=待确认；unmatched=未识别回复
+  const [binding, setBinding] = useState(null);
+  const [bindCustomerId, setBindCustomerId] = useState(null);
+  const [bindOptions, setBindOptions] = useState([]);
+  const [bindSearching, setBindSearching] = useState(false);
+  const [bindSaving, setBindSaving] = useState(false);
+  const prevCountRef = useRef(null);
 
-  const fetchReplies = useCallback(async () => {
-    setLoading(true);
+  const fetchReplies = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
-      setReplies(await getEmailReplies('pending'));
+      const rows = viewMode === 'unmatched' ? await getUnmatchedReplies() : await getEmailReplies('pending');
+      if (viewMode === 'pending' && prevCountRef.current !== null && rows.length > prevCountRef.current) {
+        message.info(`收到 ${rows.length - prevCountRef.current} 条新回复`);
+      }
+      prevCountRef.current = rows.length;
+      setReplies(rows);
     } catch (error) {
-      message.error('获取回复列表失败');
+      if (!silent) message.error('获取回复列表失败');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, []);
+  }, [viewMode]);
 
   useEffect(() => { fetchReplies(); }, [fetchReplies]);
+
+  // 邮件中心打开时每 10 秒静默刷新（准实时收信的页面侧配套，第一轮不上 SSE）
+  useEffect(() => {
+    const timer = setInterval(() => fetchReplies({ silent: true }), 10000);
+    return () => clearInterval(timer);
+  }, [fetchReplies]);
+
+  const changeView = (event) => {
+    prevCountRef.current = null;
+    setViewMode(event.target.value);
+  };
 
   const openConfirm = (record) => {
     setConfirming(record);
@@ -409,7 +441,46 @@ function RepliesTab() {
     }
   };
 
-  const columns = [
+  const searchKols = useCallback(async (keyword) => {
+    setBindSearching(true);
+    try {
+      const res = await axios.get('/api/customers', { params: keyword ? { search: keyword } : {} });
+      setBindOptions((res.data.data || []).slice(0, 50).map((kol) => ({
+        value: kol.id,
+        label: `${kol.name || '未命名'}${kol.email ? `（${kol.email}）` : ''}`
+      })));
+    } catch (error) {
+      message.error('搜索 KOL 失败');
+    } finally {
+      setBindSearching(false);
+    }
+  }, []);
+
+  const openBind = (record) => {
+    setBinding(record);
+    setBindCustomerId(null);
+    searchKols('');
+  };
+
+  const handleBind = async () => {
+    if (!bindCustomerId) {
+      message.warning('请选择要绑定的 KOL');
+      return;
+    }
+    setBindSaving(true);
+    try {
+      await bindReply(binding.id, bindCustomerId);
+      message.success('已绑定 KOL，AI 摘要生成中');
+      setBinding(null);
+      fetchReplies();
+    } catch (error) {
+      message.error(error.response?.data?.error || '绑定失败');
+    } finally {
+      setBindSaving(false);
+    }
+  };
+
+  const pendingColumns = [
     { title: 'KOL', dataIndex: 'kol_name', width: 140 },
     { title: '项目', dataIndex: 'campaign_name', width: 160 },
     { title: '回复时间', dataIndex: 'received_at', width: 160,
@@ -445,11 +516,39 @@ function RepliesTab() {
     }
   ];
 
+  const unmatchedColumns = [
+    { title: '发件人', dataIndex: 'from_address', width: 220, render: (v) => v || '-' },
+    { title: '收到时间', dataIndex: 'received_at', width: 160,
+      render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
+    { title: '主题', dataIndex: 'subject', width: 220, ellipsis: true },
+    {
+      title: '操作', width: 180, render: (_, record) => (
+        <Space size={0}>
+          <Button type="link" size="small" onClick={() => openBind(record)}>绑定 KOL</Button>
+          <Popconfirm title="忽略这条回复？" onConfirm={() => handleIgnore(record)}>
+            <Button type="link" size="small" danger>忽略</Button>
+          </Popconfirm>
+        </Space>
+      )
+    }
+  ];
+
   return (
     <>
-      <Button icon={<ReloadOutlined />} onClick={fetchReplies} style={{ marginBottom: 12 }}>刷新</Button>
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Radio.Group
+          value={viewMode}
+          onChange={changeView}
+          options={[
+            { value: 'pending', label: '待确认' },
+            { value: 'unmatched', label: '未识别回复' }
+          ]}
+          optionType="button"
+        />
+        <Button icon={<ReloadOutlined />} onClick={() => fetchReplies()}>刷新</Button>
+      </Space>
       <Table
-        rowKey="id" loading={loading} columns={columns} dataSource={replies}
+        rowKey="id" loading={loading} columns={viewMode === 'unmatched' ? unmatchedColumns : pendingColumns} dataSource={replies}
         expandable={{
           expandedRowRender: (record) => (
             <div style={{ whiteSpace: 'pre-wrap' }}>{record.body_text || '（无正文）'}</div>
@@ -463,6 +562,24 @@ function RepliesTab() {
       >
         <p>确认后将按意向更新外联状态，并把摘要写入跟进记录、同步飞书。可修改摘要：</p>
         <TextArea rows={4} value={editedSummary} onChange={(e) => setEditedSummary(e.target.value)} />
+      </Modal>
+      <Modal
+        title={`绑定 KOL - ${binding?.from_address || ''}`}
+        open={Boolean(binding)} onOk={handleBind} onCancel={() => setBinding(null)}
+        okText="绑定" confirmLoading={bindSaving} width={520}
+      >
+        <p>把这条回复归属到一个 KOL，项目默认取该 KOL 最近的项目关系，绑定后自动生成 AI 摘要：</p>
+        <Select
+          showSearch
+          filterOption={false}
+          onSearch={searchKols}
+          loading={bindSearching}
+          value={bindCustomerId}
+          onChange={setBindCustomerId}
+          options={bindOptions}
+          placeholder="输入名称或邮箱搜索 KOL"
+          style={{ width: '100%' }}
+        />
       </Modal>
     </>
   );
@@ -600,10 +717,26 @@ function TemplatesTab() {
 
 // ---- 邮箱配置 ----
 
+const SYNC_STATUS_LABELS = {
+  connected: { text: '已连接', color: 'green' },
+  connecting: { text: '连接中', color: 'gold' },
+  reconnecting: { text: '重连中', color: 'orange' },
+  failed: { text: '连接失败', color: 'red' },
+  off: { text: '已关闭', color: 'default' }
+};
+
+const SYNC_MODE_LABELS = { idle: '实时监听（推荐）', poll: '定时轮询', off: '关闭回复同步' };
+
+const formatSyncTime = (value) => (value ? new Date(value).toLocaleString('zh-CN') : '-');
+
 function SettingsTab() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingImap, setTestingImap] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const syncMode = Form.useWatch('sync_mode', form);
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -614,14 +747,29 @@ function SettingsTab() {
     }
   }, [form]);
 
-  useEffect(() => { fetchSettings(); }, [fetchSettings]);
+  const fetchSyncStatus = useCallback(async () => {
+    try {
+      setSyncStatus(await getEmailSyncStatus());
+    } catch (error) {
+      // 状态接口失败不影响配置页
+    }
+  }, []);
+
+  useEffect(() => { fetchSettings(); fetchSyncStatus(); }, [fetchSettings, fetchSyncStatus]);
+
+  // 收信状态每 15 秒刷新一次
+  useEffect(() => {
+    const timer = setInterval(fetchSyncStatus, 15000);
+    return () => clearInterval(timer);
+  }, [fetchSyncStatus]);
 
   const handleSave = async () => {
     const values = await form.validateFields();
     setLoading(true);
     try {
       await saveEmailSettings(values);
-      message.success('邮箱设置已保存');
+      message.success('邮箱设置已保存，收信监听已重启');
+      setTimeout(fetchSyncStatus, 1500);
     } catch (error) {
       message.error(error.response?.data?.error || '保存失败');
     } finally {
@@ -641,52 +789,108 @@ function SettingsTab() {
     }
   };
 
+  const handleTestImap = async () => {
+    setTestingImap(true);
+    try {
+      const msg = await testImapSettings();
+      message.success(msg || 'IMAP 连接成功');
+    } catch (error) {
+      message.error(error.response?.data?.error || 'IMAP 连接失败');
+    } finally {
+      setTestingImap(false);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    try {
+      const msg = await syncEmailNow();
+      message.success(msg || '同步完成');
+      fetchSyncStatus();
+    } catch (error) {
+      message.error(error.response?.data?.error || '同步失败');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const statusLabel = SYNC_STATUS_LABELS[syncStatus?.status] || { text: syncStatus?.status || '-', color: 'default' };
+
   return (
-    <Card title="企业邮箱配置" style={{ maxWidth: 760 }}>
-      <Form form={form} layout="vertical">
-        <Form.Item name="smtp_host" label="SMTP 服务器" rules={[{ required: true, message: '必填' }]}>
-          <Input placeholder="如 smtp.qiye.aliyun.com" />
-        </Form.Item>
-        <Space size="large">
-          <Form.Item name="smtp_port" label="SMTP 端口" initialValue={465}>
-            <InputNumber min={1} max={65535} />
+    <div style={{ maxWidth: 760 }}>
+      <Card title="企业邮箱配置">
+        <Form form={form} layout="vertical">
+          <Form.Item name="smtp_host" label="SMTP 服务器" rules={[{ required: true, message: '必填' }]}>
+            <Input placeholder="如 smtp.qiye.aliyun.com" />
           </Form.Item>
-          <Form.Item name="smtp_secure" label="SMTP SSL" valuePropName="checked" initialValue={true}>
-            <Switch />
+          <Space size="large">
+            <Form.Item name="smtp_port" label="SMTP 端口" initialValue={465}>
+              <InputNumber min={1} max={65535} />
+            </Form.Item>
+            <Form.Item name="smtp_secure" label="SMTP SSL" valuePropName="checked" initialValue={true}>
+              <Switch />
+            </Form.Item>
+          </Space>
+          <Form.Item name="imap_host" label="IMAP 服务器（用于回复追踪）">
+            <Input placeholder="如 imap.qiye.aliyun.com" />
           </Form.Item>
-        </Space>
-        <Form.Item name="imap_host" label="IMAP 服务器（用于回复追踪）">
-          <Input placeholder="如 imap.qiye.aliyun.com" />
-        </Form.Item>
-        <Space size="large">
-          <Form.Item name="imap_port" label="IMAP 端口" initialValue={993}>
-            <InputNumber min={1} max={65535} />
+          <Space size="large" wrap>
+            <Form.Item name="imap_port" label="IMAP 端口" initialValue={993}>
+              <InputNumber min={1} max={65535} />
+            </Form.Item>
+            <Form.Item name="imap_secure" label="IMAP TLS" valuePropName="checked" initialValue={true}>
+              <Switch />
+            </Form.Item>
+            <Form.Item name="sync_mode" label="收信模式" initialValue="idle">
+              <Select style={{ width: 180 }} options={[
+                { value: 'idle', label: '实时监听（推荐）' },
+                { value: 'poll', label: '定时轮询' },
+                { value: 'off', label: '关闭回复同步' }
+              ]} />
+            </Form.Item>
+            {(syncMode || 'idle') === 'poll' && (
+              <Form.Item name="poll_interval_minutes" label="轮询间隔（分钟）" initialValue={5}>
+                <InputNumber min={1} max={120} />
+              </Form.Item>
+            )}
+          </Space>
+          <Form.Item name="username" label="邮箱账号" rules={[{ required: true, message: '必填' }]}>
+            <Input placeholder="you@company.com" />
           </Form.Item>
-          <Form.Item name="imap_secure" label="IMAP TLS" valuePropName="checked" initialValue={true}>
-            <Switch />
+          <Form.Item name="password" label="授权码 / 三方客户端安全密码">
+            <Input.Password placeholder="阿里邮箱建议填三方客户端安全密码" />
           </Form.Item>
-          <Form.Item name="poll_interval_minutes" label="轮询间隔（分钟，0 关闭）" initialValue={5}>
-            <InputNumber min={0} max={120} />
+          <Form.Item name="sender_name" label="发件人显示名">
+            <Input placeholder="如 MOOER Marketing" />
           </Form.Item>
-        </Space>
-        <Form.Item name="username" label="邮箱账号" rules={[{ required: true, message: '必填' }]}>
-          <Input placeholder="you@company.com" />
-        </Form.Item>
-        <Form.Item name="password" label="授权码 / 三方客户端安全密码">
-          <Input.Password placeholder="阿里邮箱建议填三方客户端安全密码" />
-        </Form.Item>
-        <Form.Item name="sender_name" label="发件人显示名">
-          <Input placeholder="如 MOOER Marketing" />
-        </Form.Item>
-        <Form.Item name="default_cc" label="默认抄送">
-          <TextArea rows={2} placeholder="多个地址用逗号/分号/换行分隔" />
-        </Form.Item>
-        <Space>
-          <Button type="primary" loading={loading} onClick={handleSave}>保存</Button>
-          <Button loading={testing} onClick={handleTest}>测试 SMTP 连接</Button>
-        </Space>
-      </Form>
-    </Card>
+          <Form.Item name="default_cc" label="默认抄送">
+            <TextArea rows={2} placeholder="多个地址用逗号/分号/换行分隔" />
+          </Form.Item>
+          <Space wrap>
+            <Button type="primary" loading={loading} onClick={handleSave}>保存</Button>
+            <Button loading={testing} onClick={handleTest}>测试 SMTP 连接</Button>
+            <Button loading={testingImap} onClick={handleTestImap}>测试 IMAP</Button>
+            <Button loading={syncing} onClick={handleSyncNow}>立即同步一次</Button>
+          </Space>
+        </Form>
+      </Card>
+      <Card title="收信状态" size="small" style={{ marginTop: 16 }}>
+        <Descriptions column={1} size="small">
+          <Descriptions.Item label="收信模式">{SYNC_MODE_LABELS[syncStatus?.mode] || syncStatus?.mode || '-'}</Descriptions.Item>
+          <Descriptions.Item label="连接状态">
+            <Tag color={statusLabel.color}>{statusLabel.text}</Tag>
+            {syncStatus?.reconnect_attempts > 0 && <span>（第 {syncStatus.reconnect_attempts} 次重连）</span>}
+          </Descriptions.Item>
+          <Descriptions.Item label="最后收到邮件">{formatSyncTime(syncStatus?.last_mail_at)}</Descriptions.Item>
+          <Descriptions.Item label="最后补偿同步">{formatSyncTime(syncStatus?.last_full_sync_at)}</Descriptions.Item>
+          {syncStatus?.last_error && (
+            <Descriptions.Item label="最近错误">
+              <span style={{ color: '#cf1322' }}>{syncStatus.last_error}</span>
+            </Descriptions.Item>
+          )}
+        </Descriptions>
+      </Card>
+    </div>
   );
 }
 

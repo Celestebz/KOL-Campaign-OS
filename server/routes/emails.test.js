@@ -89,12 +89,14 @@ test('POST /drafts/:id/send returns 409 when draft not approved', async () => {
     get: async (sql) => {
       if (/email_drafts/.test(sql)) return { id: 9, status: 'pending_review', customer_id: 1, campaign_id: 1 };
       return null;
-    }
+    },
+    // claim 更新（approved → sending）不命中：返回 changes 0，且避免落真实数据库
+    run: async () => ({ id: 0, changes: 0 })
   }, async () => {
     const handler = findHandler(require('./emails'), 'post', '/drafts/:id/send');
     const response = await callHandler(handler, { params: { id: 9 } });
     assert.equal(response.statusCode, 409);
-    assert.equal(response.payload.error, '草稿未批准，不能发送');
+    assert.equal(response.payload.error, '仅已批准的草稿可发送');
   });
 });
 
@@ -129,8 +131,9 @@ test('POST /drafts/:id/send sends approved draft and writes back campaign_kols',
   assert.ok(updateKol, 'should update campaign_kols');
   assert.ok(updateKol.params.includes('contacted'));
   assert.match(updateKol.sql, /sync_status = 'sync_pending'/);
-  const updateDraft = statements.find((s) => /UPDATE email_drafts/.test(s.sql));
-  assert.match(updateDraft.sql, /status = 'sent'/);
+  // 第一条 UPDATE 是 approved → sending 的乐观锁 claim，断言最终 sent 的那条
+  const updateDraft = statements.find((s) => /UPDATE email_drafts/.test(s.sql) && /status = 'sent'/.test(s.sql));
+  assert.ok(updateDraft, 'should mark draft as sent after SMTP accept');
 });
 
 test('PUT /drafts/:id only allows editing pending_review and stores human version', async () => {
@@ -346,5 +349,143 @@ test('GET /records without campaign_id keeps unfiltered query', async () => {
     await callHandler(handler, { query: {} });
     assert.ok(statements.every((s) => !/campaign_id/.test(s.sql)));
     assert.deepEqual(statements[0].params, []);
+  });
+});
+
+// ---- 准实时收信：收信模式 / 连接状态 / 立即同步 / 未识别回复绑定 ----
+
+test('PUT /settings persists sync_mode and restarts the listener', async () => {
+  const emailLiveSync = require('../services/emailLiveSync');
+  let restarted = 0;
+  const original = emailLiveSync.restartEmailSync;
+  emailLiveSync.restartEmailSync = async () => { restarted += 1; };
+  const statements = [];
+  try {
+    await withPatchedDb({
+      get: async () => ({ id: 1, password: 'real-secret', sync_mode: 'poll' }),
+      run: async (sql, params) => { statements.push({ sql, params }); return { changes: 1 }; }
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'put', '/settings');
+      const response = await callHandler(handler, { body: { username: 'u@x.com', sync_mode: 'idle' } });
+      assert.equal(response.payload.success, true);
+      assert.match(response.payload.message, /收信监听已重启/);
+      const update = statements.find((s) => /UPDATE email_settings/.test(s.sql));
+      assert.ok(update.params.includes('idle'), 'sync_mode written to settings');
+    });
+  } finally {
+    emailLiveSync.restartEmailSync = original;
+  }
+  assert.equal(restarted, 1, 'listener restarts after settings change');
+});
+
+test('GET /settings/sync-status returns the live sync state', async () => {
+  const handler = findHandler(require('./emails'), 'get', '/settings/sync-status');
+  const response = await callHandler(handler);
+  assert.equal(response.payload.success, true);
+  assert.ok('mode' in response.payload.data);
+  assert.ok('status' in response.payload.data);
+  assert.ok('last_error' in response.payload.data);
+});
+
+test('POST /settings/sync-now reports fetch counts', async () => {
+  const emailLiveSync = require('../services/emailLiveSync');
+  const original = emailLiveSync.syncNow;
+  emailLiveSync.syncNow = async () => ({ fetched: 3, matched: 2, unmatched: 1 });
+  try {
+    const handler = findHandler(require('./emails'), 'post', '/settings/sync-now');
+    const response = await callHandler(handler);
+    assert.equal(response.payload.success, true);
+    assert.match(response.payload.message, /新收 3，匹配 2，未识别 1/);
+  } finally {
+    emailLiveSync.syncNow = original;
+  }
+});
+
+test('POST /settings/test-imap reports mailbox info', async () => {
+  const emailLiveSync = require('../services/emailLiveSync');
+  const original = emailLiveSync.testImapConnection;
+  emailLiveSync.testImapConnection = async () => ({ exists: 261, uidNext: 262 });
+  try {
+    const handler = findHandler(require('./emails'), 'post', '/settings/test-imap');
+    const response = await callHandler(handler);
+    assert.equal(response.payload.success, true);
+    assert.match(response.payload.message, /IMAP 连接成功/);
+    assert.equal(response.payload.data.exists, 261);
+  } finally {
+    emailLiveSync.testImapConnection = original;
+  }
+});
+
+test('GET /replies scope=unmatched filters replies without a KOL', async () => {
+  const queries = [];
+  await withPatchedDb({
+    query: async (sql) => { queries.push(String(sql)); return []; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/replies');
+    await callHandler(handler, { query: { scope: 'unmatched' } });
+    assert.match(queries[0], /er\.customer_id IS NULL/);
+  });
+});
+
+test('POST /replies/:id/bind assigns a KOL, defaults campaign and triggers summary', async () => {
+  const emailReplyPoller = require('../services/emailReplyPoller');
+  let summarized = null;
+  const originalSummary = emailReplyPoller.summarizeReply;
+  emailReplyPoller.summarizeReply = async (id) => { summarized = id; };
+  const writes = [];
+  try {
+    await withPatchedDb({
+      get: async (sql, params = []) => {
+        const text = String(sql);
+        if (text.includes('FROM email_replies WHERE id = ?')) {
+          return writes.length
+            ? { id: 5, customer_id: 7, campaign_id: 2 }
+            : { id: 5, customer_id: null, campaign_id: null };
+        }
+        if (text.includes('FROM customers WHERE id = ?')) return { id: params[0] };
+        if (text.includes('FROM campaign_kols WHERE customer_id = ?')) return { campaign_id: 2, customer_id: params[0] };
+        return null;
+      },
+      run: async (sql, params) => { writes.push({ sql: String(sql), params }); return { changes: 1 }; }
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/replies/:id/bind');
+      const response = await callHandler(handler, { params: { id: '5' }, body: { customer_id: 7 } });
+      assert.equal(response.payload.success, true);
+      const update = writes.find((w) => w.sql.includes('UPDATE email_replies SET customer_id'));
+      assert.deepEqual(update.params, [7, 2, 5], 'binds customer and defaults campaign from latest relation');
+      assert.equal(response.payload.data.customer_id, 7);
+    });
+  } finally {
+    emailReplyPoller.summarizeReply = originalSummary;
+  }
+  assert.equal(summarized, 5, 'summary runs after binding');
+});
+
+test('POST /replies/:id/bind validates reply and KOL existence', async () => {
+  await withPatchedDb({
+    get: async (sql) => {
+      const text = String(sql);
+      if (text.includes('FROM email_replies WHERE id = ?')) return null;
+      return null;
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/bind');
+    const missing = await callHandler(handler, { params: { id: '404' }, body: { customer_id: 7 } });
+    assert.equal(missing.statusCode, 404);
+  });
+
+  await withPatchedDb({
+    get: async (sql) => {
+      const text = String(sql);
+      if (text.includes('FROM email_replies WHERE id = ?')) return { id: 5, customer_id: null };
+      return null; // customers 查不到
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/bind');
+    const missingKol = await callHandler(handler, { params: { id: '5' }, body: { customer_id: 9999 } });
+    assert.equal(missingKol.statusCode, 404);
+    assert.match(missingKol.payload.error, /KOL 不存在/);
+    const badBody = await callHandler(handler, { params: { id: '5' }, body: {} });
+    assert.equal(badBody.statusCode, 400);
   });
 });

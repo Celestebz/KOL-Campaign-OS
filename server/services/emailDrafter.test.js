@@ -37,6 +37,7 @@ function createFakeDb({ customer = igCustomer, campaignKol = null, finderVideos 
     if (/FROM campaign_kols WHERE campaign_id = \?/.test(sql)) return campaignKol;
     if (/FROM kol_strategies WHERE campaign_id = \?/.test(sql)) return { target_market: 'US', product_context: 'tree collar' };
     if (/FROM email_templates/.test(sql)) return { id: 3, body_html: 'be brief' };
+    if (/FROM email_settings/.test(sql)) return { sender_name: 'Celeste' };
     throw new Error(`Unexpected get: ${sql}`);
   };
   const query = async (sql) => {
@@ -70,6 +71,24 @@ async function runDraft(fake, overrides = {}) {
     withPatched(aiClient, { callActiveAi: fake.ai }, () =>
       emailDrafter.draftForCustomer({ campaignId: 5, customerId: 7, ...overrides })));
 }
+
+test('first-touch prompt uses configured sender and asks interest before commercial terms', () => {
+  const prompt = emailDrafter.buildUserPrompt({
+    customer: { name: 'Casey', country_region: 'US' },
+    campaign: { name: 'TRA-0429', product: 'Wood chipper' },
+    strategy: null,
+    styleGuide: 'Mention free shipping and a deadline.',
+    videos: [{ youtube_video_id: 'v1', title: 'A real project', play_count: 1000 }],
+    senderName: 'Celeste',
+    kind: 'first_touch'
+  });
+  assert.match(prompt, /Sender name: Celeste/);
+  assert.match(prompt, /only goal is to ask whether the creator is interested/);
+  assert.match(prompt, /Do not state or promise shipping/);
+  assert.match(prompt, /Never output placeholders such as \[Name\]/);
+  assert.match(prompt, /one blank line between every paragraph/);
+  assert.match(prompt, /override any conflicting general style-guide instruction/);
+});
 
 test('detectPlatform：target_platform 优先，其次平台 url，再次 platform+profile_url', () => {
   assert.equal(emailDrafter.detectPlatform(igCustomer, { target_platform: 'tiktok' }), 'tiktok');

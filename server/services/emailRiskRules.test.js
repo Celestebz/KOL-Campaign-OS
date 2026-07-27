@@ -48,8 +48,19 @@ test('metric mismatch detects wrong view counts in body', () => {
 });
 
 test('missing required terms is low risk', () => {
-  const missing = evaluateDraft({ ...base, bodyText: 'Hi, your content is great. Want to try our product?' });
+  const missing = evaluateDraft({ ...base, kind: 'follow_up', bodyText: 'Hi, your content is great. Want to try our product?' });
   assert.ok(missing.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
+});
+
+test('first touch does not require commission or fee terms', () => {
+  const result = evaluateDraft({ ...base, kind: 'first_touch', bodyText: 'Hi, your content is great. Would you be interested in learning more?' });
+  assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
+});
+
+test('negated contract and fixed fee language is not a price commitment', () => {
+  const result = evaluateDraft({ ...base, kind: 'follow_up', bodyText: 'We offer 5% commission. There is no contract or fixed fee.' });
+  assert.ok(!result.riskReasons.some((r) => r.code === 'PRICE_COMMITMENT'));
+  assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
 
 test('RISK_CODES covers all emitted codes', () => {
