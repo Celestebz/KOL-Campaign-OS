@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import axios from 'axios';
@@ -7,11 +7,12 @@ import { message } from 'antd';
 import CampaignKols, {
   defaultCooperationType,
   normalizeLegacyPriority,
-  normalizeLegacyProjectStatus
+  normalizeLegacyProjectStatus,
+  OUTREACH_STATUS_OPTIONS
 } from './CampaignKols';
 import { describeSyncResult } from './campaignKolSyncResult';
 
-jest.mock('axios', () => ({ get: jest.fn(), post: jest.fn() }));
+jest.mock('axios', () => ({ get: jest.fn(), post: jest.fn(), patch: jest.fn(), put: jest.fn() }));
 jest.mock('antd', () => {
   const actual = jest.requireActual('antd');
   return { ...actual, message: { ...actual.message, success: jest.fn(), error: jest.fn(), warning: jest.fn() } };
@@ -285,5 +286,93 @@ describe('CampaignKols 状态列按视图取舍', () => {
     render(<CampaignKols />);
     expect(await screen.findByText('Alice')).toBeInTheDocument();
     expect(screen.getByText('项目状态')).toBeInTheDocument();
+  });
+});
+
+describe('CampaignKols 状态字段按阶段分离', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockListRequests();
+    axios.patch.mockResolvedValue({ data: { success: true, data: {} } });
+    axios.put.mockResolvedValue({ data: { success: true, data: [] } });
+  });
+
+  async function openEditDialog() {
+    const editButtons = screen.getAllByRole('button', { name: /编辑/ });
+    fireEvent.click(editButtons[editButtons.length - 1]);
+    return screen.findByRole('dialog');
+  }
+
+  test('outreach options are exactly the seven specified values', () => {
+    expect(OUTREACH_STATUS_OPTIONS.map((option) => option.value)).toEqual([
+      'not_contacted', 'contacted', 'waiting_reply', 'negotiating',
+      'interested', 'confirmed', 'terminated'
+    ]);
+  });
+
+  test('candidate edit modal shows only 外联状态 with the waiting-note, save submits no project_status', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    const dialog = await openEditDialog();
+
+    expect(await within(dialog).findByText('外联状态')).toBeInTheDocument();
+    expect(within(dialog).queryByText('项目状态')).not.toBeInTheDocument();
+    expect(within(dialog).getByText('“待回复”表示 KOL 已回复，正在等待我方跟进回复')).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }));
+    await waitFor(() => expect(axios.patch).toHaveBeenCalled());
+    const [url, body] = axios.patch.mock.calls[0];
+    expect(url).toBe('/api/campaign-kols/7');
+    expect(body.outreach_status).toBe('not_contacted');
+    expect('project_status' in body).toBe(false);
+  });
+
+  test('cooperation edit modal shows only 项目状态, save submits no outreach_status', async () => {
+    render(<CampaignKols />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    const dialog = await openEditDialog();
+
+    expect(await within(dialog).findByText('项目状态')).toBeInTheDocument();
+    expect(within(dialog).queryByText('外联状态')).not.toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }));
+    await waitFor(() => expect(axios.patch).toHaveBeenCalled());
+    const body = axios.patch.mock.calls[0][1];
+    expect(body.project_status).toBeDefined();
+    expect('outreach_status' in body).toBe(false);
+  });
+
+  test('cooperation view hides the 外联状态 column', async () => {
+    render(<CampaignKols />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('项目状态')).toBeInTheDocument();
+    expect(screen.queryByText('外联状态')).not.toBeInTheDocument();
+  });
+
+  test('empty outreach_status shows 待联系 in candidate pool', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('待联系')).toBeInTheDocument();
+  });
+
+  test('legacy replied shows 待回复 and legacy rejected shows 已终止', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/campaigns') return Promise.resolve({ data: { data: [{ id: 3, name: 'Lobster Co' }] } });
+      if (url === '/api/campaign-kols') {
+        return Promise.resolve({
+          data: {
+            data: [
+              { ...kolRow, id: 8, kol_name: 'Bob', outreach_status: 'replied' },
+              { ...kolRow, id: 9, kol_name: 'Carol', outreach_status: 'rejected' }
+            ]
+          }
+        });
+      }
+      return Promise.resolve({ data: { data: [] } });
+    });
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Bob')).toBeInTheDocument();
+    expect(screen.getByText('待回复')).toBeInTheDocument();
+    expect(screen.getByText('已终止')).toBeInTheDocument();
   });
 });

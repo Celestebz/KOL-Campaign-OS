@@ -4,14 +4,14 @@ import {
   message, Modal, Popconfirm, Radio, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Tooltip
 } from 'antd';
 import {
-  DeleteOutlined, EditOutlined, MailOutlined, PlusOutlined, ReloadOutlined,
+  CopyOutlined, DeleteOutlined, EditOutlined, MailOutlined, PlusOutlined, ReloadOutlined,
   RobotOutlined, SendOutlined, WarningOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
 import {
   getEmailSettings, saveEmailSettings, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
-  getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft,
+  getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
   getEmailRecords,
   getEmailReplies, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, retryReplySummary, draftReply
 } from './emailApi';
@@ -34,9 +34,11 @@ const AI_STATUS_LABELS = {
 const DRAFT_STATUS_LABELS = {
   pending_review: { text: '待审阅', color: 'gold' },
   approved: { text: '已批准', color: 'green' },
+  sending: { text: '发送中', color: 'processing' },
   rejected: { text: '已驳回', color: 'red' },
   sent: { text: '已发送', color: 'blue' },
-  send_failed: { text: '发送失败', color: 'red' }
+  send_failed: { text: '发送失败', color: 'red' },
+  send_unknown: { text: '发送结果待确认', color: 'orange' }
 };
 
 const DRAFT_KIND_LABELS = {
@@ -128,7 +130,9 @@ function ApprovalTab() {
       message.success('邮件已发送，外联状态已同步');
       fetchDrafts();
     } catch (error) {
-      message.error(error.response?.data?.error || '发送失败');
+      message.error(error.response?.data?.error || (error.code === 'ECONNABORTED'
+        ? '发送请求超时，请先检查邮箱发件箱，切勿重复点击发送'
+        : `发送失败：${error.message || '未知错误'}`));
     } finally {
       setActionLoading(false);
     }
@@ -156,6 +160,42 @@ function ApprovalTab() {
       message.error(error.response?.data?.error || '发送失败');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const handleConfirmManualSent = async () => {
+    setActionLoading(true);
+    try {
+      await confirmManualSent(selected.id);
+      message.success('已标记为手动发送，外联状态已同步');
+      fetchDrafts();
+    } catch (error) {
+      message.error(error.response?.data?.error || '标记失败');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleConfirmNotSent = async () => {
+    setActionLoading(true);
+    try {
+      await confirmNotSent(selected.id);
+      message.success('已恢复为待审阅');
+      fetchDrafts();
+    } catch (error) {
+      message.error(error.response?.data?.error || '恢复失败');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleCopyRecipient = async () => {
+    if (!selected?.recipient_email) return;
+    try {
+      await navigator.clipboard.writeText(selected.recipient_email);
+      message.success('收件人邮箱已复制');
+    } catch (error) {
+      message.error('复制失败，请手动选择邮箱地址');
     }
   };
 
@@ -222,6 +262,35 @@ function ApprovalTab() {
                 <Alert type="warning" showIcon icon={<RobotOutlined />}
                   message="AI 生成，尚未发送" description="请先核对收件人、主题和正文。点击“发送”即代表批准，邮件会立即对外发送。" />
               )}
+              {selected.status === 'sending' && (
+                <Alert type="warning" showIcon message="邮件正在发送或上次发送未正常结束"
+                  description="为避免重复投递，请先检查邮箱发件箱；确认未发出后再联系管理员处理。" />
+              )}
+              {selected.status === 'send_unknown' && (
+                <Alert type="warning" showIcon message="发送结果待确认"
+                  description="SMTP 未返回明确结果。请先检查邮箱发件箱，系统不会自动重发。" />
+              )}
+              {!selected.recipient_email && (
+                <Alert type="error" showIcon message="未配置收件人邮箱"
+                  description="请先在 KOL 管理中补充邮箱地址，系统发送已禁用。" />
+              )}
+              <Input
+                addonBefore="收件人"
+                value={selected.recipient_email || ''}
+                readOnly
+                placeholder="未配置收件人邮箱"
+                addonAfter={(
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CopyOutlined />}
+                    disabled={!selected.recipient_email}
+                    onClick={handleCopyRecipient}
+                  >
+                    复制
+                  </Button>
+                )}
+              />
               <Input addonBefore="主题" value={editSubject}
                 disabled={selected.status !== 'pending_review'}
                 onChange={(e) => setEditSubject(e.target.value)} />
@@ -240,15 +309,51 @@ function ApprovalTab() {
                       cancelText="取消"
                       onConfirm={handleApprove}
                     >
-                      <Button type="primary" icon={<SendOutlined />} loading={actionLoading}>发送</Button>
+                      <Button type="primary" icon={<SendOutlined />} loading={actionLoading}
+                        disabled={!selected.recipient_email}>发送</Button>
                     </Popconfirm>
                     <Button danger onClick={() => setRejectOpen(true)}>驳回</Button>
                   </>
                 )}
                 {selected.status === 'approved' && (
-                  <Button type="primary" icon={<SendOutlined />} loading={actionLoading} onClick={handleSend}>
+                  <Button type="primary" icon={<SendOutlined />} loading={actionLoading}
+                    disabled={!selected.recipient_email} onClick={handleSend}>
                     发送
                   </Button>
+                )}
+                {selected.status === 'send_failed' && (
+                  <Popconfirm
+                    title="确认重新发送这封邮件？"
+                    description="仅在确认上一轮没有发送成功后重试，以免重复投递。"
+                    okText="确认重发"
+                    cancelText="取消"
+                    onConfirm={handleSend}
+                  >
+                    <Button type="primary" icon={<SendOutlined />} loading={actionLoading}
+                      disabled={!selected.recipient_email}>重新发送</Button>
+                  </Popconfirm>
+                )}
+                {['sending', 'send_unknown'].includes(selected.status) && (
+                  <>
+                    <Popconfirm
+                      title="确认已通过网页邮箱发送？"
+                      description="确认后系统将标记为已发送，并同步外联状态。"
+                      okText="确认已发送"
+                      cancelText="取消"
+                      onConfirm={handleConfirmManualSent}
+                    >
+                      <Button type="primary" loading={actionLoading}>确认已手动发送</Button>
+                    </Popconfirm>
+                    <Popconfirm
+                      title="确认这封邮件没有发出？"
+                      description="确认后草稿将恢复为待审阅，可重新编辑或发送。"
+                      okText="确认未发送"
+                      cancelText="取消"
+                      onConfirm={handleConfirmNotSent}
+                    >
+                      <Button loading={actionLoading}>确认未发送</Button>
+                    </Popconfirm>
+                  </>
                 )}
               </Space>
 

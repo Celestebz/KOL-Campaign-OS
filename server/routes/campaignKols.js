@@ -5,6 +5,8 @@ const {
   PROJECT_STATUSES,
   PRIORITY_LEVELS,
   PIPELINE_STAGES,
+  OUTREACH_STATUSES,
+  normalizeOutreachStatus,
   normalizeProjectStatus,
   normalizePriorityLevel
 } = require('../utils/campaignKolEnums');
@@ -385,10 +387,10 @@ router.post('/', async (req, res) => {
        (campaign_id, customer_id, kol_name_snapshot, contact_name_snapshot,
         youtube_url_snapshot, youtube_followers_snapshot, instagram_url_snapshot, instagram_followers_snapshot,
         tiktok_url_snapshot, tiktok_followers_snapshot, email_snapshot, country_region_snapshot,
-        quoted_price, exchange_rate, price_rmb, pipeline_stage, project_status, owner, notes,
+        quoted_price, exchange_rate, price_rmb, pipeline_stage, project_status, outreach_status, owner, notes,
         posts_30d_snapshot, avg_views_30d_snapshot, median_views_30d_snapshot,
         engagement_rate_30d_snapshot, youtube_snapshot_updated_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         campaignId,
         customerId,
@@ -405,7 +407,7 @@ router.post('/', async (req, res) => {
         clean(req.body.quoted_price || customer.video_price),
         clean(req.body.exchange_rate || customer.exchange_rate),
         clean(req.body.price_rmb || customer.price_rmb),
-        'candidate', 'pending_confirmation',
+        'candidate', 'pending_confirmation', 'not_contacted',
         clean(req.body.owner),
         clean(req.body.notes),
         customer.youtube_posts_30d,
@@ -437,16 +439,26 @@ router.patch('/:id', async (req, res) => {
           ? normalizeProjectStatus(req.body[field])
           : field === 'priority_level'
             ? normalizePriorityLevel(req.body[field])
-            : req.body[field];
+            : field === 'outreach_status'
+              ? normalizeOutreachStatus(req.body[field])
+              : req.body[field];
         if (field === 'project_status' && !PROJECT_STATUSES.has(value)) {
           return res.status(400).json({ success: false, error: 'Invalid project_status' });
         }
         if (field === 'priority_level' && !PRIORITY_LEVELS.has(value)) {
           return res.status(400).json({ success: false, error: 'Invalid priority_level' });
         }
+        if (field === 'outreach_status' && !OUTREACH_STATUSES.has(value)) {
+          return res.status(400).json({ success: false, error: 'Invalid outreach_status' });
+        }
         updates[field] = JSON_FIELDS.has(field) ? normalizeJsonField(value) : value;
       }
     }
+
+    // 阶段字段白名单：候选阶段只改外联状态，合作阶段只改项目状态，互不覆盖。
+    const stage = row.pipeline_stage || 'candidate';
+    if (stage === 'candidate') delete updates.project_status;
+    if (stage === 'confirmed') delete updates.outreach_status;
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ success: false, error: 'No editable fields provided' });
@@ -491,10 +503,14 @@ router.post('/:id/confirm-cooperation', async (req, res) => {
     if (row.pipeline_stage !== 'candidate') {
       return res.status(409).json({ success: false, error: '只有项目候选可以确认合作；历史合作记录不能确认合作' });
     }
+    if (['terminated', 'rejected'].includes(row.outreach_status)) {
+      return res.status(409).json({ success: false, error: '已终止的候选不能直接确认合作，请先恢复为其他外联状态' });
+    }
 
     await dbOperations.run(
       `UPDATE campaign_kols
        SET pipeline_stage = 'confirmed', project_status = 'pending_shipping',
+           outreach_status = 'confirmed',
            confirmed_at = CURRENT_TIMESTAMP, sync_status = 'sync_pending',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,

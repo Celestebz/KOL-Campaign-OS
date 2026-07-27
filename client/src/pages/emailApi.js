@@ -79,7 +79,7 @@ export async function regenerateDraft(id, feedback) {
 }
 
 export async function approveDraft(id) {
-  await axios.post(`/api/emails/drafts/${id}/approve`);
+  await axios.post(`/api/emails/drafts/${id}/approve`, undefined, { timeout: 60000 });
 }
 
 export async function rejectDraft(id, reason) {
@@ -87,7 +87,17 @@ export async function rejectDraft(id, reason) {
 }
 
 export async function sendDraft(id) {
-  const res = await axios.post(`/api/emails/drafts/${id}/send`);
+  const res = await axios.post(`/api/emails/drafts/${id}/send`, undefined, { timeout: 60000 });
+  return res.data.data;
+}
+
+export async function confirmManualSent(id) {
+  const res = await axios.post(`/api/emails/drafts/${id}/confirm-manual-sent`);
+  return res.data.data;
+}
+
+export async function confirmNotSent(id) {
+  const res = await axios.post(`/api/emails/drafts/${id}/confirm-not-sent`);
   return res.data.data;
 }
 

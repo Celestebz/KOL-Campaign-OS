@@ -45,9 +45,13 @@ const CAMPAIGN_STATUS_LABELS = {
 const OUTREACH_STATUS = {
   not_contacted: { label: '待联系', color: 'default' },
   contacted: { label: '已联系', color: 'blue' },
-  replied: { label: '已回复', color: 'gold' },
+  waiting_reply: { label: '待回复', color: 'gold' },
+  replied: { label: '待回复', color: 'gold' },
+  negotiating: { label: '沟通中', color: 'orange' },
   interested: { label: '有意向', color: 'green' },
-  rejected: { label: '已拒绝', color: 'red' }
+  confirmed: { label: '已确认', color: 'cyan' },
+  rejected: { label: '已终止', color: 'red' },
+  terminated: { label: '已终止', color: 'red' }
 };
 
 const CONTENT_STATUS_LABELS = {

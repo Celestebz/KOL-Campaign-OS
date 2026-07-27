@@ -51,6 +51,7 @@ async function runConfirmCooperation(initialRow, { id = initialRow?.id ?? 1 } = 
         ...state.row,
         pipeline_stage: 'confirmed',
         project_status: 'pending_shipping',
+        outreach_status: 'confirmed',
         confirmed_at: '2026-07-27 02:00:00',
         sync_status: 'sync_pending'
       };
@@ -89,12 +90,14 @@ test('confirm-cooperation moves a candidate to confirmed with pending_shipping a
   assert.ok(update, 'expected an UPDATE on campaign_kols');
   assert.ok(update.sql.includes("pipeline_stage = 'confirmed'"));
   assert.ok(update.sql.includes("project_status = 'pending_shipping'"));
+  assert.ok(update.sql.includes("outreach_status = 'confirmed'"));
   assert.ok(update.sql.includes('confirmed_at = CURRENT_TIMESTAMP'));
   assert.ok(update.sql.includes("sync_status = 'sync_pending'"));
   assert.deepEqual(update.params, [42]);
 
   assert.equal(finalRow.pipeline_stage, 'confirmed');
   assert.equal(finalRow.project_status, 'pending_shipping');
+  assert.equal(finalRow.outreach_status, 'confirmed');
   assert.ok(finalRow.confirmed_at, 'confirmed_at must be written');
   assert.equal(finalRow.sync_status, 'sync_pending');
   assert.equal(response.payload.data.pipeline_stage, 'confirmed');
@@ -151,4 +154,84 @@ test('confirm-cooperation rejects historical cooperation records', async () => {
   assert.equal(response.payload.success, false);
   assert.ok(response.payload.error.includes('历史合作记录不能确认合作'));
   assert.equal(writes.length, 0, 'historical records must not be modified');
+});
+
+test('confirm-cooperation rejects terminated candidates', async () => {
+  const { response, writes } = await runConfirmCooperation({ ...candidateRow, outreach_status: 'terminated' });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.payload.success, false);
+  assert.ok(response.payload.error.includes('已终止'));
+  assert.equal(writes.length, 0, 'terminated candidates must not be modified');
+
+  const legacy = await runConfirmCooperation({ ...candidateRow, outreach_status: 'rejected' });
+  assert.equal(legacy.response.statusCode, 409, 'legacy rejected is treated as terminated');
+});
+
+// ---- PATCH /:id 阶段字段白名单 ----
+async function runPatch(row, body) {
+  const writes = [];
+  const originalGet = dbOperations.get;
+  const originalRun = dbOperations.run;
+  dbOperations.get = async (sql, params = []) => {
+    if (String(sql).includes('FROM campaign_kols WHERE id = ?')) return { ...row };
+    return null;
+  };
+  dbOperations.run = async (sql, params = []) => {
+    writes.push({ sql: String(sql), params });
+    return { changes: 1 };
+  };
+  try {
+    const handler = findHandler(require('./campaignKols'), 'patch', '/:id');
+    const response = await callHandler(handler, { body, params: { id: String(row.id) } });
+    return { response, writes };
+  } finally {
+    dbOperations.get = originalGet;
+    dbOperations.run = originalRun;
+  }
+}
+
+test('PATCH applies outreach_status for candidates and ignores project_status', async () => {
+  const { response, writes } = await runPatch(
+    { ...candidateRow, outreach_status: 'not_contacted' },
+    { project_status: 'shipped', outreach_status: 'contacted' }
+  );
+
+  assert.equal(response.statusCode, 200, JSON.stringify(response.payload));
+  const update = writes.find((write) => write.sql.includes('UPDATE campaign_kols SET'));
+  assert.ok(update.sql.includes('outreach_status = ?'), 'candidate edit may update outreach_status');
+  assert.ok(!update.sql.includes('project_status = ?'), 'candidate edit must not overwrite project_status');
+  assert.ok(update.params.includes('contacted'));
+});
+
+test('PATCH normalizes legacy outreach values on write', async () => {
+  const { response, writes } = await runPatch(candidateRow, { outreach_status: 'replied' });
+
+  assert.equal(response.statusCode, 200, JSON.stringify(response.payload));
+  const update = writes.find((write) => write.sql.includes('UPDATE campaign_kols SET'));
+  assert.ok(update.sql.includes('outreach_status = ?'));
+  assert.ok(update.params.includes('waiting_reply'), 'legacy replied is written as waiting_reply');
+});
+
+test('PATCH applies project_status for confirmed rows and ignores outreach_status', async () => {
+  const confirmedRow = {
+    ...candidateRow,
+    pipeline_stage: 'confirmed',
+    project_status: 'pending_shipping',
+    outreach_status: 'confirmed'
+  };
+  const { response, writes } = await runPatch(confirmedRow, { project_status: 'shipped', outreach_status: 'terminated' });
+
+  assert.equal(response.statusCode, 200, JSON.stringify(response.payload));
+  const update = writes.find((write) => write.sql.includes('UPDATE campaign_kols SET'));
+  assert.ok(update.sql.includes('project_status = ?'), 'confirmed edit may update project_status');
+  assert.ok(!update.sql.includes('outreach_status = ?'), 'confirmed edit must not overwrite outreach_status');
+  assert.ok(update.params.includes('shipped'));
+});
+
+test('PATCH rejects invalid outreach_status values', async () => {
+  const { response } = await runPatch(candidateRow, { outreach_status: 'best_friends' });
+
+  assert.equal(response.statusCode, 400);
+  assert.ok(response.payload.error.includes('Invalid outreach_status'));
 });

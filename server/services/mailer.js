@@ -6,7 +6,12 @@ function createTransporter(settings) {
     host: settings.smtp_host,
     port: Number(settings.smtp_port) || 465,
     secure: settings.smtp_secure === undefined ? true : Boolean(settings.smtp_secure),
-    auth: { user: settings.username, pass: settings.password }
+    auth: { user: settings.username, pass: settings.password },
+    // 防止 SMTP 连接异常时请求无限挂起。socketTimeout 覆盖 DATA 阶段，
+    // 一旦此阶段超时，投递结果可能不确定，调用方不得自动重发。
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 45000
   });
 }
 

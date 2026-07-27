@@ -376,7 +376,8 @@ const VideoAnalysis = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">视频数据</h1>
+        <h1 className="page-title">内容分析</h1>
+        <p className="page-subtitle">合作视频与内容素材的复盘分析，沉淀可复用的内容资源。</p>
       </div>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>

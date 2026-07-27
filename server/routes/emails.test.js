@@ -96,7 +96,7 @@ test('POST /drafts/:id/send returns 409 when draft not approved', async () => {
     const handler = findHandler(require('./emails'), 'post', '/drafts/:id/send');
     const response = await callHandler(handler, { params: { id: 9 } });
     assert.equal(response.statusCode, 409);
-    assert.equal(response.payload.error, '仅已批准的草稿可发送');
+    assert.equal(response.payload.error, '仅已批准或发送失败的草稿可发送');
   });
 });
 
@@ -214,14 +214,14 @@ test('POST /replies/:id/confirm maps intent and writes back campaign_kols', asyn
     assert.equal(response.payload.success, true);
   });
   const updateKol = statements.find((s) => /UPDATE campaign_kols/.test(s.sql));
-  assert.ok(updateKol.params.includes('negotiating'));
+  assert.ok(updateKol.params.includes('waiting_reply'), 'question intent maps to waiting_reply');
   assert.ok(updateKol.params.includes('询问寄送'));
   assert.match(updateKol.sql, /sync_status = 'sync_pending'/);
   const updateReply = statements.find((s) => /UPDATE email_replies/.test(s.sql));
   assert.match(updateReply.sql, /confirm_status = 'confirmed'/);
 });
 
-test('POST /replies/:id/confirm uses body summary override and maps interested to replied', async () => {
+test('POST /replies/:id/confirm uses body summary override and maps interested to interested', async () => {
   const statements = [];
   await withPatchedDb({
     get: async (sql) => {
@@ -235,10 +235,10 @@ test('POST /replies/:id/confirm uses body summary override and maps interested t
   }, async () => {
     const handler = findHandler(require('./emails'), 'post', '/replies/:id/confirm');
     const response = await callHandler(handler, { params: { id: 6 }, body: { summary: '人工修正摘要' } });
-    assert.equal(response.payload.data.outreach_status, 'replied');
+    assert.equal(response.payload.data.outreach_status, 'interested');
   });
   const updateKol = statements.find((s) => /UPDATE campaign_kols/.test(s.sql));
-  assert.ok(updateKol.params.includes('replied'));
+  assert.ok(updateKol.params.includes('interested'));
   assert.ok(updateKol.params.includes('人工修正摘要'));
 });
 

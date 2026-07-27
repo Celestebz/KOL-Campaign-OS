@@ -768,14 +768,14 @@ router.post('/:id/candidate-pool', async (req, res) => {
     try {
       result = await dbOperations.run(
         `INSERT INTO campaign_kols
-         (campaign_id, customer_id, pipeline_stage, project_status, source, priority_level,
+         (campaign_id, customer_id, pipeline_stage, project_status, outreach_status, source, priority_level,
           cooperation_platforms, notes, project_notes,
           kol_name_snapshot, contact_name_snapshot, email_snapshot, country_region_snapshot,
           youtube_url_snapshot, youtube_followers_snapshot, instagram_url_snapshot, instagram_followers_snapshot,
           tiktok_url_snapshot, tiktok_followers_snapshot,
           posts_30d_snapshot, avg_views_30d_snapshot, median_views_30d_snapshot,
           engagement_rate_30d_snapshot, youtube_snapshot_updated_at, sync_status)
-         VALUES (?, ?, 'candidate', 'pending_confirmation', 'kol_master_manual', ?, ?, ?, ?,
+         VALUES (?, ?, 'candidate', 'pending_confirmation', 'not_contacted', 'kol_master_manual', ?, ?, ?, ?,
                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sync_pending')`,
         [
           campaignId,

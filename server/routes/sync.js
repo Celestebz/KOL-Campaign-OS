@@ -103,10 +103,6 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
   { field_name: '预估CPM', aliases: [], type: 2, accepted_types: [2] },
   { field_name: '预算审批状态', aliases: [], type: 3, accepted_types: [3], property: { options: [{ name: '待审批' }, { name: '已通过' }, { name: '未通过' }] } },
   {
-    field_name: '外联状态', aliases: [], type: 3, accepted_types: [1, 3],
-    property: { options: [{ name: '待联系' }, { name: '已联系' }, { name: '已回复' }, { name: '沟通中' }, { name: '有意向' }, { name: '已拒绝' }] }
-  },
-  {
     field_name: '项目状态', aliases: [], type: 3, accepted_types: [3],
     replace_options: true,
     property: { options: [
@@ -128,26 +124,18 @@ const EXECUTION_STATUSES = new Set([
   'pending_publish', 'published', 'cancelled'
 ]);
 
-const CANDIDATE_POOL_STATUS_LABELS = {
-  candidate: '候选',
-  to_contact: '候选',
-  contacted: '已联络',
-  replied: '已回复',
-  no_reply: '没回复',
-  negotiating: '沟通中',
-  pending_confirmation: '沟通中',
-  confirmed: '已确定',
-  not_fit: '不合适'
-};
-
 // campaign_kols.outreach_status stores English codes; Feishu shows Chinese labels.
+// replied/rejected are legacy values kept readable until the next edit rewrites them.
 const OUTREACH_STATUS_LABELS = {
   not_contacted: '待联系',
   contacted: '已联系',
-  replied: '已回复',
+  waiting_reply: '待回复',
+  replied: '待回复',
   negotiating: '沟通中',
   interested: '有意向',
-  rejected: '已拒绝'
+  confirmed: '已确认',
+  rejected: '已终止',
+  terminated: '已终止'
 };
 
 // Mirrors the candidate pool table curated by the user in Feishu. The system
@@ -158,7 +146,6 @@ const CANDIDATE_POOL_FIELD_SCHEMA = [
   { field_name: '国家地区', type: 1 },
   { field_name: '邮箱', type: 1, ui_type: 'Email' },
   { field_name: '主平台主页', type: 15 },
-  { field_name: '状态', type: 3, property: { options: [{ name: '候选' }, { name: '已联络' }, { name: '已回复' }, { name: '没回复' }, { name: '沟通中' }, { name: '已确定' }, { name: '已转项目跟进' }, { name: '不合适' }] } },
   { field_name: '合作SKU', type: 1 },
   { field_name: '合作平台', type: 4, property: { options: [{ name: 'YouTube' }, { name: 'Instagram' }, { name: 'TikTok' }, { name: 'Facebook' }, { name: 'X' }] } },
   { field_name: '粉丝数', type: 2 },
@@ -183,7 +170,7 @@ const CANDIDATE_POOL_FIELD_SCHEMA = [
   { field_name: '跟进人', type: 1 },
   {
     field_name: '外联状态', type: 3,
-    property: { options: [{ name: '待联系' }, { name: '已联系' }, { name: '已回复' }, { name: '沟通中' }, { name: '有意向' }, { name: '已拒绝' }] }
+    property: { options: [{ name: '待联系' }, { name: '已联系' }, { name: '待回复' }, { name: '沟通中' }, { name: '有意向' }, { name: '已确认' }, { name: '已终止' }] }
   },
   { field_name: '跟进记录', type: 1 }
 ];
@@ -964,11 +951,6 @@ function campaignKolStatusLabel(status) {
   return CAMPAIGN_KOL_STATUS_LABELS[normalized] || normalized;
 }
 
-function candidatePoolStatusLabel(status) {
-  const normalized = compact(status);
-  return CANDIDATE_POOL_STATUS_LABELS[normalized] || normalized;
-}
-
 function legacyCampaignKolFields(row) {
   const fields = {
     'KOL名称': compact(row.kol_name || row.kol_name_snapshot),
@@ -1037,7 +1019,6 @@ function campaignKolFields(row) {
   setNumberField(fields, '预计合作曝光', row.expected_views);
   setNumberField(fields, '预估CPM', row.estimated_cpm);
   setTextField(fields, '预算审批状态', row.budget_approval_status);
-  setTextField(fields, '外联状态', OUTREACH_STATUS_LABELS[row.outreach_status] || row.outreach_status);
   setTextField(fields, '项目状态', campaignKolStatusLabel(row.project_status));
   setTextField(fields, '备注', row.project_notes || row.notes);
   setDateTimeField(fields, '发货日期', row.shipping_date);
@@ -1046,13 +1027,14 @@ function campaignKolFields(row) {
   return fields;
 }
 
-// Fields the user removed from the candidate pool table; never written there.
-const CANDIDATE_POOL_OMITTED_FIELDS = ['项目状态', '交付内容', '预计上线时间', '收货地址', '发货日期', '物流单号'];
+// Fields never written to the candidate pool table: 候选阶段只有外联状态；
+// 「状态」「项目状态」与物流字段都属于确认合作后的项目跟进语义。
+const CANDIDATE_POOL_OMITTED_FIELDS = ['状态', '项目状态', '交付内容', '预计上线时间', '收货地址', '发货日期', '物流单号'];
 
 function candidatePoolKolFields(row) {
   const fields = campaignKolFields(row);
   for (const name of CANDIDATE_POOL_OMITTED_FIELDS) delete fields[name];
-  fields['状态'] = candidatePoolStatusLabel(row.project_status);
+  setTextField(fields, '外联状态', OUTREACH_STATUS_LABELS[row.outreach_status] || row.outreach_status || '待联系');
   setTextField(fields, '跟进记录', row.last_reply_summary);
   return fields;
 }
@@ -1076,14 +1058,14 @@ function isCandidatePoolTable(config, tableId) {
   return Object.values(config.campaign_subtable_map || {}).includes(tableId);
 }
 
-// Best-effort: when a KOL moves to the execution table, mark its old candidate
-// pool record as confirmed. Callers ignore failures (the old record may be gone).
-async function markCandidatePoolConfirmed(config, token, tableId, recordId) {
+// Best-effort: when a KOL moves to the tracking table, mark its old candidate
+// pool record outreach status as 已确认. Failures surface as warnings.
+async function markCandidatePoolOutreachConfirmed(config, token, tableId, recordId) {
   const url = `${config.base_url}/open-apis/bitable/v1/apps/${encodeURIComponent(config.app_token)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`;
   await fetchJson(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ fields: { 状态: '已转项目跟进' } })
+    body: JSON.stringify({ fields: { 外联状态: '已确认' } })
   });
 }
 
@@ -1222,13 +1204,15 @@ async function syncCampaignKols(config, token, ids = []) {
       // The row moved from the candidate pool to the execution table: mark the
       // old pool record as confirmed (best effort, the pool record may be gone).
       const candidateRecordId = row.candidate_feishu_record_id || row.feishu_record_id;
+      let poolWarning = null;
       if (!targetIsPool && candidateRecordId) {
         const poolTableId = getCampaignKolTableId(config, row);
         if (poolTableId && isCandidatePoolTable(config, poolTableId)) {
           try {
-            await markCandidatePoolConfirmed(config, token, poolTableId, candidateRecordId);
+            await markCandidatePoolOutreachConfirmed(config, token, poolTableId, candidateRecordId);
           } catch (error) {
-            // best effort
+            // 候选池回写失败不回滚确认合作：标记部分失败，允许后续重试
+            poolWarning = `候选池回写失败：${error.message}`;
           }
         }
       }
@@ -1245,7 +1229,7 @@ async function syncCampaignKols(config, token, ids = []) {
           [recordId, 'synced', row.id]
         );
       }
-      results.push({ type: 'campaign_kol', id: row.id, success: true, record_id: recordId });
+      results.push({ type: 'campaign_kol', id: row.id, success: true, record_id: recordId, ...(poolWarning ? { warning: poolWarning } : {}) });
     } catch (error) {
       await dbOperations.run('UPDATE campaign_kols SET sync_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['sync_failed', row.id]);
       results.push({ type: 'campaign_kol', id: row.id, success: false, error: error.message });
@@ -1735,10 +1719,9 @@ module.exports.KOL_FIELD_RENAMES = KOL_FIELD_RENAMES;
 module.exports.syncRefreshedKolAndCandidates = syncRefreshedKolAndCandidates;
 module.exports.syncKolsBulk = syncKolsBulk;
 module.exports.candidatePoolKolFields = candidatePoolKolFields;
-module.exports.candidatePoolStatusLabel = candidatePoolStatusLabel;
 module.exports.ensureCandidatePoolFields = ensureCandidatePoolFields;
 module.exports.CANDIDATE_POOL_FIELD_SCHEMA = CANDIDATE_POOL_FIELD_SCHEMA;
-module.exports.CANDIDATE_POOL_STATUS_LABELS = CANDIDATE_POOL_STATUS_LABELS;
+module.exports.OUTREACH_STATUS_LABELS = OUTREACH_STATUS_LABELS;
 module.exports.EXECUTION_STATUSES = EXECUTION_STATUSES;
 module.exports.campaignKolTargetTableId = campaignKolTargetTableId;
 module.exports.isCandidatePoolTable = isCandidatePoolTable;

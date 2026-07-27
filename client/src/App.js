@@ -56,7 +56,7 @@ function App() {
     setAuthState('guest');
   };
 
-  // 一级导航收缩为 4 项；/send、/records 不进菜单，路由保留。
+  // 一级导航收缩为 4 项；/records 不进菜单，路由保留；/send 以「内容分析」归入资料库。
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: '工作台' },
     {
@@ -76,7 +76,8 @@ function App() {
       label: '资料库',
       children: [
         { key: '/products', label: '产品目录' },
-        { key: '/customers', label: 'KOL 管理' }
+        { key: '/customers', label: 'KOL 管理' },
+        { key: '/send', label: '内容分析' }
       ]
     },
     {
@@ -100,6 +101,7 @@ function App() {
     '/emails': 'project',
     '/products': 'library',
     '/customers': 'library',
+    '/send': 'library',
     '/settings': 'system',
     '/templates': 'system'
   };

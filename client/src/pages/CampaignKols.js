@@ -95,6 +95,55 @@ export const normalizeLegacyPriority = (value) => ({
   normal: 't2'
 }[String(value || '').toLowerCase()] || String(value || '').toLowerCase() || undefined);
 
+// 候选外联状态：七个标准选项；replied/rejected 为旧数据兼容值
+export const OUTREACH_STATUS_OPTIONS = [
+  { value: 'not_contacted', label: '待联系' },
+  { value: 'contacted', label: '已联系' },
+  { value: 'waiting_reply', label: '待回复' },
+  { value: 'negotiating', label: '沟通中' },
+  { value: 'interested', label: '有意向' },
+  { value: 'confirmed', label: '已确认' },
+  { value: 'terminated', label: '已终止' }
+];
+
+export const OUTREACH_STATUS_LABELS = {
+  not_contacted: '待联系',
+  contacted: '已联系',
+  replied: '待回复',
+  waiting_reply: '待回复',
+  negotiating: '沟通中',
+  interested: '有意向',
+  confirmed: '已确认',
+  rejected: '已终止',
+  terminated: '已终止'
+};
+
+export const OUTREACH_STATUS_COLORS = {
+  contacted: 'blue',
+  replied: 'gold',
+  waiting_reply: 'gold',
+  negotiating: 'orange',
+  interested: 'green',
+  confirmed: 'cyan',
+  rejected: 'red',
+  terminated: 'red'
+};
+
+export const PROJECT_STATUS_OPTIONS = [
+  { value: 'pending_shipping', label: '待发货' },
+  { value: 'shipped', label: '已发货' },
+  { value: 'delivered', label: '已签收' },
+  { value: 'content_preparation', label: '内容准备中' },
+  { value: 'pending_publish', label: '待上线' },
+  { value: 'published', label: '已上线' },
+  { value: 'cancelled', label: '已取消' }
+];
+
+export const normalizeLegacyOutreach = (value) => ({
+  replied: 'waiting_reply',
+  rejected: 'terminated'
+}[String(value || '').toLowerCase()] || value);
+
 export const defaultCooperationType = (value) => value || 'product_exchange';
 
 const RUN_TERMINAL_STATUSES = ['success', 'partial_failed', 'failed'];
@@ -183,6 +232,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     values.expected_publish_at = values.expected_publish_at ? String(values.expected_publish_at).slice(0, 10) : undefined;
     values.shipping_date = values.shipping_date ? String(values.shipping_date).slice(0, 10) : undefined;
     values.project_status = normalizeLegacyProjectStatus(values.project_status);
+    values.outreach_status = normalizeLegacyOutreach(values.outreach_status) || 'not_contacted';
     values.priority_level = normalizeLegacyPriority(values.priority_level);
     values.contact_name_override = values.contact_name_override || values.contact_name || values.contact_name_snapshot || '';
     values.cooperation_type = defaultCooperationType(values.cooperation_type);
@@ -265,6 +315,9 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       const publishedVideoUrls = formValues.published_video_urls || '';
       const values = { ...formValues };
       delete values.published_video_urls;
+      // 阶段字段白名单：候选只提交外联状态，合作只提交项目状态
+      if (isCandidatePool) delete values.project_status;
+      else delete values.outreach_status;
       if (values.cooperation_type === 'product_exchange') {
         values.final_fee = 0;
         values.currency = null;
@@ -536,11 +589,10 @@ const CampaignKols = ({ view = 'cooperation' }) => {
         : '-'
     )},
     { title: '合作方式', dataIndex: 'cooperation_type', key: 'cooperation_type', width: 120, render: (v) => <Tag>{cooperationTypeLabel(v)}</Tag> },
-    { title: '外联状态', dataIndex: 'outreach_status', key: 'outreach_status', width: 110, render: (v) => {
-      const labels = { not_contacted: '待联系', contacted: '已联系', replied: '已回复', interested: '有意向', rejected: '已拒绝' };
-      const colors = { contacted: 'blue', replied: 'gold', interested: 'green', rejected: 'red' };
-      return v ? <Tag color={colors[v] || 'default'}>{labels[v] || v}</Tag> : '-';
-    } },
+    ...(isCandidatePool ? [{ title: '外联状态', dataIndex: 'outreach_status', key: 'outreach_status', width: 110, render: (v) => {
+      const value = v || 'not_contacted';
+      return <Tag color={OUTREACH_STATUS_COLORS[value] || 'default'}>{OUTREACH_STATUS_LABELS[value] || value}</Tag>;
+    } }] : []),
     { title: '合作平台', dataIndex: 'cooperation_platforms', key: 'cooperation_platforms', width: 180, render: (v, r) => {
       const values = parsePlatforms(v, [r.platform_account_platform].filter(Boolean));
       return values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-';
@@ -843,9 +895,15 @@ const CampaignKols = ({ view = 'cooperation' }) => {
             </Form.Item>
           </Space>
           <Space align="start" style={{ width: '100%' }}>
-            <Form.Item label="项目状态" name="project_status">
-              <Select options={statusOptions} style={{ width: 170 }} />
-            </Form.Item>
+            {isCandidatePool ? (
+              <Form.Item label="外联状态" name="outreach_status" extra="“待回复”表示 KOL 已回复，正在等待我方跟进回复">
+                <Select options={OUTREACH_STATUS_OPTIONS} style={{ width: 170 }} />
+              </Form.Item>
+            ) : (
+              <Form.Item label="项目状态" name="project_status">
+                <Select options={PROJECT_STATUS_OPTIONS} style={{ width: 170 }} />
+              </Form.Item>
+            )}
             <Form.Item label="优先级" name="priority_level">
               <Select options={priorityOptions} style={{ width: 190 }} />
             </Form.Item>

@@ -546,9 +546,9 @@ function recordCallsTo(calls, tableId) {
   return calls.filter((call) => call.url.includes(`/tables/${tableId}/records`));
 }
 
-test('candidate pool push writes 状态 and omits lifecycle/logistics fields', async () => {
+test('candidate pool push writes only 外联状态 and omits 状态/项目状态/logistics fields', async () => {
   const { response, calls } = await runCampaignKolPush(
-    [buildCampaignKolRow({ project_status: 'contacted' })],
+    [buildCampaignKolRow({ project_status: 'pending_confirmation', outreach_status: 'contacted' })],
     { configRow: poolFeishuConfigRow }
   );
   assert.equal(response.statusCode, 200);
@@ -557,8 +557,8 @@ test('candidate pool push writes 状态 and omits lifecycle/logistics fields', a
   const poolCalls = recordCallsTo(calls, 'tbl_pool_3');
   assert.equal(poolCalls.length, 1);
   const fields = JSON.parse(poolCalls[0].options.body).fields;
-  assert.equal(fields['状态'], '已联络');
-  for (const name of ['项目状态', '发货日期', '物流单号', '交付内容', '预计上线时间', '收货地址']) {
+  assert.equal(fields['外联状态'], '已联系');
+  for (const name of ['状态', '项目状态', '发货日期', '物流单号', '交付内容', '预计上线时间', '收货地址']) {
     assert.equal(Object.prototype.hasOwnProperty.call(fields, name), false, `${name} should be omitted`);
   }
   assert.equal(fields['达人名称'], 'Alice');
@@ -584,12 +584,13 @@ test('execution-stage rows push to the tracking table and mark the old pool reco
   assert.equal(fields['项目状态'], '已发货');
   assert.equal(fields['物流单号'], 'SF123456');
   assert.equal(Object.prototype.hasOwnProperty.call(fields, '状态'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '外联状态'), false, 'tracking table never gets 外联状态');
 
   const poolCalls = recordCallsTo(calls, 'tbl_pool_3');
   assert.equal(poolCalls.length, 1);
   assert.equal(poolCalls[0].options.method, 'PUT');
   assert.ok(poolCalls[0].url.includes('/records/rec_pool_1'));
-  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 状态: '已转项目跟进' });
+  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 外联状态: '已确认' });
 });
 
 test('execution-stage rows fail with a clear error when the campaign has no tracking table mapping', async () => {
@@ -610,35 +611,67 @@ test('execution-stage rows fail with a clear error when the campaign has no trac
   assert.ok(response.payload.data.results[0].error.includes('尚未配置飞书项目跟进表'));
 });
 
-test('candidatePoolKolFields maps internal statuses to pool labels', () => {
+test('candidatePoolKolFields maps outreach statuses incl. legacy, never writes 状态/项目状态', () => {
   const { candidatePoolKolFields } = require('./sync');
-  assert.equal(candidatePoolKolFields({ project_status: 'candidate' })['状态'], '候选');
-  assert.equal(candidatePoolKolFields({ project_status: 'negotiating' })['状态'], '沟通中');
-  assert.equal(candidatePoolKolFields({ project_status: 'pending_confirmation' })['状态'], '沟通中');
-  assert.equal(candidatePoolKolFields({ project_status: 'confirmed' })['状态'], '已确定');
-  assert.equal(candidatePoolKolFields({ project_status: 'not_fit' })['状态'], '不合适');
+  const base = { kol_name_snapshot: 'Alice', cooperation_platforms: '[]' };
+  const expected = {
+    not_contacted: '待联系', contacted: '已联系', waiting_reply: '待回复', replied: '待回复',
+    negotiating: '沟通中', interested: '有意向', confirmed: '已确认', rejected: '已终止', terminated: '已终止'
+  };
+  for (const [status, label] of Object.entries(expected)) {
+    assert.equal(candidatePoolKolFields({ ...base, outreach_status: status })['外联状态'], label, `outreach ${status}`);
+  }
+  const fields = candidatePoolKolFields({ ...base, project_status: 'pending_confirmation', outreach_status: 'contacted' });
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '状态'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fields, '项目状态'), false);
 });
 
-test('candidatePoolKolFields includes follow-up note; campaignKolFields maps outreach status', () => {
+test('candidatePoolKolFields includes follow-up note; campaignKolFields writes only 项目状态', () => {
   const { candidatePoolKolFields, campaignKolFields } = require('./sync');
   const pool = candidatePoolKolFields({ kol_name_snapshot: 'Alice', last_reply_summary: '询问寄送', cooperation_platforms: '[]' });
   assert.equal(pool['跟进记录'], '询问寄送');
-  const tracking = campaignKolFields({ kol_name_snapshot: 'Alice', outreach_status: 'contacted', cooperation_platforms: '[]' });
-  assert.equal(tracking['外联状态'], '已联系');
+  const tracking = campaignKolFields({ kol_name_snapshot: 'Alice', outreach_status: 'contacted', project_status: 'pending_shipping', cooperation_platforms: '[]' });
+  assert.equal(tracking['项目状态'], '待发货');
+  assert.equal(Object.prototype.hasOwnProperty.call(tracking, '外联状态'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(tracking, '状态'), false);
 });
 
-test('candidate pool schema declares the follow-up note field; outreach status field exists in both schemas', () => {
+test('candidate pool schema has only 外联状态 with the seven options; tracking schema has only 项目状态', () => {
   const { CANDIDATE_POOL_FIELD_SCHEMA, PROJECT_TRACKING_FIELD_SCHEMA } = require('./sync');
   const followUp = CANDIDATE_POOL_FIELD_SCHEMA.find((field) => field.field_name === '跟进记录');
   assert.ok(followUp, 'candidate pool schema missing 跟进记录');
-  assert.equal(followUp.type, 1);
-  for (const schema of [CANDIDATE_POOL_FIELD_SCHEMA, PROJECT_TRACKING_FIELD_SCHEMA]) {
-    const outreach = schema.find((field) => field.field_name === '外联状态');
-    assert.ok(outreach, 'schema missing 外联状态');
-    const optionNames = (outreach.property?.options || []).map((option) => option.name);
-    for (const name of ['待联系', '已联系', '已回复', '沟通中', '有意向', '已拒绝']) {
-      assert.ok(optionNames.includes(name), `外联状态 missing option ${name}`);
+  assert.ok(!CANDIDATE_POOL_FIELD_SCHEMA.some((field) => field.field_name === '状态'), 'pool schema must not declare 状态');
+  assert.ok(!CANDIDATE_POOL_FIELD_SCHEMA.some((field) => field.field_name === '项目状态'), 'pool schema must not declare 项目状态');
+  const outreach = CANDIDATE_POOL_FIELD_SCHEMA.find((field) => field.field_name === '外联状态');
+  assert.ok(outreach, 'pool schema missing 外联状态');
+  assert.deepEqual(
+    (outreach.property?.options || []).map((option) => option.name),
+    ['待联系', '已联系', '待回复', '沟通中', '有意向', '已确认', '已终止']
+  );
+  assert.ok(!PROJECT_TRACKING_FIELD_SCHEMA.some((field) => field.field_name === '外联状态'), 'tracking schema must not declare 外联状态');
+  assert.ok(!PROJECT_TRACKING_FIELD_SCHEMA.some((field) => field.field_name === '状态'), 'tracking schema must not declare 状态');
+  assert.ok(PROJECT_TRACKING_FIELD_SCHEMA.some((field) => field.field_name === '项目状态'), 'tracking schema missing 项目状态');
+});
+
+test('candidate pool field initializer never recreates 状态 or 项目状态 columns', async () => {
+  const syncRoute = require('./sync');
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (!options.method) {
+      return { ok: true, text: async () => JSON.stringify({ code: 0, data: { items: [] } }) };
     }
+    return { ok: true, text: async () => JSON.stringify({ code: 0, data: { field: { field_id: 'fld_new' } } }) };
+  };
+  try {
+    await syncRoute.ensureCandidatePoolFields({ base_url: 'https://open.feishu.cn', app_token: 'base' }, 'token', 'tbl_pool');
+    const createdNames = calls.filter((call) => call.options.method === 'POST').map((call) => JSON.parse(call.options.body).field_name);
+    assert.ok(createdNames.includes('外联状态'), '外联状态 is ensured');
+    assert.ok(!createdNames.includes('状态'), '状态 must never be recreated');
+    assert.ok(!createdNames.includes('项目状态'), '项目状态 must never be recreated');
+  } finally {
+    global.fetch = originalFetch;
   }
 });
 
@@ -646,6 +679,29 @@ const stageConfig = {
   campaign_subtable_map: { 3: 'tbl_pool_3' },
   campaign_tracking_map: { 3: 'tbl_execution' }
 };
+
+test('pool outreach mark failure becomes a warning without failing the tracking push', async () => {
+  const { response } = await runCampaignKolPush(
+    [buildCampaignKolRow({
+      pipeline_stage: 'confirmed',
+      project_status: 'pending_shipping',
+      candidate_feishu_record_id: 'rec_candidate_1',
+      tracking_feishu_record_id: null
+    })],
+    {
+      configRow: poolFeishuConfigRow,
+      recordHandler: async (url, options) => {
+        if (options.method === 'PUT' && url.includes('/tables/tbl_pool_3/records/rec_candidate_1')) {
+          return { ok: true, text: async () => JSON.stringify({ code: 1254001, msg: 'BadRequest' }) };
+        }
+        return { ok: true, text: async () => JSON.stringify({ code: 0, data: { record: { record_id: 'rec_created' } } }) };
+      }
+    }
+  );
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+  assert.equal(response.payload.data.results[0].success, true);
+  assert.ok(response.payload.data.results[0].warning.includes('候选池回写失败'));
+});
 
 test('campaignKolTargetTableId routes by pipeline_stage, not by legacy project_status', () => {
   const { campaignKolTargetTableId } = require('./sync');
@@ -709,7 +765,7 @@ test('confirmed push keeps candidate and tracking record ids in separate columns
   assert.equal(poolCalls.length, 1);
   assert.equal(poolCalls[0].options.method, 'PUT');
   assert.ok(poolCalls[0].url.includes('/records/rec_candidate_1'));
-  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 状态: '已转项目跟进' });
+  assert.deepEqual(JSON.parse(poolCalls[0].options.body).fields, { 外联状态: '已确认' });
 
   // The tracking write must not overwrite candidate_feishu_record_id.
   const trackingWrite = writes.find((write) => write.sql.includes('tracking_feishu_record_id = ?'));

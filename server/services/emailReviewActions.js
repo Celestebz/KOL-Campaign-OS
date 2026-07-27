@@ -4,9 +4,9 @@
 const { dbOperations } = require('../database');
 
 const INTENT_TO_OUTREACH = {
-  interested: 'replied',
-  question: 'negotiating',
-  rejected: 'replied',
+  interested: 'interested',
+  question: 'waiting_reply',
+  rejected: 'terminated',
   other: 'negotiating'
 };
 

@@ -301,7 +301,7 @@ router.get('/drafts', async (req, res) => {
     if (campaign_id) { conditions.push('d.campaign_id = ?'); params.push(campaign_id); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const drafts = (await dbOperations.query(
-      `SELECT d.*, k.name AS kol_name, c.name AS campaign_name
+      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name
        FROM email_drafts d
        LEFT JOIN customers k ON k.id = d.customer_id
        LEFT JOIN campaigns c ON c.id = d.campaign_id
@@ -330,7 +330,7 @@ router.get('/drafts', async (req, res) => {
 router.get('/drafts/:id', async (req, res) => {
   try {
     const draft = await dbOperations.get(
-      `SELECT d.*, k.name AS kol_name, c.name AS campaign_name
+      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name
        FROM email_drafts d
        LEFT JOIN customers k ON k.id = d.customer_id
        LEFT JOIN campaigns c ON c.id = d.campaign_id
@@ -415,6 +415,24 @@ router.post('/drafts/:id/send', async (req, res) => {
   try {
     const result = await emailDraftSender.sendApprovedDraft(req.params.id);
     res.json({ success: true, message: '发送成功', data: result });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.post('/drafts/:id/confirm-manual-sent', async (req, res) => {
+  try {
+    const result = await emailDraftSender.confirmManuallySent(req.params.id);
+    res.json({ success: true, message: '已标记为手动发送', data: result });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.post('/drafts/:id/confirm-not-sent', async (req, res) => {
+  try {
+    const result = await emailDraftSender.confirmNotSent(req.params.id);
+    res.json({ success: true, message: '已恢复为待审阅', data: result });
   } catch (error) {
     sendActionError(res, error);
   }

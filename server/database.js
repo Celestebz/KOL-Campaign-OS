@@ -32,11 +32,15 @@ const dbOperations = {
       type: sequelize.QueryTypes.RAW,
       logging: false
     });
-    // MySQL2 raw results: INSERT returns [insertId, affectedRows]; UPDATE/DELETE return [affectedRows].
+    // MySQL2 raw results: INSERT returns [insertId, affectedRows];
+    // UPDATE/DELETE return [ResultSetHeader, ResultSetHeader]（对象，affectedRows 在属性上）。
     const isInsert = /^\s*INSERT\b/i.test(sql);
+    const affected = typeof metadata === 'number'
+      ? metadata
+      : (metadata?.affectedRows ?? result?.affectedRows ?? result);
     return {
       id: isInsert ? (Number(result) || 0) : 0,
-      changes: Number(metadata !== undefined ? metadata : result) || 0
+      changes: Number(affected) || 0
     };
   }
 };

@@ -300,6 +300,7 @@ async function upsertCampaignKol(campaignId, customer, platformAccount, candidat
     source: 'raw_candidate',
     pipeline_stage: 'candidate',
     project_status: 'pending_confirmation',
+    outreach_status: 'not_contacted',
     priority_level: candidate.ai_score >= 80 ? 'high' : 'normal',
     candidate_priority_score: normalizeNumber(candidate.ai_score),
     best_evidence_url: clean(candidate.video_url || candidate.evidence_url),
