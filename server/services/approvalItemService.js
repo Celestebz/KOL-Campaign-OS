@@ -246,7 +246,8 @@ async function listPendingWorkbenchItems() {
 
 // summary 口径与阶段 B 一致：pending 不含 exception；handled_today 为 approval_items 当日人工决定数
 async function getSummary() {
-  const row = await dbOperations.get(
+  const [row, unmatchedReplyRow] = await Promise.all([
+    dbOperations.get(
     `SELECT
        COALESCE(SUM(CASE WHEN status = 'pending' AND type <> 'exception' THEN 1 ELSE 0 END), 0) AS pending,
        COALESCE(SUM(CASE WHEN status = 'pending' AND type <> 'exception' AND priority = 'high' THEN 1 ELSE 0 END), 0) AS high_risk,
@@ -254,13 +255,58 @@ async function getSummary() {
        COALESCE(SUM(CASE WHEN decision IS NOT NULL AND decision <> 'source_gone'
                           AND decided_at IS NOT NULL AND DATE(decided_at) = CURDATE() THEN 1 ELSE 0 END), 0) AS handled_today
      FROM approval_items`
-  );
+    ),
+    dbOperations.get(
+      `SELECT COUNT(*) AS unmatched_replies
+       FROM email_replies
+       WHERE confirm_status = 'pending' AND campaign_id IS NULL`
+    )
+  ]);
   return {
     pending: Number(row?.pending || 0),
     high_risk: Number(row?.high_risk || 0),
     exceptions: Number(row?.exceptions || 0),
-    handled_today: Number(row?.handled_today || 0)
+    handled_today: Number(row?.handled_today || 0),
+    unmatched_replies: Number(unmatchedReplyRow?.unmatched_replies || 0)
   };
+}
+
+function runLabel(runType) {
+  return { email_draft_batch: '批量生成邮件草稿' }[runType] || runType || '后台任务';
+}
+
+// 只读聚合当前正在运行的自动化与达人寻找任务，不要求老板手工维护状态。
+async function listActiveRuns() {
+  const [runs, finderTasks] = await Promise.all([
+    dbOperations.query(
+      `SELECT r.*, c.name AS campaign_name
+       FROM automation_runs r LEFT JOIN campaigns c ON c.id = r.campaign_id
+       WHERE r.status = 'running' AND c.status = 'active' ORDER BY r.started_at DESC, r.id DESC`
+    ),
+    dbOperations.query(
+      `SELECT f.*, c.name AS campaign_name
+       FROM finder_tasks f LEFT JOIN campaigns c ON c.id = f.campaign_id
+       WHERE f.status = 'running' AND c.status = 'active' ORDER BY f.started_at DESC, f.id DESC`
+    )
+  ]);
+  const automation = runs.map((row) => {
+    const progress = parseJsonColumn(row.progress_json, {}) || {};
+    return {
+      id: row.id, source: 'automation_run', campaign_id: row.campaign_id,
+      campaign_name: row.campaign_name || '', task_name: runLabel(row.run_type),
+      current_node: row.current_node || '执行中', total: Number(progress.total || 0),
+      completed: Number(progress.completed || 0), started_at: iso(row.started_at),
+      next_step: '完成后进入下一审核节点；失败则进入异常处理'
+    };
+  });
+  const finder = finderTasks.map((row) => ({
+    id: row.id, source: 'finder_task', campaign_id: row.campaign_id,
+    campaign_name: row.campaign_name || '', task_name: row.name || '寻找候选达人',
+    current_node: '搜索与验证达人', total: Number(row.result_count || 0),
+    completed: Number(row.success_count || 0) + Number(row.failed_count || 0),
+    started_at: iso(row.started_at), next_step: '生成候选达人，等待人工审核'
+  }));
+  return [...automation, ...finder].sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')));
 }
 
 // 最近 10 条人工决定（含 request_changes 这类仍为 pending 的决定；不含 source_gone 自动取消）
@@ -274,6 +320,7 @@ async function listRecentDecisions(limit = 10) {
   );
   return rows.map((row) => {
     const item = toApiItem(row);
+    const followup = [...(item.actions || [])].reverse().find((action) => action && action.key === 'auto_followup');
     const href = row.type === 'exception'
       ? (row.subject_type === 'finder' ? '/finder' : '/emails')
       : (TYPE_HREFS[row.type] || '/');
@@ -281,6 +328,7 @@ async function listRecentDecisions(limit = 10) {
       title: item.title,
       decision: DECISION_LABELS[row.decision] || row.decision,
       decided_at: item.decided_at,
+      followup_summary: followup ? followup.summary : '',
       href
     };
   });
@@ -313,6 +361,36 @@ async function submitDecision(id, { decision, note, version, decided_by } = {}) 
   return getApprovalItem(id);
 }
 
+async function submitCandidateDecisions(items, { decision, note, decided_by } = {}) {
+  if (!['approve', 'reject'].includes(decision)) {
+    throw serviceError('候选达人批量审核只支持通过或淘汰', 400);
+  }
+  if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
+    throw serviceError('请选择 1–100 位候选达人', 400);
+  }
+  const results = [];
+  for (const entry of items) {
+    const row = await dbOperations.get('SELECT * FROM approval_items WHERE id = ?', [entry.id]);
+    if (!row || row.type !== 'candidate') {
+      results.push({ id: entry.id, success: false, error: '候选审核事项不存在' });
+      continue;
+    }
+    try {
+      const item = await submitDecision(entry.id, {
+        decision, note, version: entry.version, decided_by
+      });
+      results.push({ id: entry.id, success: true, item });
+    } catch (error) {
+      results.push({ id: entry.id, success: false, error: error.message });
+    }
+  }
+  return {
+    succeeded: results.filter((result) => result.success).length,
+    failed: results.filter((result) => !result.success).length,
+    results
+  };
+}
+
 module.exports = {
   APPROVAL_TYPES,
   DECISION_TO_STATUS,
@@ -321,6 +399,8 @@ module.exports = {
   listApprovalItems,
   listPendingWorkbenchItems,
   getSummary,
+  listActiveRuns,
   listRecentDecisions,
-  submitDecision
+  submitDecision,
+  submitCandidateDecisions
 };

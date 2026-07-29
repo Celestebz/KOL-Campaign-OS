@@ -5,11 +5,11 @@ describe('workbench constants', () => {
     expect(Object.keys(ITEM_TYPE)).toEqual(
       expect.arrayContaining(['strategy', 'candidate', 'outreach', 'reply', 'budget', 'exception'])
     );
-    expect(getItemType('strategy').label).toBe('策略审核');
+    expect(getItemType('strategy').label).toBe('达人策略');
     expect(getItemType('candidate').label).toBe('候选达人');
-    expect(getItemType('outreach').label).toBe('触达邮件');
+    expect(getItemType('outreach').label).toBe('对外沟通');
     expect(getItemType('reply').label).toBe('达人回复');
-    expect(getItemType('budget').label).toBe('预算审核');
+    expect(getItemType('budget').label).toBe('预算与履约');
     expect(getItemType('exception').label).toBe('异常处理');
   });
 

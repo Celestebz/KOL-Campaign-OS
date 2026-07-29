@@ -103,6 +103,7 @@ test('GET /:id/detail 空项目（无产品无策略无 KOL）不报错且全零
     kols_total: 0,
     kols_candidate: 0,
     kols_confirmed: 0,
+    candidates_pending_review: 0,
     by_project_status: {
       pending_confirmation: 0, pending_shipping: 0, shipped: 0, delivered: 0,
       content_preparation: 0, pending_publish: 0, published: 0, cancelled: 0
@@ -115,7 +116,7 @@ test('GET /:id/detail 空项目（无产品无策略无 KOL）不报错且全零
     exceptions: 0
   });
   assert.deepEqual(data.risks, []);
-  assert.match(data.next_step, /尚无 KOL 策略/);
+  assert.match(data.next_step, /尚无达人策略/);
 });
 
 test('GET /:id/detail summary 各计数口径正确', async () => {
@@ -147,6 +148,7 @@ test('GET /:id/detail summary 各计数口径正确', async () => {
   assert.equal(data.summary.kols_total, 25);
   assert.equal(data.summary.kols_candidate, 20);
   assert.equal(data.summary.kols_confirmed, 5);
+  assert.equal(data.summary.candidates_pending_review, 0);
   assert.equal(data.summary.by_project_status.pending_confirmation, 24);
   assert.equal(data.summary.by_project_status.published, 1);
   assert.equal(data.summary.by_project_status.shipped, 0);
@@ -166,7 +168,7 @@ test('GET /:id/detail exceptions = finder 失败 + automation_runs 失败', asyn
     runsFailed: 2
   }));
   assert.equal(response.payload.data.summary.exceptions, 3);
-  assert.ok(response.payload.data.risks.some((r) => /Finder 任务执行失败/.test(r)));
+  assert.ok(response.payload.data.risks.some((r) => /达人寻找任务执行失败/.test(r)));
   assert.ok(response.payload.data.risks.some((r) => /自动化任务执行失败/.test(r)));
 });
 
@@ -198,7 +200,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     kolAgg: { kols_total: 5, contacted: 0, replied: 0, candidates: 3 },
     draftsPending: 1
   }));
-  assert.match(response.payload.data.next_step, /批准策略/);
+  assert.match(response.payload.data.next_step, /工作台处理/);
 
   // 有 candidate → 去审核达人（优先于草稿/回复）
   response = await callDetail(makeDetailDb({
@@ -207,7 +209,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     draftsPending: 1,
     repliesPending: 1
   }));
-  assert.match(response.payload.data.next_step, /审核达人/);
+  assert.match(response.payload.data.next_step, /工作台处理/);
 
   // 无 candidate 有待审草稿 → 去审批台
   response = await callDetail(makeDetailDb({
@@ -216,7 +218,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     draftsPending: 2,
     repliesPending: 1
   }));
-  assert.match(response.payload.data.next_step, /审批台/);
+  assert.match(response.payload.data.next_step, /工作台处理/);
 
   // 只剩回复 → 去确认
   response = await callDetail(makeDetailDb({
@@ -224,11 +226,11 @@ test('GET /:id/detail next_step 推导分支', async () => {
     kolAgg: { kols_total: 5, contacted: 0, replied: 0, candidates: 0 },
     repliesPending: 1
   }));
-  assert.match(response.payload.data.next_step, /确认回复/);
+  assert.match(response.payload.data.next_step, /工作台处理/);
 
   // 都没有且无达人 → 提示先找达人
   response = await callDetail(makeDetailDb({ ...base }));
-  assert.match(response.payload.data.next_step, /运行 Finder 或手动添加达人/);
+  assert.match(response.payload.data.next_step, /开始寻找达人/);
 
   // 都没有但有达人 → 持续跟进
   response = await callDetail(makeDetailDb({
@@ -243,7 +245,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     kolAgg: { kols_total: 4, contacted: 1, replied: 0, candidates: 0 },
     finderRunning: 1
   }));
-  assert.match(response.payload.data.next_step, /Finder 任务运行中/);
+  assert.match(response.payload.data.next_step, /达人寻找任务运行中/);
 });
 
 test('GET / 默认只返回进行中的当前项目，历史项目需显式 scope 查询', async () => {

@@ -13,9 +13,8 @@ async function buildCandidateItems() {
      FROM campaign_kols ck
      LEFT JOIN campaigns c ON c.id = ck.campaign_id
      LEFT JOIN customers k ON k.id = ck.customer_id
-     WHERE ck.status = 'candidate'
-     ORDER BY ck.candidate_priority_score DESC, ck.updated_at DESC
-     LIMIT 100`
+     WHERE ck.status = 'candidate' AND c.status = 'active'
+     ORDER BY ck.candidate_priority_score DESC, ck.updated_at DESC`
   );
   return rows.map((row) => {
     const kolName = clean(row.kol_name) || clean(row.kol_name_snapshot) || `达人 #${row.customer_id}`;

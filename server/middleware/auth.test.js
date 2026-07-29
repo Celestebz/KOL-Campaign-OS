@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const express = require('express');
 const request = require('supertest');
 
-const { createAuthRouter, authGuard, COOKIE_NAME } = require('./auth');
+const { createAuthRouter, authGuard, COOKIE_NAME, isAgentFinderOperation } = require('./auth');
 
 const TEST_PASSWORD = 'team-secret-pass';
 
@@ -58,6 +58,19 @@ test('health check and agent API stay public', async () => {
   const app = buildApp();
   assert.strictEqual((await request(app).get('/api/health')).status, 200);
   assert.strictEqual((await request(app).get('/api/agent/ping')).status, 200);
+});
+
+test('only the documented Finder operations qualify for Agent token access', () => {
+  const matches = (method, path) => isAgentFinderOperation({ method, path });
+  assert.strictEqual(matches('GET', '/api/settings/health/config'), true);
+  assert.strictEqual(matches('POST', '/api/finder-tasks'), true);
+  assert.strictEqual(matches('POST', '/api/finder-tasks/12/video-evidence/import'), true);
+  assert.strictEqual(matches('POST', '/api/finder-tasks/12/evidence-analysis'), true);
+  assert.strictEqual(matches('POST', '/api/finder-tasks/12/generate-candidates-from-evidence'), true);
+  assert.strictEqual(matches('GET', '/api/finder-tasks'), false);
+  assert.strictEqual(matches('POST', '/api/finder-tasks/12/cancel'), false);
+  assert.strictEqual(matches('GET', '/api/raw-candidates'), false);
+  assert.strictEqual(matches('POST', '/api/raw-candidates/12/approve'), false);
 });
 
 test('static frontend stays public', async () => {

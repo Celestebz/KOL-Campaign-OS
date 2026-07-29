@@ -158,7 +158,7 @@ const CampaignDetail = () => {
         status="404"
         title="项目不存在"
         subTitle="未找到该项目，可能已被删除。"
-        extra={<Link to="/campaigns"><Button type="primary">返回项目与产品</Button></Link>}
+        extra={<Link to="/campaigns"><Button type="primary">返回项目管理</Button></Link>}
       />
     );
   }
@@ -299,7 +299,7 @@ const CampaignDetail = () => {
             <Descriptions column={1} size="small">
               <Descriptions.Item label="项目目标">{strategy?.campaign_goal || '-'}</Descriptions.Item>
               <Descriptions.Item label="目标市场">{strategy?.target_market || '-'}</Descriptions.Item>
-              <Descriptions.Item label="策略状态"><Tag color={strategyStatus.color}>{strategyStatus.label}</Tag></Descriptions.Item>
+              <Descriptions.Item label="达人策略状态"><Tag color={strategyStatus.color}>{strategyStatus.label}</Tag></Descriptions.Item>
               <Descriptions.Item label="当前阶段">{deriveStage(summary)}</Descriptions.Item>
             </Descriptions>
           </Card>
@@ -318,7 +318,11 @@ const CampaignDetail = () => {
           </Card>
         </Col>
       </Row>
-      <Card title="推广产品" size="small">
+      <Card
+        title="推广产品"
+        size="small"
+        extra={<Link to={`/finder?campaign_id=${campaign.id}`}><Button type="link">进入该项目的 KOL 寻找</Button></Link>}
+      >
         <Table
           size="small"
           rowKey={(r) => r.id || r.name}
@@ -354,9 +358,36 @@ const CampaignDetail = () => {
         loading={loading}
         pagination={{ defaultPageSize: 20, showSizeChanger: true }}
         locale={{ emptyText: <Empty description="该项目暂无达人" /> }}
-        onRow={() => ({ onClick: () => navigate('/campaign-kols'), style: { cursor: 'pointer' } })}
+        onRow={() => ({ onClick: () => navigate(`/campaign-kols?campaign_id=${campaign.id}`), style: { cursor: 'pointer' } })}
       />
     </Card>
+  );
+
+  const communicationTab = (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message="沟通与履约在专业页面处理"
+        description="项目详情保留进度与事实；完整邮件、报价、物流和内容节点请进入对应业务页面。"
+        action={(
+          <Space wrap>
+            <Link to={`/emails?campaign_id=${campaign.id}`}><Button>邮件中心</Button></Link>
+            <Link to={`/campaign-kols?campaign_id=${campaign.id}`}><Button type="primary">KOL 合作</Button></Link>
+          </Space>
+        )}
+      />
+      <Card title="最近邮件记录" size="small">
+        <Table
+          size="small"
+          rowKey="id"
+          columns={emailColumns}
+          dataSource={emailRecords}
+          pagination={{ defaultPageSize: 10 }}
+          locale={{ emptyText: <Empty description="暂无邮件记录" /> }}
+        />
+      </Card>
+    </Space>
   );
 
   const materialsTab = (
@@ -377,19 +408,6 @@ const CampaignDetail = () => {
           </Space>
         ) : <Empty description="暂无产品资料" />}
       </Card>
-      <Card title="邮件记录" size="small">
-        <Table
-          size="small"
-          rowKey="id"
-          columns={emailColumns}
-          dataSource={emailRecords}
-          pagination={{ defaultPageSize: 10 }}
-          locale={{ emptyText: <Empty description="暂无邮件记录" /> }}
-        />
-      </Card>
-      <Card title="合同 / 发票 / 项目复盘" size="small">
-        <Empty description="暂无数据（数据模型规划中，后续版本提供）" />
-      </Card>
     </Space>
   );
 
@@ -402,7 +420,7 @@ const CampaignDetail = () => {
             <h1 className="page-title" style={{ margin: 0 }}>{campaign.name || '项目详情'}</h1>
             {campaign.status && <Tag>{CAMPAIGN_STATUS_LABELS[campaign.status] || campaign.status}</Tag>}
           </Space>
-          <p className="page-subtitle">项目详情：概览、合作进度与项目资料。</p>
+          <p className="page-subtitle">查看项目进度、达人推进、沟通履约与项目资料。</p>
         </div>
         <Button icon={<ReloadOutlined />} onClick={fetchAll} loading={loading}>刷新</Button>
       </div>
@@ -412,7 +430,8 @@ const CampaignDetail = () => {
           defaultActiveKey="overview"
           items={[
             { key: 'overview', label: '概览', children: overviewTab },
-            { key: 'progress', label: '合作进度', children: progressTab },
+            { key: 'progress', label: '达人进展', children: progressTab },
+            { key: 'communication', label: '沟通与履约', children: communicationTab },
             { key: 'materials', label: '项目资料', children: materialsTab }
           ]}
         />

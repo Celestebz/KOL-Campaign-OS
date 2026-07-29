@@ -151,21 +151,31 @@ function DecisionDrawer({ item, open, onClose, onRefresh }) {
           {item.updated_at ? `　更新于 ${new Date(item.updated_at).toLocaleString('zh-CN')}` : ''}
         </Typography.Text>
         <Divider style={{ margin: '12px 0' }} />
-        <Section title="事实">
-          <FactPanel facts={item.facts} />
+        <Section title="需要你决定什么">
+          <Typography.Paragraph>{item.title}</Typography.Paragraph>
         </Section>
         <Divider style={{ margin: '12px 0' }} />
-        <Section title="AI 观点">
+        <Section title="AI 建议">
           <OpinionPanel opinion={item.opinion} />
+        </Section>
+        <Divider style={{ margin: '12px 0' }} />
+        <Section title="关键证据">
+          <FactPanel facts={item.facts} />
         </Section>
         <Divider style={{ margin: '12px 0' }} />
         <Section title={`风险（${(item.risks || []).length}）`}>
           <RiskPanel risks={item.risks} />
         </Section>
+        <Divider style={{ margin: '12px 0' }} />
+        <Section title="批准后的自动动作">
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            AI 将继续执行该事项对应的下一节点；成功后更新项目状态或生成下一项审核，失败则进入异常处理。
+          </Typography.Paragraph>
+        </Section>
         {actions.length > 0 && (
           <>
             <Divider style={{ margin: '12px 0' }} />
-            <Section title="行动">
+            <Section title="原始材料">
               <DecisionActions actions={actions} />
             </Section>
           </>

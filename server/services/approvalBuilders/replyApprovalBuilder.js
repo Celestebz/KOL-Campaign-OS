@@ -10,9 +10,8 @@ async function buildReplyItems() {
      FROM email_replies er
      LEFT JOIN customers k ON k.id = er.customer_id
      LEFT JOIN campaigns c ON c.id = er.campaign_id
-     WHERE er.confirm_status = 'pending'
-     ORDER BY er.received_at DESC
-     LIMIT 100`
+     WHERE er.confirm_status = 'pending' AND c.status = 'active'
+     ORDER BY er.received_at DESC`
   );
   return rows.map((row) => {
     const kolName = clean(row.kol_name) || `达人 #${row.customer_id}`;

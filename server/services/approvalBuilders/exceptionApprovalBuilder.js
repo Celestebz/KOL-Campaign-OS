@@ -20,7 +20,7 @@ async function buildExceptionItems() {
             c.name AS campaign_name
      FROM finder_tasks ft
      LEFT JOIN campaigns c ON c.id = ft.campaign_id
-     WHERE ft.status IN ('failed', 'partial_failed')
+     WHERE ft.status IN ('failed', 'partial_failed') AND c.status = 'active'
      ORDER BY ft.updated_at DESC
      LIMIT 50`
   );
@@ -33,7 +33,7 @@ async function buildExceptionItems() {
      FROM email_drafts d
      LEFT JOIN customers k ON k.id = d.customer_id
      LEFT JOIN campaigns c ON c.id = d.campaign_id
-     WHERE d.status = 'send_failed'
+     WHERE d.status = 'send_failed' AND c.status = 'active'
      ORDER BY d.updated_at DESC
      LIMIT 50`
   );
@@ -43,7 +43,7 @@ async function buildExceptionItems() {
             c.name AS campaign_name
      FROM automation_runs r
      LEFT JOIN campaigns c ON c.id = r.campaign_id
-     WHERE r.status IN ('failed', 'partial_failed')
+     WHERE r.status IN ('failed', 'partial_failed') AND c.status = 'active'
      ORDER BY r.updated_at DESC
      LIMIT 50`
   );

@@ -12,15 +12,17 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     await approvalItemService.syncApprovalItems();
-    const [items, summary, recentDecisions] = await Promise.all([
+    const [items, summary, recentDecisions, activeRuns] = await Promise.all([
       approvalItemService.listPendingWorkbenchItems(),
       approvalItemService.getSummary(),
-      approvalItemService.listRecentDecisions()
+      approvalItemService.listRecentDecisions(),
+      approvalItemService.listActiveRuns()
     ]);
     res.json({
-      summary,
+      summary: { ...summary, active_runs: activeRuns.length },
       items,
-      recent_decisions: recentDecisions
+      recent_decisions: recentDecisions,
+      active_runs: activeRuns
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

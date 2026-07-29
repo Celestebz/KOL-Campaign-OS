@@ -1,10 +1,9 @@
 const express = require('express');
-const crypto = require('crypto');
 const { dbOperations } = require('../database');
 const agentCampaignOps = require('../services/agentCampaignOps');
+const { requireAgentToken } = require('../middleware/agentAuth');
 
 const router = express.Router();
-const AGENT_API_PROVIDER_KEY = 'agent.external_api';
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
 
 function clean(value) {
@@ -25,38 +24,6 @@ function parseJson(value, fallback = {}) {
 function parseList(value) {
   if (Array.isArray(value)) return value.map(clean).filter(Boolean);
   return clean(value).split(/[,，\n;]/).map(clean).filter(Boolean);
-}
-
-function bearerToken(req) {
-  const auth = clean(req.headers.authorization);
-  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
-  return '';
-}
-
-function secureEqual(actual, expected) {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  return actualBuffer.length === expectedBuffer.length
-    && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
-}
-
-async function requireAgentToken(req, res, next) {
-  try {
-    const row = await dbOperations.get(
-      'SELECT api_key FROM api_settings WHERE provider = ?',
-      [AGENT_API_PROVIDER_KEY]
-    );
-    const expected = clean(row?.api_key);
-    if (!expected) {
-      return res.status(403).json({ success: false, error: 'External Agent API Token is not configured' });
-    }
-    if (!secureEqual(bearerToken(req), expected)) {
-      return res.status(401).json({ success: false, error: 'Invalid External Agent API Token' });
-    }
-    return next();
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
 }
 
 function normalizeStrategy(row) {

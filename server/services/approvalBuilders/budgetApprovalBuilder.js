@@ -11,9 +11,8 @@ async function buildBudgetItems() {
      FROM campaign_kols ck
      LEFT JOIN campaigns c ON c.id = ck.campaign_id
      LEFT JOIN customers k ON k.id = ck.customer_id
-     WHERE ck.budget_approval_status = 'pending'
-     ORDER BY ck.updated_at DESC
-     LIMIT 100`
+     WHERE ck.budget_approval_status = 'pending' AND c.status = 'active'
+     ORDER BY ck.updated_at DESC`
   );
   return rows.map((row) => {
     const kolName = clean(row.kol_name) || clean(row.kol_name_snapshot) || `达人 #${row.customer_id}`;

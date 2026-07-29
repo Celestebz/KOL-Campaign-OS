@@ -125,7 +125,7 @@ function buildDetailRisks({ candidates, highRiskDrafts, finderFailed, runsFailed
     risks.push(`有 ${highRiskDrafts} 封高风险邮件草稿待审批`);
   }
   if (finderFailed > 0) {
-    risks.push(`有 ${finderFailed} 个 Finder 任务执行失败`);
+    risks.push(`有 ${finderFailed} 个达人寻找任务执行失败`);
   }
   if (runsFailed > 0) {
     risks.push(`有 ${runsFailed} 个自动化任务执行失败`);
@@ -140,25 +140,25 @@ function buildDetailRisks({ candidates, highRiskDrafts, finderFailed, runsFailed
 // next_step：按当前阶段推导下一步建议
 function buildDetailNextStep({ strategy, candidates, summary }) {
   if (!strategy) {
-    return '尚无 KOL 策略，请先创建并完善策略';
+    return '尚无达人策略，请先生成并完善达人策略';
   }
   if (strategy.status === 'draft') {
-    return '有待批准的策略草案，请先到工作台批准策略';
+    return '达人策略草案待审核，请到工作台处理';
   }
   if (candidates > 0) {
-    return `有 ${candidates} 位候选达人待审核，请先去审核达人`;
+    return `有 ${candidates} 位候选达人待审核，请到工作台处理`;
   }
   if (summary.drafts_pending > 0) {
-    return `有 ${summary.drafts_pending} 封邮件草稿待审批，请先去审批台处理`;
+    return `有 ${summary.drafts_pending} 封邮件草稿待审批，请到工作台处理`;
   }
   if (summary.replies_pending > 0) {
-    return `有 ${summary.replies_pending} 条达人回复待确认，请先去确认回复`;
+    return `有 ${summary.replies_pending} 条达人回复待确认，请到工作台处理`;
   }
   if (summary.kols_total === 0) {
-    return '项目下还没有达人，请先运行 Finder 或手动添加达人';
+    return '项目下还没有达人，请先开始寻找达人';
   }
   if (summary.finder_tasks_running > 0) {
-    return 'Finder 任务运行中，可稍后在项目页查看新候选';
+    return '达人寻找任务运行中，可稍后在项目页查看新候选';
   }
   return '当前无待处理事项，可持续跟进达人合作进度';
 }
@@ -243,6 +243,7 @@ router.get('/:id/detail', async (req, res) => {
       kols_total: toCount(kolAgg?.kols_total),
       kols_candidate: toCount(kolAgg?.kols_candidate),
       kols_confirmed: toCount(kolAgg?.kols_confirmed),
+      candidates_pending_review: candidates,
       by_project_status: byProjectStatus,
       contacted: toCount(kolAgg?.contacted),
       replied: toCount(kolAgg?.replied),

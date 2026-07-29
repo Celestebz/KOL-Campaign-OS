@@ -11,7 +11,7 @@ Use app HTTP APIs only. Never access MySQL directly.
 
 - Default `base_url`: `http://localhost:5001`
 - Check `GET {base_url}/api/health` first.
-- For `/api/agent/*`, send `Authorization: Bearer <External Agent API Token>`.
+- For `/api/agent/*` and the Finder/configuration endpoints documented below, send `Authorization: Bearer <External Agent API Token>`.
 - Obtain a missing base URL or token from the user's secure configuration. Never print, persist, or repeat the token.
 
 Prefer the restricted `/api/agent` endpoints for KOL Master, candidate-pool, and email-draft operations. Use browser interaction only when an equivalent API is unavailable.
@@ -42,12 +42,14 @@ Check configuration:
 
 ```http
 GET {base_url}/api/settings/health/config
+Authorization: Bearer <token>
 ```
 
 Create a task:
 
 ```http
 POST {base_url}/api/finder-tasks
+Authorization: Bearer <token>
 Content-Type: application/json
 
 {
@@ -61,6 +63,7 @@ Import evidence:
 
 ```http
 POST {base_url}/api/finder-tasks/{finder_task_id}/video-evidence/import
+Authorization: Bearer <token>
 Content-Type: application/json
 
 {
@@ -81,7 +84,10 @@ Analyze and generate:
 
 ```http
 POST {base_url}/api/finder-tasks/{finder_task_id}/evidence-analysis
+Authorization: Bearer <token>
+
 POST {base_url}/api/finder-tasks/{finder_task_id}/generate-candidates-from-evidence
+Authorization: Bearer <token>
 ```
 
 AI may assign zero or more independent evidence signals to each video: `competitor`, `category`, `use_case`, `feature`, and `community`. Generate Raw Candidates only from analyzed video evidence. Never approve Raw Candidates.

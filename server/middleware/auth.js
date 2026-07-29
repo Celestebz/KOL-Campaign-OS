@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { requireAgentToken } = require('./agentAuth');
 
 // Minimal shared-password access control for the LAN/team deployment.
 // Password lives in APP_ACCESS_PASSWORD (.env). When it is not set, the
@@ -87,10 +88,23 @@ function requireAuth(req, res, next) {
 // public endpoints (login, health check) and the External Agent API (which has
 // its own Bearer token check) untouched. Static frontend files stay public so
 // the login page can load.
+function isAgentFinderOperation(req) {
+  const method = req.method.toUpperCase();
+  const p = req.path;
+  if (method === 'GET' && p === '/api/settings/health/config') return true;
+  if (method === 'POST' && p === '/api/finder-tasks') return true;
+  return method === 'POST' && /^\/api\/finder-tasks\/[^/]+\/(video-evidence\/import|evidence-analysis|generate-candidates-from-evidence)$/.test(p);
+}
+
 function authGuard(req, res, next) {
   const p = req.path;
   if (p === '/api/health' || p.startsWith('/api/agent') || p.startsWith('/api/auth')) {
     return next();
+  }
+  // Finder automation may authenticate with the restricted External Agent
+  // Bearer token. Browser sessions continue to use the team-login cookie.
+  if (isAgentFinderOperation(req) && !isAuthenticated(req)) {
+    return requireAgentToken(req, res, next);
   }
   if (p.startsWith('/api/') || p.startsWith('/uploads')) {
     return requireAuth(req, res, next);
@@ -135,5 +149,6 @@ module.exports = {
   createAuthRouter,
   authGuard,
   requireAuth,
-  isAuthenticated
+  isAuthenticated,
+  isAgentFinderOperation
 };

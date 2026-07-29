@@ -17,9 +17,10 @@ function RecentDecisions({ items = [] }) {
                 : decision.title
             }
             description={
-              decision.decided_at
-                ? new Date(decision.decided_at).toLocaleString('zh-CN')
-                : null
+              <span>
+                {decision.decided_at ? new Date(decision.decided_at).toLocaleString('zh-CN') : ''}
+                {decision.followup_summary ? ` · AI 后续：${decision.followup_summary}` : ' · 无需自动后续动作'}
+              </span>
             }
           />
           {decision.decision && <Tag color="green">{decision.decision}</Tag>}

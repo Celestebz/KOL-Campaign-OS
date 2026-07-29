@@ -14,6 +14,7 @@ process.env.DB_NAME_TEST = 'kol_campaign_os_agent_test';
 const { initDatabase, models, sequelize } = require('../database');
 const agentRoutes = require('./agent');
 const emailRoutes = require('./emails');
+const { authGuard } = require('../middleware/auth');
 
 async function resetTestDatabase() {
   const admin = new Sequelize('mysql', 'root', process.env.DB_ROOT_PASSWORD || 'root_password', {
@@ -61,6 +62,24 @@ test('agent exposes only video evidence workflow and retires direct candidate im
     .send({ candidates: [{ kol_name: 'Legacy' }] })
     .expect(410);
   assert.match(retired.body.error, /retired/i);
+
+  const previousPassword = process.env.APP_ACCESS_PASSWORD;
+  process.env.APP_ACCESS_PASSWORD = 'team-password';
+  const protectedApp = express();
+  protectedApp.use(express.json());
+  protectedApp.use(authGuard);
+  protectedApp.post('/api/finder-tasks', (req, res) => res.json({ ok: true }));
+  protectedApp.post('/api/finder-tasks/:id/video-evidence/import', (req, res) => res.json({ ok: true }));
+  protectedApp.post('/api/raw-candidates/:id/approve', (req, res) => res.json({ ok: true }));
+  const protectedRequest = supertest(protectedApp);
+
+  await protectedRequest.post('/api/finder-tasks').set(auth).expect(200);
+  await protectedRequest.post('/api/finder-tasks/1/video-evidence/import').set(auth).expect(200);
+  await protectedRequest.post('/api/finder-tasks').set({ Authorization: 'Bearer wrong-token' }).expect(401);
+  await protectedRequest.post('/api/raw-candidates/1/approve').set(auth).expect(401);
+
+  if (previousPassword === undefined) delete process.env.APP_ACCESS_PASSWORD;
+  else process.env.APP_ACCESS_PASSWORD = previousPassword;
 });
 
 test('restricted agent campaign API searches, previews, writes candidates and pending drafts idempotently', async () => {

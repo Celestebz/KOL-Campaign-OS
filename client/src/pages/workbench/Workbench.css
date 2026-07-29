@@ -1,0 +1,9 @@
+.workbench-page { padding: 16px 0; }
+.workbench-summary { margin-bottom: 16px; }
+.workbench-toolbar { margin-bottom: 8px; }
+.workbench-loading { padding: 48px; text-align: center; }
+.workbench-decision-card { border-left: 3px solid #1677ff; }
+.workbench-decision-card .decision-question { font-size: 16px; }
+.workbench-evidence { margin: 0; padding-left: 18px; color: #595959; }
+.workbench-next-step { padding: 8px 12px; background: #f6ffed; border-radius: 6px; color: #237804; }
+@media (max-width: 767px) { .workbench-summary .ant-col { margin-bottom: 8px; } }

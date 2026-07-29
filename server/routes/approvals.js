@@ -34,6 +34,18 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+router.post('/candidates/bulk-decision', async (req, res) => {
+  try {
+    const { items, decision, note, decided_by } = req.body || {};
+    const result = await approvalItemService.submitCandidateDecisions(items, {
+      decision, note, decided_by
+    });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
 // 提交人工决定：{ decision, note, version, decided_by }
 // version 与库中不一致 → 409 { error, current_version }
 router.post('/:id/decision', async (req, res) => {

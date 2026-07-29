@@ -64,7 +64,7 @@ function App() {
       icon: <ProjectOutlined />,
       label: '项目',
       children: [
-        { key: '/campaigns', label: '项目与产品' },
+        { key: '/campaigns', label: '项目管理' },
         { key: '/finder', label: 'KOL 寻找' },
         { key: '/campaign-kols', label: 'KOL 合作' },
         { key: '/emails', label: '邮件中心' }
@@ -105,7 +105,7 @@ function App() {
     '/settings': 'system',
     '/templates': 'system'
   };
-  // 项目详情（/campaigns/:id）不进菜单，归属 project 分组并保持「项目与产品」选中态。
+  // 项目详情（/campaigns/:id）不进菜单，归属 project 分组并保持「项目管理」选中态。
   const resolveMenuGroup = (pathname) => (
     pathToGroup[pathname] || (pathname.startsWith('/campaigns/') ? 'project' : undefined)
   );

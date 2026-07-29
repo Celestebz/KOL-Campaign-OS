@@ -9,9 +9,8 @@ async function buildStrategyItems() {
             ks.source_material_summary, ks.updated_at, c.name AS campaign_name
      FROM kol_strategies ks
      LEFT JOIN campaigns c ON c.id = ks.campaign_id
-     WHERE ks.status = 'draft'
-     ORDER BY ks.updated_at DESC
-     LIMIT 50`
+     WHERE ks.status = 'draft' AND c.status = 'active'
+     ORDER BY ks.updated_at DESC`
   );
   return rows.map((row) => {
     const handoff = parseJson(row.finder_handoff, {});

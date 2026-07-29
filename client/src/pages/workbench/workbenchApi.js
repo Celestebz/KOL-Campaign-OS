@@ -12,7 +12,8 @@ export async function getWorkbench() {
   return {
     summary: data.summary || {},
     items: data.items || [],
-    recent_decisions: data.recent_decisions || []
+    recent_decisions: data.recent_decisions || [],
+    active_runs: data.active_runs || []
   };
 }
 
@@ -26,4 +27,14 @@ export async function submitDecision(approvalItemId, { decision, note, version }
     decided_by: 'boss'
   });
   return res.data;
+}
+
+export async function submitCandidateDecisions(items, decision, note) {
+  const res = await axios.post('/api/approvals/candidates/bulk-decision', {
+    items: items.map((item) => ({ id: item.approval_item_id, version: item.version })),
+    decision,
+    note,
+    decided_by: 'boss'
+  });
+  return res.data.data;
 }

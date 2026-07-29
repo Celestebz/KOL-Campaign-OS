@@ -1,366 +1,309 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, message, Popconfirm, Select, Space, Statistic, Table, Tag
+  AppstoreOutlined,
+  BarsOutlined,
+  ClockCircleOutlined,
+  ExclamationCircleOutlined,
+  ReloadOutlined,
+  RobotOutlined,
+  TeamOutlined
+} from '@ant-design/icons';
+import {
+  Badge, Button, Card, Col, Empty, Input, message, Row, Segmented, Select, Space, Spin,
+  Statistic, Switch, Table, Tag, Tooltip, Typography
 } from 'antd';
-import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
-  normalizeCampaign,
-  normalizeCampaignProduct,
-  campaignProductRoleLabels,
-  campaignProductStatusLabels,
-  campaignProductStatusColors
-} from './productCampaignContract';
+  CAMPAIGN_STAGES,
+  normalizeCampaignProgress,
+  progressSort
+} from './campaignProgress';
+import './Campaigns.css';
 
-const { TextArea } = Input;
+const VIEW_STORAGE_KEY = 'campaign-management-view';
 
-const roleOptions = [
-  { value: 'hero', label: '主推' },
-  { value: 'secondary', label: '辅推' },
-  { value: 'test', label: '测试' }
+const responsibilityOptions = [
+  { value: 'all', label: '全部责任方' },
+  { value: 'ai', label: 'AI 处理中' },
+  { value: 'human', label: '待你审核' },
+  { value: 'external', label: '等待外部' },
+  { value: 'exception', label: '系统异常' }
 ];
 
-const statusOptions = [
-  { value: 'planned', label: '计划中' },
-  { value: 'active', label: '进行中' },
-  { value: 'paused', label: '已暂停' },
-  { value: 'completed', label: '已完成' },
-  { value: 'archived', label: '已归档' }
-];
+function formatUpdatedAt(value) {
+  if (!value) return '暂无更新';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '暂无更新';
+  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 
-const Campaigns = () => {
+function parseDeadline(value) {
+  if (!value) return null;
+  const match = String(value).match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/);
+  if (!match) return null;
+  const date = new Date(match[0].replaceAll('/', '-'));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function deadlineMeta(value) {
+  const date = parseDeadline(value);
+  if (!date) return { label: value || '未设置截止日', urgent: false, overdue: false };
+  const days = Math.ceil((date.getTime() - Date.now()) / 86400000);
+  if (days < 0) return { label: `已逾期 ${Math.abs(days)} 天`, urgent: true, overdue: true };
+  if (days === 0) return { label: '今天截止', urgent: true, overdue: false };
+  return { label: `${date.toLocaleDateString('zh-CN')} · 剩余 ${days} 天`, urgent: days <= 14, overdue: false };
+}
+
+function stageMetrics(row) {
+  if (row.stage === 'preparation') return [['关联产品', row.detail.products?.length || 0], ['待审核', row.approvalCount]];
+  if (row.stage === 'finding') return [['项目达人', row.totalKols], ['待审核候选', row.candidatesPendingReview]];
+  if (row.stage === 'outreach') return [['已联系', row.contacted], ['已回复', row.replied]];
+  if (row.stage === 'fulfillment') return [['已合作', row.confirmedKols], ['项目达人', row.totalKols]];
+  const published = Number(row.detail.summary?.by_project_status?.published || 0);
+  const pending = Number(row.detail.summary?.by_project_status?.pending_publish || 0);
+  return [['已上线', published], ['待上线', pending]];
+}
+
+function ProjectSignals({ row, compact = false }) {
+  const navigate = useNavigate();
+  const goWorkbench = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    navigate(`/?campaign_id=${row.id}`);
+  };
+  return (
+    <Space size={[6, 4]} wrap>
+      {row.riskCount > 0 && (
+        <Tag color="red" onClick={goWorkbench} className="project-signal-tag">
+          异常 {row.riskCount}
+        </Tag>
+      )}
+      {row.candidatesPendingReview > 0 && (
+        <Tag color="blue" onClick={goWorkbench} className="project-signal-tag">
+          候选待确认 {row.candidatesPendingReview}
+        </Tag>
+      )}
+      {!compact && <Tag color={row.responsibility.color}>{row.responsibility.label}</Tag>}
+    </Space>
+  );
+}
+
+function ProjectCard({ row }) {
+  const deadline = deadlineMeta(row.deadline);
+  const metrics = stageMetrics(row);
+  return (
+    <Link to={`/campaigns/${row.id}`} className="project-board-card-link">
+      <Card
+        size="small"
+        hoverable
+        className={`project-board-card${row.riskCount ? ' has-risk' : ''}${deadline.overdue ? ' is-overdue' : ''}`}
+      >
+        <div className="project-card-heading">
+          <div>
+            <Typography.Text strong>{row.name}</Typography.Text>
+            <div className="project-card-product">
+              {row.primaryProductSku || row.primaryProductName || '暂未关联主推产品'}
+            </div>
+          </div>
+          <Badge status={row.riskCount ? 'error' : 'processing'} />
+        </div>
+
+        <Space size={6} wrap className="project-card-stage">
+          <Tag>{row.substage}</Tag>
+          {row.finderRunning > 0 && <Tag icon={<RobotOutlined />} color="processing">AI执行中</Tag>}
+        </Space>
+
+        <Typography.Text type={deadline.urgent ? 'danger' : 'secondary'} className="project-card-deadline">
+          <ClockCircleOutlined /> {deadline.label}
+        </Typography.Text>
+
+        <div className="project-card-progress">
+          <div className="project-card-progress-label">
+            <span>已合作 <strong>{row.confirmedKols}</strong></span>
+            <span>项目达人 <strong>{row.totalKols}</strong></span>
+          </div>
+        </div>
+
+        <div className="project-card-metrics">
+          {metrics.map(([label, value]) => (
+            <div key={label}><strong>{value}</strong><span>{label}</span></div>
+          ))}
+        </div>
+
+        <div className="project-card-next">
+          <span>下一步</span>
+          <Typography.Paragraph ellipsis={{ rows: 2 }}>{row.nextStep}</Typography.Paragraph>
+        </div>
+
+        <div className="project-card-footer">
+          <ProjectSignals row={row} compact />
+          <span>{formatUpdatedAt(row.updated_at)} 更新</span>
+        </div>
+      </Card>
+    </Link>
+  );
+}
+
+function BoardView({ campaigns, loading }) {
+  if (loading) return <div className="project-loading"><Spin size="large" /></div>;
+  return (
+    <div className="project-board">
+      {CAMPAIGN_STAGES.map((stage) => {
+        const rows = campaigns.filter((item) => item.stage === stage.key).sort(progressSort);
+        const helper = `${rows.filter((item) => item.riskCount > 0).length} 个风险项目`;
+        return (
+          <section key={stage.key} className="project-board-column">
+            <header>
+              <div><strong>{stage.label}</strong><Badge count={rows.length} showZero color="#1677ff" /></div>
+              <span>{helper}</span>
+            </header>
+            <div className="project-board-column-content">
+              {rows.length ? rows.map((row) => <ProjectCard key={row.id} row={row} />) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无项目" />
+              )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function ListView({ campaigns, loading }) {
+  const columns = [
+    {
+      title: '项目', dataIndex: 'name', key: 'name', width: 210,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Link to={`/campaigns/${row.id}`}><Typography.Text strong>{row.name}</Typography.Text></Link>
+          <Typography.Text type="secondary">{row.primaryProductSku || row.primaryProductName || '未关联主推产品'}</Typography.Text>
+        </Space>
+      )
+    },
+    {
+      title: '当前阶段', dataIndex: 'stage', key: 'stage', width: 150,
+      filters: CAMPAIGN_STAGES.map((stage) => ({ text: stage.label, value: stage.key })),
+      onFilter: (value, row) => row.stage === value,
+      render: (_, row) => <Space direction="vertical" size={2}><Tag>{CAMPAIGN_STAGES.find((item) => item.key === row.stage)?.label}</Tag><span>{row.substage}</span></Space>
+    },
+    {
+      title: '达人进度', key: 'kolProgress', width: 150,
+      sorter: (a, b) => a.confirmedKols - b.confirmedKols,
+      render: (_, row) => <div className="project-list-progress"><strong>{row.confirmedKols}</strong> 已合作<br /><Typography.Text type="secondary">{row.totalKols} 位项目达人</Typography.Text></div>
+    },
+    { title: '截止日期', dataIndex: 'deadline', key: 'deadline', width: 160, render: (value) => { const meta = deadlineMeta(value); return <Typography.Text type={meta.urgent ? 'danger' : undefined}>{meta.label}</Typography.Text>; } },
+    { title: '下一步', dataIndex: 'nextStep', key: 'nextStep', ellipsis: true, render: (value) => <Tooltip title={value}>{value}</Tooltip> },
+    { title: '责任方', key: 'responsibility', width: 120, filters: responsibilityOptions.slice(1).map((item) => ({ text: item.label, value: item.value })), onFilter: (value, row) => row.responsibility.key === value, render: (_, row) => <Tag color={row.responsibility.color}>{row.responsibility.label}</Tag> },
+    { title: '提示', key: 'signals', width: 150, render: (_, row) => <ProjectSignals row={row} compact /> },
+    { title: '最近更新', dataIndex: 'updated_at', key: 'updated_at', width: 130, sorter: (a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')), render: formatUpdatedAt }
+  ];
+  return (
+    <Card className="content-card project-list-card">
+      <Table columns={columns} dataSource={campaigns} rowKey="id" loading={loading} scroll={{ x: 1250 }} pagination={{ defaultPageSize: 20, showSizeChanger: true }} />
+    </Card>
+  );
+}
+
+function Campaigns() {
   const [campaigns, setCampaigns] = useState([]);
-  const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerCampaign, setDrawerCampaign] = useState(null);
-  const [campaignProducts, setCampaignProducts] = useState([]);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [productModalOpen, setProductModalOpen] = useState(false);
-  const [editingCampaignProduct, setEditingCampaignProduct] = useState(null);
-  const [createMode, setCreateMode] = useState('existing');
-  const [selectedProductId, setSelectedProductId] = useState(null);
-  const [newProductName, setNewProductName] = useState('');
-  const [newProductBrand, setNewProductBrand] = useState('');
+  const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
-  const [form] = Form.useForm();
-
-  useEffect(() => {
-    fetchCampaigns();
-    fetchProducts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const [stageFilter, setStageFilter] = useState('all');
+  const [responsibilityFilter, setResponsibilityFilter] = useState('all');
+  const [riskOnly, setRiskOnly] = useState(false);
+  const [view, setView] = useState(() => window.localStorage.getItem(VIEW_STORAGE_KEY) || 'board');
 
   const fetchCampaigns = async () => {
     setLoading(true);
     try {
-      const res = await axios.get('/api/campaigns');
-      setCampaigns((res.data.data || []).map(normalizeCampaign));
+      const listResponse = await axios.get('/api/campaigns');
+      const baseRows = listResponse.data.data || [];
+      const details = await Promise.allSettled(baseRows.map((row) => axios.get(`/api/campaigns/${row.id}/detail`)));
+      const normalized = baseRows.map((row, index) => {
+        const result = details[index];
+        if (result.status === 'fulfilled') return normalizeCampaignProgress(result.value.data.data || {});
+        return normalizeCampaignProgress({ campaign: row, summary: {}, risks: ['项目进度加载失败'], next_step: '请刷新后重试' });
+      });
+      setCampaigns(normalized.sort(progressSort));
     } catch (error) {
-      message.error(error.response?.data?.error || '获取项目列表失败');
+      message.error(error.response?.data?.error || '获取项目进度失败');
+      setCampaigns([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchProducts = async () => {
-    try {
-      const res = await axios.get('/api/products');
-      setProducts(res.data.data || []);
-    } catch (error) {
-      message.error('获取产品列表失败');
-    }
+  useEffect(() => { fetchCampaigns(); }, []);
+
+  const changeView = (value) => {
+    setView(value);
+    window.localStorage.setItem(VIEW_STORAGE_KEY, value);
   };
 
-  const fetchCampaignProducts = async (campaignId) => {
-    setDetailLoading(true);
-    try {
-      const res = await axios.get(`/api/campaigns/${campaignId}/products`);
-      setCampaignProducts((res.data.data || []).map(normalizeCampaignProduct));
-    } catch (error) {
-      setCampaignProducts([]);
-    } finally {
-      setDetailLoading(false);
-    }
-  };
+  const filteredCampaigns = useMemo(() => campaigns.filter((item) => {
+    const term = searchText.trim().toLowerCase();
+    if (term && ![item.name, item.primaryProductName, item.primaryProductSku].some((value) => String(value || '').toLowerCase().includes(term))) return false;
+    if (stageFilter !== 'all' && item.stage !== stageFilter) return false;
+    if (responsibilityFilter !== 'all' && item.responsibility.key !== responsibilityFilter) return false;
+    if (riskOnly && item.riskCount === 0) return false;
+    return true;
+  }), [campaigns, searchText, stageFilter, responsibilityFilter, riskOnly]);
 
-  const openDrawer = async (record) => {
-    const normalized = normalizeCampaign(record);
-    setDrawerCampaign(normalized);
-    setDrawerOpen(true);
-    await fetchCampaignProducts(normalized.id);
-  };
-
-  const closeDrawer = () => {
-    setDrawerOpen(false);
-    setDrawerCampaign(null);
-    setCampaignProducts([]);
-  };
-
-  const openProductModal = (record = null) => {
-    setEditingCampaignProduct(record);
-    form.resetFields();
-    setCreateMode('existing');
-    setSelectedProductId(null);
-    setNewProductName('');
-    setNewProductBrand('');
-    if (record) {
-      form.setFieldsValue({
-        role: record.role,
-        priority: record.priority,
-        campaign_brief: record.campaign_brief || '',
-        status: record.status
-      });
-    }
-    setProductModalOpen(true);
-  };
-
-  const handleAttachProduct = async () => {
-    if (!drawerCampaign) return;
-    let productId = selectedProductId;
-    try {
-      if (createMode === 'new') {
-        if (!newProductName.trim()) {
-          message.warning('请输入新产品名称');
-          return;
-        }
-        const res = await axios.post('/api/products', { brand: newProductBrand.trim(), name: newProductName.trim() });
-        productId = res.data.data.id;
-        await fetchProducts();
-      }
-      if (!productId) {
-        message.warning('请选择产品');
-        return;
-      }
-      await axios.post(`/api/campaigns/${drawerCampaign.id}/products`, {
-        product_id: productId,
-        role: 'hero',
-        status: 'active'
-      });
-      message.success('产品已添加到项目');
-      setProductModalOpen(false);
-      await fetchCampaignProducts(drawerCampaign.id);
-      await fetchCampaigns();
-    } catch (error) {
-      message.error(error.response?.data?.error || '添加产品失败');
-    }
-  };
-
-  const handleUpdateCampaignProduct = async () => {
-    if (!drawerCampaign || !editingCampaignProduct) return;
-    const values = await form.validateFields();
-    try {
-      await axios.put(`/api/campaigns/${drawerCampaign.id}/products/${editingCampaignProduct.id}`, values);
-      message.success('项目产品已更新');
-      setProductModalOpen(false);
-      await fetchCampaignProducts(drawerCampaign.id);
-      await fetchCampaigns();
-    } catch (error) {
-      message.error(error.response?.data?.error || '更新失败');
-    }
-  };
-
-  const handleArchiveCampaignProduct = async (record) => {
-    if (!drawerCampaign) return;
-    try {
-      await axios.post(`/api/campaigns/${drawerCampaign.id}/products/${record.id}/archive`);
-      message.success('项目产品已归档');
-      await fetchCampaignProducts(drawerCampaign.id);
-      await fetchCampaigns();
-    } catch (error) {
-      message.error(error.response?.data?.error || '归档失败');
-    }
-  };
-
-  const handleCreateCampaign = async () => {
-    const name = searchText.trim();
-    if (!name) {
-      message.warning('请输入项目名称');
-      return;
-    }
-    try {
-      await axios.post('/api/campaigns', { name, product: name });
-      message.success('项目已创建');
-      setSearchText('');
-      await fetchCampaigns();
-    } catch (error) {
-      message.error(error.response?.data?.error || '创建项目失败');
-    }
-  };
-
-  const availableProducts = useMemo(() => {
-    const attachedIds = new Set(campaignProducts.map((item) => item.product_id));
-    return products.filter((item) => item.status !== 'archived' && !attachedIds.has(item.id));
-  }, [products, campaignProducts]);
-
-  const filteredCampaigns = campaigns.filter((item) => {
-    if (!searchText) return true;
-    const term = searchText.toLowerCase();
-    return String(item.name || '').toLowerCase().includes(term) || String(item.brand || '').toLowerCase().includes(term);
-  });
-
-  const columns = [
-    {
-      title: '项目名称',
-      dataIndex: 'name',
-      key: 'name',
-      render: (v, r) => (
-        <Link to={`/campaigns/${r.id}`} style={{ whiteSpace: 'normal' }}>{v || '-'}</Link>
-      )
-    },
-    { title: '品牌', dataIndex: 'brand', key: 'brand', render: (v) => v || '-' },
-    {
-      title: '关联产品',
-      key: 'products',
-      render: (_, r) => `${r.associatedProductCount} 个（活跃 ${r.activeProductCount} 个）`
-    },
-    { title: '备注产品', dataIndex: 'product', key: 'product', render: (v) => v || '-' },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_, record) => (
-        <Button type="link" style={{ padding: 0 }} onClick={() => openDrawer(record)}>管理产品</Button>
-      )
-    }
-  ];
-
-  const productColumns = [
-    { title: '产品', dataIndex: 'productName', key: 'productName' },
-    { title: '品牌', dataIndex: 'productBrand', key: 'productBrand', render: (v) => v || '-' },
-    {
-      title: '角色',
-      dataIndex: 'role',
-      key: 'role',
-      render: (v) => campaignProductRoleLabels[v] || v || '-'
-    },
-    { title: '优先级', dataIndex: 'priority', key: 'priority' },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      render: (v) => <Tag color={campaignProductStatusColors[v] || 'default'}>{campaignProductStatusLabels[v] || v}</Tag>
-    },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_, record) => (
-        <Space>
-          <Button type="link" icon={<EditOutlined />} onClick={() => openProductModal(record)}>编辑</Button>
-          <Popconfirm title="确定归档该项目产品？" onConfirm={() => handleArchiveCampaignProduct(record)} disabled={record.status === 'archived'}>
-            <Button type="link" danger disabled={record.status === 'archived'}>归档</Button>
-          </Popconfirm>
-        </Space>
-      )
-    }
-  ];
+  const dueSoon = campaigns.filter((item) => {
+    const date = parseDeadline(item.deadline);
+    if (!date) return false;
+    const days = Math.ceil((date.getTime() - Date.now()) / 86400000);
+    return days >= 0 && days <= 14;
+  }).length;
+  const riskProjects = campaigns.filter((item) => item.riskCount > 0).length;
+  const confirmedTotal = campaigns.reduce((sum, item) => sum + item.confirmedKols, 0);
 
   return (
-    <div>
-      <div className="page-header">
-        <h1 className="page-title">项目与产品</h1>
-        <p className="page-subtitle">管理 Campaign 及其关联的产品上下文。</p>
+    <div className="campaign-management-page">
+      <div className="page-header project-page-header">
+        <div>
+          <h1 className="page-title">项目管理</h1>
+          <p className="page-subtitle">按真实业务进度查看项目；审核与异常处理统一进入工作台。</p>
+        </div>
+        <Button icon={<ReloadOutlined />} onClick={fetchCampaigns} loading={loading}>刷新进度</Button>
       </div>
 
-      <Card className="content-card" style={{ marginBottom: 16 }}>
-        <Space size="large" wrap style={{ marginBottom: 16 }}>
-          <Statistic title="总项目" value={campaigns.length} />
-          <Statistic title="总关联产品" value={campaigns.reduce((sum, item) => sum + item.associatedProductCount, 0)} />
-          <Statistic title="活跃关联产品" value={campaigns.reduce((sum, item) => sum + item.activeProductCount, 0)} />
-        </Space>
-        <Space wrap>
-          <Input.Search
-            allowClear
-            placeholder="搜索项目名称、品牌"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onSearch={handleCreateCampaign}
-            enterButton="新建项目"
-            style={{ width: 380 }}
+      <Row gutter={[16, 16]} className="project-summary-row">
+        <Col xs={12} lg={6}><Card><Statistic title="进行中项目" value={campaigns.length} prefix={<AppstoreOutlined />} /></Card></Col>
+        <Col xs={12} lg={6}><Card><Statistic title="未来14天到期" value={dueSoon} prefix={<ClockCircleOutlined />} /></Card></Col>
+        <Col xs={12} lg={6}><Card><Statistic title="存在风险" value={riskProjects} valueStyle={riskProjects ? { color: '#cf1322' } : undefined} prefix={<ExclamationCircleOutlined />} /></Card></Col>
+        <Col xs={12} lg={6}><Card><Statistic title="已合作达人" value={confirmedTotal} prefix={<TeamOutlined />} /></Card></Col>
+      </Row>
+
+      <Card className="content-card project-toolbar-card">
+        <div className="project-view-toolbar">
+          <Segmented
+            value={view}
+            onChange={changeView}
+            options={[
+              { value: 'board', label: '看板', icon: <AppstoreOutlined /> },
+              { value: 'list', label: '列表', icon: <BarsOutlined /> }
+            ]}
           />
-          <Button icon={<ReloadOutlined />} onClick={fetchCampaigns}>刷新</Button>
-        </Space>
-      </Card>
-
-      <Card className="content-card">
-        <Table columns={columns} dataSource={filteredCampaigns} rowKey="id" loading={loading} pagination={{ defaultPageSize: 20, showSizeChanger: true }} />
-      </Card>
-
-      <Drawer title={drawerCampaign?.name || '项目详情'} width={720} open={drawerOpen} onClose={closeDrawer}>
-        {drawerCampaign && (
-          <Space direction="vertical" size="large" style={{ width: '100%' }}>
-            <Descriptions bordered column={2} size="small">
-              <Descriptions.Item label="品牌">{drawerCampaign.brand || '-'}</Descriptions.Item>
-              <Descriptions.Item label="关联产品">{drawerCampaign.associatedProductCount} 个</Descriptions.Item>
-              <Descriptions.Item label="活跃产品">{drawerCampaign.activeProductCount} 个</Descriptions.Item>
-              <Descriptions.Item label="备注产品">{drawerCampaign.product || '-'}</Descriptions.Item>
-            </Descriptions>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <h3 style={{ margin: 0 }}>项目产品</h3>
-                <Button type="primary" icon={<PlusOutlined />} onClick={() => openProductModal()}>添加产品</Button>
-              </div>
-              {detailLoading ? <Alert type="info" message="加载中..." /> : (
-                <Table size="small" rowKey="id" pagination={false} dataSource={campaignProducts} columns={productColumns} locale={{ emptyText: <Empty description="暂无关联产品" /> }} />
-              )}
-            </div>
+          <Space size={[8, 8]} wrap>
+            <Input.Search allowClear placeholder="搜索项目、产品或 SKU" value={searchText} onChange={(event) => setSearchText(event.target.value)} style={{ width: 250 }} />
+            <Select value={stageFilter} onChange={setStageFilter} style={{ width: 140 }} options={[{ value: 'all', label: '全部阶段' }, ...CAMPAIGN_STAGES.map((item) => ({ value: item.key, label: item.label }))]} />
+            <Select value={responsibilityFilter} onChange={setResponsibilityFilter} style={{ width: 140 }} options={responsibilityOptions} />
+            <Space><Switch checked={riskOnly} onChange={setRiskOnly} /><span>仅看风险</span></Space>
           </Space>
-        )}
-      </Drawer>
-
-      {productModalOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#fff', width: 560, maxHeight: '90vh', overflow: 'auto', borderRadius: 8, padding: 24 }}>
-            <h2>{editingCampaignProduct ? '编辑项目产品' : '添加产品到项目'}</h2>
-            {!editingCampaignProduct && (
-              <>
-                <Space style={{ marginBottom: 16 }}>
-                  <Button type={createMode === 'existing' ? 'primary' : 'default'} onClick={() => setCreateMode('existing')}>选择现有产品</Button>
-                  <Button type={createMode === 'new' ? 'primary' : 'default'} onClick={() => setCreateMode('new')}>创建并添加</Button>
-                </Space>
-                {createMode === 'existing' ? (
-                  <Select
-                    showSearch
-                    optionFilterProp="label"
-                    placeholder="选择产品"
-                    value={selectedProductId}
-                    onChange={setSelectedProductId}
-                    style={{ width: '100%', marginBottom: 16 }}
-                    options={availableProducts.map((item) => ({ value: item.id, label: `${item.brand || ''} ${item.name}`.trim() }))}
-                  />
-                ) : (
-                  <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
-                    <Input placeholder="品牌" value={newProductBrand} onChange={(e) => setNewProductBrand(e.target.value)} />
-                    <Input placeholder="产品名称" value={newProductName} onChange={(e) => setNewProductName(e.target.value)} />
-                  </Space>
-                )}
-              </>
-            )}
-            <Form form={form} layout="vertical">
-              <Form.Item label="角色" name="role" rules={[{ required: true }]} initialValue="hero">
-                <Select options={roleOptions} />
-              </Form.Item>
-              <Form.Item label="优先级" name="priority" rules={[{ required: true }]} initialValue={0}>
-                <Input type="number" min={0} />
-              </Form.Item>
-              <Form.Item label="状态" name="status" rules={[{ required: true }]} initialValue="active">
-                <Select options={statusOptions} />
-              </Form.Item>
-              <Form.Item label="项目 Brief" name="campaign_brief">
-                <TextArea rows={4} placeholder="输入该项目中产品的定位和 Brief" />
-              </Form.Item>
-            </Form>
-            <Space style={{ justifyContent: 'flex-end', width: '100%' }}>
-              <Button onClick={() => setProductModalOpen(false)}>取消</Button>
-              <Button type="primary" onClick={editingCampaignProduct ? handleUpdateCampaignProduct : handleAttachProduct}>
-                {editingCampaignProduct ? '保存' : '添加'}
-              </Button>
-            </Space>
-          </div>
         </div>
+      </Card>
+
+      {filteredCampaigns.length === 0 && !loading ? (
+        <Card className="content-card"><Empty description="没有符合当前筛选条件的项目" /></Card>
+      ) : view === 'board' ? (
+        <BoardView campaigns={filteredCampaigns} loading={loading} />
+      ) : (
+        <ListView campaigns={filteredCampaigns} loading={loading} />
       )}
     </div>
   );
-};
+}
 
 export default Campaigns;

@@ -1,11 +1,11 @@
 // 工作台常量：审核类型与风险等级的中文/颜色映射、排序权重，集中在此维护。
 
 export const ITEM_TYPE = {
-  strategy: { label: '策略审核', color: 'geekblue' },
+  strategy: { label: '达人策略', color: 'geekblue' },
   candidate: { label: '候选达人', color: 'blue' },
-  outreach: { label: '触达邮件', color: 'purple' },
+  outreach: { label: '对外沟通', color: 'purple' },
   reply: { label: '达人回复', color: 'cyan' },
-  budget: { label: '预算审核', color: 'orange' },
+  budget: { label: '预算与履约', color: 'orange' },
   exception: { label: '异常处理', color: 'red' }
 };
 
@@ -33,11 +33,11 @@ export function sortItemsByRisk(items = []) {
 // 决定按钮配置：label 为按钮文案，primary 为主按钮，
 // needNote 表示点击后弹出备注输入，noteRequired 表示备注必填。
 export const DECISIONS = {
-  approve: { label: '批准', primary: true },
+  approve: { label: '批准并继续', primary: true },
   reject: { label: '驳回', needNote: true, noteRequired: true, danger: true },
   request_changes: { label: '要求修改', needNote: true, noteRequired: true },
   pause: { label: '暂缓', needNote: true },
-  retry: { label: '重试', primary: true },
+  retry: { label: '从失败节点重试', primary: true },
   skip: { label: '跳过', needNote: true },
   stop: { label: '停止', needNote: true, danger: true }
 };
