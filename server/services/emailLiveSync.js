@@ -6,6 +6,7 @@
 const imapflow = require('imapflow');
 const { dbOperations } = require('../database');
 const emailReplyPoller = require('./emailReplyPoller');
+const emailFilterService = require('./emailFilterService');
 
 const { normalizeAddress, findOwnerByAddress } = emailReplyPoller;
 
@@ -57,21 +58,27 @@ async function processFetchedMessage(message) {
 
   const fromAddress = normalizeAddress(message.envelope?.from?.[0]?.address || '');
   const owner = fromAddress ? await findOwnerByAddress(fromAddress) : null;
+  const filterRule = fromAddress ? await emailFilterService.matchingRule(fromAddress) : null;
   const bodyText = String(message.bodyParts?.get('text')?.toString() || '').slice(0, BODY_TEXT_LIMIT);
+  const classification = filterRule ? 'spam' : (owner?.customer_id ? 'kol_reply' : 'needs_review');
+  const confirmStatus = filterRule ? 'spam' : 'pending';
 
   try {
     const result = await dbOperations.run(
       `INSERT INTO email_replies
        (email_record_id, campaign_id, customer_id, from_address, message_id, subject, body_text, received_at,
-        ai_status, confirm_status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', NOW(), NOW())`,
+        ai_status, confirm_status, classification, classification_source, classification_reason, classified_at,
+        created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW())`,
       [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
-       message.envelope?.subject || '', bodyText, message.envelope?.date || new Date()]
+       message.envelope?.subject || '', bodyText, message.envelope?.date || new Date(), confirmStatus,
+       classification, filterRule ? 'rule' : 'system', filterRule ? '命中内部屏蔽规则' : (owner?.customer_id ? '发件地址已匹配 KOL' : '等待 AI 或人工确认')]
     );
-    if (owner?.customer_id) {
+    if (owner?.customer_id && !filterRule) {
       await emailReplyPoller.markWaitingReply(owner.campaign_id, owner.customer_id);
     }
-    if (result.id && owner?.customer_id) emailReplyPoller.summarizeReply(result.id).catch(() => {});
+    if (result.id && owner?.customer_id && !filterRule) emailReplyPoller.summarizeReply(result.id).catch(() => {});
+    if (result.id && !owner?.customer_id && !filterRule) emailFilterService.classifyStoredReply(result.id).catch(() => {});
     return { matched: Boolean(owner?.customer_id), replyId: result.id || null };
   } catch (error) {
     // Message-ID 唯一索引兜底：并发重复按已处理对待

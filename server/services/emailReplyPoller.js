@@ -3,6 +3,7 @@
 const imapflow = require('imapflow');
 const { dbOperations } = require('../database');
 const aiClient = require('./aiClient');
+const emailFilterService = require('./emailFilterService');
 
 const BODY_TEXT_LIMIT = 8000;
 const VALID_INTENTS = new Set(['interested', 'question', 'rejected', 'other']);
@@ -110,21 +111,25 @@ async function pollOnce() {
         }
         const fromAddress = normalizeAddress(message.envelope.from?.[0]?.address || '');
         const owner = await findOwnerByAddress(fromAddress);
-        if (!owner) continue; // 未匹配：不标已读，不处理
+        const filterRule = await emailFilterService.matchingRule(fromAddress);
+        if (!owner && !filterRule) continue; // 旧轮询模式只处理匹配或已屏蔽发件人
 
         const bodyPart = message.bodyParts?.get('text');
         const bodyText = String(bodyPart?.toString() || '').slice(0, BODY_TEXT_LIMIT);
         const result = await dbOperations.run(
           `INSERT INTO email_replies
            (email_record_id, campaign_id, customer_id, from_address, message_id, subject, body_text, received_at,
-            ai_status, confirm_status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', NOW(), NOW())`,
-          [owner.id, owner.campaign_id, owner.customer_id, fromAddress, messageId,
-           message.envelope.subject || '', bodyText, message.envelope.date || new Date()]
+            ai_status, confirm_status, classification, classification_source, classification_reason, classified_at,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+          [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
+           message.envelope.subject || '', bodyText, message.envelope.date || new Date(),
+           filterRule ? 'spam' : 'pending', filterRule ? 'spam' : 'kol_reply',
+           filterRule ? 'rule' : 'system', filterRule ? '命中内部屏蔽规则' : '发件地址已匹配 KOL']
         );
-        await markWaitingReply(owner.campaign_id, owner.customer_id);
+        if (!filterRule) await markWaitingReply(owner.campaign_id, owner.customer_id);
         await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
-        if (result.id) summarizeReply(result.id).catch(() => {});
+        if (result.id && !filterRule) summarizeReply(result.id).catch(() => {});
       }
       await dbOperations.run('UPDATE email_settings SET last_poll_at = NOW() WHERE id = ?', [settings.id]);
     } finally {
