@@ -66,6 +66,18 @@ async function findOwnerByAddress(fromAddress) {
   return null;
 }
 
+// A matched inbound message creates an independent email todo. Outreach phase
+// is deliberately untouched, so interested/confirmed/terminated remain intact.
+async function markWaitingReply(campaignId, customerId) {
+  if (!campaignId || !customerId) return;
+  await dbOperations.run(
+    `UPDATE campaign_kols SET needs_reply = 1, last_inbound_at = NOW(),
+     sync_status = 'sync_pending', updated_at = NOW()
+     WHERE campaign_id = ? AND customer_id = ?`,
+    [campaignId, customerId]
+  );
+}
+
 async function pollOnce() {
   const settings = await dbOperations.get('SELECT * FROM email_settings ORDER BY id LIMIT 1');
   if (!settings || !settings.imap_host || !settings.username || !settings.password) return;
@@ -108,6 +120,7 @@ async function pollOnce() {
           [owner.id, owner.campaign_id, owner.customer_id, fromAddress, messageId,
            message.envelope.subject || '', bodyText, message.envelope.date || new Date()]
         );
+        await markWaitingReply(owner.campaign_id, owner.customer_id);
         await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
         if (result.id) summarizeReply(result.id).catch(() => {});
       }
@@ -137,4 +150,4 @@ async function startReplyPoller() {
   timer.unref();
 }
 
-module.exports = { startReplyPoller, pollOnce, summarizeReply, normalizeAddress, findOwnerByAddress };
+module.exports = { startReplyPoller, pollOnce, summarizeReply, normalizeAddress, findOwnerByAddress, markWaitingReply };

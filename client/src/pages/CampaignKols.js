@@ -9,6 +9,7 @@ import { getEmailTemplates, previewEmail, sendEmails, generateDrafts, getAutomat
 const { TextArea } = Input;
 
 // 细分状态仍用于编辑表单/筛选；列表与详情展示收敛为主状态（见 campaignKolStatus.js）。
+// eslint-disable-next-line no-unused-vars
 const statusOptions = Object.entries(SUB_STATUS_LABELS).map(([value, label]) => ({ value, label }));
 
 const priorityOptions = [
@@ -95,16 +96,26 @@ export const normalizeLegacyPriority = (value) => ({
   normal: 't2'
 }[String(value || '').toLowerCase()] || String(value || '').toLowerCase() || undefined);
 
-// 候选外联状态：七个标准选项；replied/rejected 为旧数据兼容值
+// 外联阶段不包含邮件待办；waiting_reply/replied 仅用于旧数据兼容展示。
 export const OUTREACH_STATUS_OPTIONS = [
   { value: 'not_contacted', label: '待联系' },
   { value: 'contacted', label: '已联系' },
-  { value: 'waiting_reply', label: '待回复' },
   { value: 'negotiating', label: '沟通中' },
   { value: 'interested', label: '有意向' },
   { value: 'confirmed', label: '已确认' },
   { value: 'terminated', label: '已终止' }
 ];
+
+// UI preview: outreach phase and email work queue are separate dimensions.
+export const OUTREACH_PHASE_OPTIONS = OUTREACH_STATUS_OPTIONS;
+
+export const hasPendingEmail = (row) => Boolean(
+  row?.needs_reply ?? ['waiting_reply', 'replied'].includes(String(row?.outreach_status || '').toLowerCase())
+);
+
+export const outreachPhaseForDisplay = (value) => (
+  ['waiting_reply', 'replied'].includes(String(value || '').toLowerCase()) ? 'negotiating' : (value || 'not_contacted')
+);
 
 export const OUTREACH_STATUS_LABELS = {
   not_contacted: '待联系',
@@ -140,7 +151,8 @@ export const PROJECT_STATUS_OPTIONS = [
 ];
 
 export const normalizeLegacyOutreach = (value) => ({
-  replied: 'waiting_reply',
+  replied: 'negotiating',
+  waiting_reply: 'negotiating',
   rejected: 'terminated'
 }[String(value || '').toLowerCase()] || value);
 
@@ -234,20 +246,21 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     values.project_status = normalizeLegacyProjectStatus(values.project_status);
     values.outreach_status = normalizeLegacyOutreach(values.outreach_status) || 'not_contacted';
     values.priority_level = normalizeLegacyPriority(values.priority_level);
-    values.contact_name_override = values.contact_name_override || values.contact_name || values.contact_name_snapshot || '';
     values.cooperation_type = defaultCooperationType(values.cooperation_type);
     values.cooperation_platforms = parsePlatforms(values.cooperation_platforms, [values.platform_account_platform].filter(Boolean));
     if (values.project_override && typeof values.project_override === 'object') {
       values.project_override = JSON.stringify(values.project_override, null, 2);
     }
-    try {
-      const response = await axios.get(`/api/campaign-kols/${record.id}/published-videos`);
-      values.published_video_urls = (response.data.data || [])
-        .map((video) => video.canonical_url || video.source_url)
-        .join('\n');
-    } catch (error) {
-      values.published_video_urls = '';
-      message.error('获取合作发布视频失败');
+    if (!isCandidatePool) {
+      try {
+        const response = await axios.get(`/api/campaign-kols/${record.id}/published-videos`);
+        values.published_video_urls = (response.data.data || [])
+          .map((video) => video.canonical_url || video.source_url)
+          .join('\n');
+      } catch (error) {
+        values.published_video_urls = '';
+        message.error('获取合作发布视频失败');
+      }
     }
     form.setFieldsValue(values);
   };
@@ -316,20 +329,30 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       const values = { ...formValues };
       delete values.published_video_urls;
       // 阶段字段白名单：候选只提交外联状态，合作只提交项目状态
-      if (isCandidatePool) delete values.project_status;
-      else delete values.outreach_status;
+      if (isCandidatePool) {
+        delete values.project_status;
+        delete values.shipping_address;
+        delete values.content_format;
+        delete values.expected_publish_at;
+        delete values.shipping_date;
+        delete values.tracking_number;
+      } else delete values.outreach_status;
       if (values.cooperation_type === 'product_exchange') {
         values.final_fee = 0;
         values.currency = null;
       }
       await axios.patch(`/api/campaign-kols/${editing.id}`, values);
-      try {
-        await axios.put(`/api/campaign-kols/${editing.id}/published-videos`, {
-          urls: publishedVideoUrls.split(/\r?\n/).map((url) => url.trim()).filter(Boolean)
-        });
+      if (isCandidatePool) {
         message.success('项目 KOL 已更新');
-      } catch (videoError) {
-        message.warning(`合作信息已保存，但发布视频保存失败：${videoError.response?.data?.error || videoError.message || '未知错误'}`);
+      } else {
+        try {
+          await axios.put(`/api/campaign-kols/${editing.id}/published-videos`, {
+            urls: publishedVideoUrls.split(/\r?\n/).map((url) => url.trim()).filter(Boolean)
+          });
+          message.success('项目 KOL 已更新');
+        } catch (videoError) {
+          message.warning(`合作信息已保存，但发布视频保存失败：${videoError.response?.data?.error || videoError.message || '未知错误'}`);
+        }
       }
       setEditing(null);
       fetchRows();
@@ -574,7 +597,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
         </Space>
       )
     },
-    { title: '联系人', key: 'contact_name', width: 130, render: (_, r) => r.contact_name_override || r.contact_name || r.contact_name_snapshot || '-' },
+    { title: '联系人', key: 'contact_name', width: 130, render: (_, r) => r.contact_name || '-' },
     { title: 'YouTube', key: 'youtube', width: 130, render: (_, r) => platformLink(r.youtube_url || r.youtube_url_snapshot, r.youtube_followers || r.youtube_followers_snapshot) },
     { title: 'Instagram', key: 'instagram', width: 130, render: (_, r) => platformLink(r.instagram_url || r.instagram_url_snapshot, r.instagram_followers || r.instagram_followers_snapshot) },
     { title: 'TikTok', key: 'tiktok', width: 130, render: (_, r) => platformLink(r.tiktok_url || r.tiktok_url_snapshot, r.tiktok_followers || r.tiktok_followers_snapshot) },
@@ -590,9 +613,14 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     )},
     { title: '合作方式', dataIndex: 'cooperation_type', key: 'cooperation_type', width: 120, render: (v) => <Tag>{cooperationTypeLabel(v)}</Tag> },
     ...(isCandidatePool ? [{ title: '外联状态', dataIndex: 'outreach_status', key: 'outreach_status', width: 110, render: (v) => {
-      const value = v || 'not_contacted';
+      const value = outreachPhaseForDisplay(v);
       return <Tag color={OUTREACH_STATUS_COLORS[value] || 'default'}>{OUTREACH_STATUS_LABELS[value] || value}</Tag>;
-    } }] : []),
+    } }, {
+      title: '邮件待办', key: 'email_todo', width: 110,
+      render: (_, record) => hasPendingEmail(record)
+        ? <Tag color="gold" icon={<MailOutlined />}>待回复</Tag>
+        : <span style={{ color: '#bfbfbf' }}>—</span>
+    }] : []),
     { title: '合作平台', dataIndex: 'cooperation_platforms', key: 'cooperation_platforms', width: 180, render: (v, r) => {
       const values = parsePlatforms(v, [r.platform_account_platform].filter(Boolean));
       return values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-';
@@ -613,7 +641,11 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     { title: '跟进人', dataIndex: 'owner', key: 'owner', width: 100, render: (v) => v || '-' },
     { title: '物流单号', dataIndex: 'tracking_number', key: 'tracking_number', width: 150, render: (v) => v || '-' },
     { title: '合作发布视频', dataIndex: 'published_video_count', key: 'published_video_count', width: 130, render: (v) => `${v || 0} 条` },
-    { title: '同步', dataIndex: 'sync_status', key: 'sync_status', width: 120, render: (v) => <Tag>{v || 'sync_pending'}</Tag> },
+    { title: '飞书同步状态', dataIndex: 'sync_status', key: 'sync_status', width: 130, render: (v) => <Tag>{({
+      sync_pending: '待同步',
+      synced: '已同步',
+      sync_failed: '同步失败'
+    })[v] || '待同步'}</Tag> },
     { title: '项目备注', dataIndex: 'project_notes', key: 'project_notes', width: 220, ellipsis: true, render: (v, r) => v || r.notes || '-' },
     {
       title: '操作',
@@ -657,14 +689,16 @@ const CampaignKols = ({ view = 'cooperation' }) => {
         <Space wrap>
           <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 180 }} />
           {isCandidatePool ? (
-            <Select allowClear placeholder="外联状态" value={filters.outreach_status} onChange={(v) => updateFilter('outreach_status', v)} options={OUTREACH_STATUS_OPTIONS} style={{ width: 150 }} />
+            <>
+              <Select allowClear placeholder="外联状态" value={filters.outreach_status} onChange={(v) => updateFilter('outreach_status', v)} options={OUTREACH_PHASE_OPTIONS} style={{ width: 150 }} />
+            </>
           ) : (
             <Select allowClear placeholder="项目状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={PROJECT_STATUS_OPTIONS} style={{ width: 150 }} />
           )}
-          <Select allowClear placeholder="同步状态" value={filters.sync_status} onChange={(v) => updateFilter('sync_status', v)} options={[
-            { value: 'sync_pending', label: 'sync_pending' },
-            { value: 'synced', label: 'synced' },
-            { value: 'sync_failed', label: 'sync_failed' }
+          <Select allowClear placeholder="飞书同步状态" value={filters.sync_status} onChange={(v) => updateFilter('sync_status', v)} options={[
+            { value: 'sync_pending', label: '待同步' },
+            { value: 'synced', label: '已同步' },
+            { value: 'sync_failed', label: '同步失败' }
           ]} style={{ width: 160 }} />
           <Input.Search allowClear placeholder="搜索 KOL、Email、国家、备注、视频链接" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchRows} style={{ width: 320 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchRows}>刷新</Button>
@@ -882,9 +916,6 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       <Modal title={isCandidatePool ? '编辑项目候选' : '编辑 KOL 合作'} open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveEdit} confirmLoading={savingEdit} width={760}>
         <Form form={form} layout="vertical">
           <Space align="start" style={{ width: '100%' }}>
-            <Form.Item label="联系人" name="contact_name_override" extra="该项目下使用的联系人名称，不影响 KOL 总表">
-              <Input style={{ width: 200 }} placeholder="联系人姓名" />
-            </Form.Item>
             <Form.Item label="合作平台" name="cooperation_platforms">
               <Select mode="multiple" allowClear options={platformOptions} style={{ width: 260 }} placeholder="可多选" />
             </Form.Item>
@@ -900,7 +931,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           </Space>
           <Space align="start" style={{ width: '100%' }}>
             {isCandidatePool ? (
-              <Form.Item label="外联状态" name="outreach_status" extra="“待回复”表示 KOL 已回复，正在等待我方跟进回复">
+              <Form.Item label="外联状态" name="outreach_status" extra="邮件是否待回复会由系统根据最新收发邮件单独维护">
                 <Select options={OUTREACH_STATUS_OPTIONS} style={{ width: 170 }} />
               </Form.Item>
             ) : (
@@ -915,19 +946,29 @@ const CampaignKols = ({ view = 'cooperation' }) => {
               <Input style={{ width: 170 }} />
             </Form.Item>
           </Space>
-          <Form.Item label="收货地址" name="shipping_address">
-            <TextArea rows={2} />
-          </Form.Item>
+          {isCandidatePool ? (
+            <Form.Item label="项目备注" name="project_notes">
+              <TextArea rows={3} />
+            </Form.Item>
+          ) : (
+            <Form.Item label="收货地址" name="shipping_address">
+              <TextArea rows={2} />
+            </Form.Item>
+          )}
           <Form.Item label="交付内容" name="deliverables">
             <TextArea rows={3} placeholder="例如：展示产品安装、核心卖点和折扣码" />
           </Form.Item>
           <Space align="start" style={{ width: '100%' }} wrap>
-            <Form.Item label="内容形式" name="content_format">
-              <Input style={{ width: 220 }} placeholder="例如：2×Reels + 3×Stories" />
-            </Form.Item>
-            <Form.Item label="预计上线时间" name="expected_publish_at">
-              <Input type="date" style={{ width: 180 }} />
-            </Form.Item>
+            {!isCandidatePool && (
+              <>
+                <Form.Item label="内容形式" name="content_format">
+                  <Input style={{ width: 220 }} placeholder="例如：2×Reels + 3×Stories" />
+                </Form.Item>
+                <Form.Item label="预计上线时间" name="expected_publish_at">
+                  <Input type="date" style={{ width: 180 }} />
+                </Form.Item>
+              </>
+            )}
             <Form.Item label="预算审批状态" name="budget_approval_status">
               <Select allowClear style={{ width: 170 }} options={[
                 { value: 'pending', label: '待审批' },
@@ -950,20 +991,24 @@ const CampaignKols = ({ view = 'cooperation' }) => {
               <InputNumber min={0} precision={2} disabled style={{ width: 150 }} />
             </Form.Item>
           </Space>
-          <Space align="start" style={{ width: '100%' }} wrap>
-            <Form.Item label="发货日期" name="shipping_date">
-              <Input type="date" style={{ width: 180 }} />
-            </Form.Item>
-            <Form.Item label="物流单号" name="tracking_number">
-              <Input style={{ width: 260 }} />
-            </Form.Item>
-          </Space>
-          <Form.Item label="合作发布视频" name="published_video_urls" extra="每行一条链接；系统会自动识别平台并同步到视频数据，保存时不会自动抓取。">
-            <TextArea rows={5} placeholder={'https://www.youtube.com/watch?v=...\nhttps://www.instagram.com/reel/...'} />
-          </Form.Item>
-          <Form.Item label="项目备注" name="project_notes">
-            <TextArea rows={3} />
-          </Form.Item>
+          {!isCandidatePool && (
+            <>
+              <Space align="start" style={{ width: '100%' }} wrap>
+                <Form.Item label="发货日期" name="shipping_date">
+                  <Input type="date" style={{ width: 180 }} />
+                </Form.Item>
+                <Form.Item label="物流单号" name="tracking_number">
+                  <Input style={{ width: 260 }} />
+                </Form.Item>
+              </Space>
+              <Form.Item label="合作发布视频" name="published_video_urls" extra="每行一条链接；系统会自动识别平台并同步到视频数据，保存时不会自动抓取。">
+                <TextArea rows={5} placeholder={'https://www.youtube.com/watch?v=...\nhttps://www.instagram.com/reel/...'} />
+              </Form.Item>
+              <Form.Item label="项目备注" name="project_notes">
+                <TextArea rows={3} />
+              </Form.Item>
+            </>
+          )}
         </Form>
       </Modal>
     </div>

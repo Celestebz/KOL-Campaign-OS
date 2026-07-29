@@ -112,8 +112,26 @@ test('pollOnce dedupes by message-id, inserts matched replies, skips unmatched w
   assert.equal(inserts[0].params[4], 'm-new');
   assert.equal(inserts[0].params[6], '我愿意合作');
   assert.deepEqual(seenFlags.sort(), [1, 2], 'm-dup 与 m-new 标已读，未匹配的不标');
+  const outreachUpdate = statements.find((s) => /UPDATE campaign_kols SET needs_reply = 1/.test(s.sql));
+  assert.ok(outreachUpdate, 'matched inbound mail should immediately create a reply todo');
+  assert.deepEqual(outreachUpdate.params, [2, 7]);
+  assert.doesNotMatch(outreachUpdate.sql, /outreach_status\s*=/);
   const pollUpdate = statements.find((s) => /UPDATE email_settings SET last_poll_at/.test(s.sql));
   assert.ok(pollUpdate, '应更新 last_poll_at');
+});
+
+test('markWaitingReply ignores missing ownership and protects outcome states', async () => {
+  const statements = [];
+  await withPatchedDb({
+    run: async (sql, params) => { statements.push({ sql, params }); return { changes: 1 }; }
+  }, async () => {
+    await poller.markWaitingReply(null, 7);
+    await poller.markWaitingReply(2, 7);
+  });
+  assert.equal(statements.length, 1);
+  assert.deepEqual(statements[0].params, [2, 7]);
+  assert.match(statements[0].sql, /needs_reply = 1/);
+  assert.doesNotMatch(statements[0].sql, /pipeline_stage = 'candidate'/);
 });
 
 test('pollOnce does nothing when IMAP not configured', async () => {

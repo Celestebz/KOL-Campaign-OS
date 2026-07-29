@@ -201,6 +201,8 @@ async function initDatabase() {
   await addColumnIfMissing('campaign_kols', 'contact_email_override', 'VARCHAR(255)');
   await addColumnIfMissing('campaign_kols', 'contact_name_override', 'VARCHAR(255)');
   await addColumnIfMissing('campaign_kols', 'outreach_status', 'VARCHAR(50)');
+  await addColumnIfMissing('campaign_kols', 'needs_reply', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumnIfMissing('campaign_kols', 'last_inbound_at', 'DATETIME');
   await addColumnIfMissing('campaign_kols', 'negotiation_status', 'VARCHAR(50)');
   await addColumnIfMissing('campaign_kols', 'contract_status', 'VARCHAR(50)');
   await addColumnIfMissing('campaign_kols', 'payment_status', 'VARCHAR(50)');

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"C:/Users/Administrator/.claude/skills\" && ls -la \"C:/Users/Administrator/.claude/\" 2>&1)",
+      "Bash(echo \"HOME=$HOME\"; echo \"SHELL=$SHELL\"; ls -la ~/.bashrc ~/.bash_profile ~/.profile 2>/dev/null; which claude 2>/dev/null; type claude 2>/dev/null | head -5)",
+      "Read(//c/Users/Administrator/**)",
+      "Bash(ls -la /c/Users/Administrator/.bashrc /c/Users/Administrator/.bash_profile /c/Users/Administrator/.profile 2>&1 | head -10)",
+      "Bash(rm -rf /tmp/superpowers-temp && echo \"Cleaned up temp\" && ls \"C:/Users/Administrator/.claude/skills/brainstorming/\" && echo \"---\" && ls \"C:/Users/Administrator/.claude/skills/test-driven-development/\" 2>&1)",
+      "Bash(bash -ic 'type claude; alias claude')",
+      "Bash(Select-String -Path \"d:/Celeste/kol-campaign-os/logs/service-2026-07-28.log\" -Pattern \"起草失败|draft-reply|draftForCustomer|ai_summary|summary|email|2026/7/28\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Administrator\\.claude",
+      "\\tmp",
+      "C:\\Users\\Administrator"
+    ]
+  }
+}

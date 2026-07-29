@@ -14,7 +14,7 @@ const OUTREACH_STATUSES = new Set([
 ]);
 
 const LEGACY_OUTREACH_STATUS_MAP = {
-  replied: 'waiting_reply',
+  replied: 'negotiating',
   rejected: 'terminated'
 };
 

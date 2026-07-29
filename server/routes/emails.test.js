@@ -214,11 +214,32 @@ test('POST /replies/:id/confirm maps intent and writes back campaign_kols', asyn
     assert.equal(response.payload.success, true);
   });
   const updateKol = statements.find((s) => /UPDATE campaign_kols/.test(s.sql));
-  assert.ok(updateKol.params.includes('waiting_reply'), 'question intent maps to waiting_reply');
+  assert.ok(updateKol.params.includes('negotiating'), 'question intent maps to negotiating while the email todo stays separate');
   assert.ok(updateKol.params.includes('询问寄送'));
   assert.match(updateKol.sql, /sync_status = 'sync_pending'/);
   const updateReply = statements.find((s) => /UPDATE email_replies/.test(s.sql));
   assert.match(updateReply.sql, /confirm_status = 'confirmed'/);
+});
+
+test('POST /replies/:id/confirm maps other to negotiating without changing the email todo', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/FROM email_replies/.test(sql)) {
+        return { id: 15, campaign_id: 2, customer_id: 7, ai_intent: 'other', ai_summary: 'needs review' };
+      }
+      if (/FROM campaign_kols/.test(sql)) return { id: 78, internal_notes: null };
+      return null;
+    },
+    run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/confirm');
+    const response = await callHandler(handler, { params: { id: 15 }, body: {} });
+    assert.equal(response.payload.data.outreach_status, 'negotiating');
+  });
+  const updateKol = statements.find((s) => /UPDATE campaign_kols/.test(s.sql));
+  assert.ok(updateKol.params.includes('negotiating'));
+  assert.doesNotMatch(updateKol.sql, /needs_reply/);
 });
 
 test('POST /replies/:id/confirm uses body summary override and maps interested to interested', async () => {
@@ -245,7 +266,7 @@ test('POST /replies/:id/confirm uses body summary override and maps interested t
 test('POST /replies/:id/ignore sets confirm_status ignored', async () => {
   const statements = [];
   await withPatchedDb({
-    get: async () => ({ id: 7, confirm_status: 'pending' }),
+    get: async () => ({ id: 7, campaign_id: 2, customer_id: 3, received_at: '2026-07-29 10:00:00', confirm_status: 'pending' }),
     run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
   }, async () => {
     const handler = findHandler(require('./emails'), 'post', '/replies/:id/ignore');
@@ -253,6 +274,8 @@ test('POST /replies/:id/ignore sets confirm_status ignored', async () => {
     assert.equal(response.payload.success, true);
   });
   assert.match(statements[0].sql, /confirm_status = 'ignored'/);
+  assert.match(statements[1].sql, /needs_reply = 0/);
+  assert.deepEqual(statements[1].params, [2, 3, 2, 3, '2026-07-29 10:00:00', '2026-07-29 10:00:00', 7]);
 });
 
 test('POST /replies/:id/retry-summary re-runs summarizeReply and returns updated reply', async () => {
@@ -427,6 +450,19 @@ test('GET /replies scope=unmatched filters replies without a KOL', async () => {
   });
 });
 
+test('GET /replies scope=needs_reply returns the latest actionable inbound email', async () => {
+  const queries = [];
+  await withPatchedDb({
+    query: async (sql) => { queries.push(String(sql)); return []; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/replies');
+    await callHandler(handler, { query: { scope: 'needs_reply' } });
+  });
+  assert.match(queries[0], /ck\.needs_reply = 1/);
+  assert.match(queries[0], /LEFT JOIN campaign_kols ck/);
+  assert.match(queries[0], /ORDER BY er2\.received_at DESC, er2\.id DESC LIMIT 1/);
+});
+
 test('POST /replies/:id/bind assigns a KOL, defaults campaign and triggers summary', async () => {
   const emailReplyPoller = require('../services/emailReplyPoller');
   let summarized = null;
@@ -453,6 +489,9 @@ test('POST /replies/:id/bind assigns a KOL, defaults campaign and triggers summa
       assert.equal(response.payload.success, true);
       const update = writes.find((w) => w.sql.includes('UPDATE email_replies SET customer_id'));
       assert.deepEqual(update.params, [7, 2, 5], 'binds customer and defaults campaign from latest relation');
+      const outreachUpdate = writes.find((w) => w.sql.includes('needs_reply = 1'));
+      assert.ok(outreachUpdate, 'binding an inbound message should create a reply todo');
+      assert.deepEqual(outreachUpdate.params, [2, 7]);
       assert.equal(response.payload.data.customer_id, 7);
     });
   } finally {
@@ -488,4 +527,55 @@ test('POST /replies/:id/bind validates reply and KOL existence', async () => {
     const badBody = await callHandler(handler, { params: { id: '5' }, body: {} });
     assert.equal(badBody.statusCode, 400);
   });
+});
+
+// ---- 审批台顶部指标卡 ----
+
+test('GET /approval-dashboard/summary returns aggregated stats from the dashboard service', async () => {
+  // 用模块替换方式注入稳定的 buildSummary，绕过真实 DB 调用
+  const dashboardSummary = require('../services/emailDashboardSummary');
+  const originalBuild = dashboardSummary.buildSummary;
+  dashboardSummary.buildSummary = async () => ({
+    todayContactedKols: 12,
+    weekContactedKols: 48,
+    previousWeekContactedKols: 39,
+    weekDifference: 9,
+    replyRate30d: 8.6,
+    repliedKols30d: 6,
+    deliveredKols30d: 70,
+    denominatorType: 'sent_success',
+    timezone: 'Asia/Shanghai',
+    replyWindowDays: 30,
+    generatedAt: '2026-07-28T01:30:00.000Z'
+  });
+  try {
+    const handler = findHandler(require('./emails'), 'get', '/approval-dashboard/summary');
+    const response = await callHandler(handler);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.payload.success, true);
+    assert.equal(response.payload.data.todayContactedKols, 12);
+    assert.equal(response.payload.data.weekContactedKols, 48);
+    assert.equal(response.payload.data.replyRate30d, 8.6);
+    assert.equal(response.payload.data.denominatorType, 'sent_success');
+  } finally {
+    dashboardSummary.buildSummary = originalBuild;
+  }
+});
+
+test('GET /approval-dashboard/summary still returns 200 with nulls when the service throws', async () => {
+  const dashboardSummary = require('../services/emailDashboardSummary');
+  const originalBuild = dashboardSummary.buildSummary;
+  dashboardSummary.buildSummary = async () => { throw new Error('boom'); };
+  try {
+    const handler = findHandler(require('./emails'), 'get', '/approval-dashboard/summary');
+    const response = await callHandler(handler);
+    assert.equal(response.statusCode, 200, 'summary failure must not break approval tab');
+    assert.equal(response.payload.success, true);
+    assert.equal(response.payload.data.todayContactedKols, null);
+    assert.equal(response.payload.data.weekContactedKols, null);
+    assert.equal(response.payload.data.replyRate30d, null);
+    assert.equal(response.payload.data.error, 'boom');
+  } finally {
+    dashboardSummary.buildSummary = originalBuild;
+  }
 });

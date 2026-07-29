@@ -5,7 +5,7 @@ import {
 } from 'antd';
 import {
   CopyOutlined, DeleteOutlined, EditOutlined, MailOutlined, PlusOutlined, ReloadOutlined,
-  RobotOutlined, SendOutlined, WarningOutlined
+  RobotOutlined, SendOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
 import {
@@ -13,7 +13,8 @@ import {
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
   getEmailRecords,
-  getEmailReplies, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, retryReplySummary, draftReply
+  getReplyTodos, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, retryReplySummary, draftReply,
+  getApprovalDashboardSummary
 } from './emailApi';
 
 const { TextArea } = Input;
@@ -55,9 +56,42 @@ const RISK_LABELS = {
 
 // ---- 审批台 ----
 
+// 顶部指标卡渲染辅助：数字为 null 时显示 —；分母 0 时回复率也显示 —。
+const EMPTY_DASHBOARD_SUMMARY = {
+  todayContactedKols: null,
+  weekContactedKols: null,
+  previousWeekContactedKols: null,
+  weekDifference: null,
+  replyRate30d: null,
+  repliedKols30d: null,
+  deliveredKols30d: null,
+  denominatorType: 'sent_success'
+};
+
+// 数字 / 百分比渲染：null/undefined 一律显示 —；分母为 0 时回复率显示 —。
+function formatMetric(value, { percent = false } = {}) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  if (percent) return `${value}%`;
+  return String(value);
+}
+
+// 副标题中分子 / 分母文字：分母为 0 时显示 —（避免出现 "0人回复 / 0人发送成功"）。
+function formatRatioCounts({ replied, delivered }) {
+  const repliedText = (replied === null || replied === undefined) ? '—' : `${replied}`;
+  const deliveredText = (delivered === null || delivered === undefined || delivered === 0) ? '—' : `${delivered}`;
+  return `${repliedText}人回复 / ${deliveredText}人发送成功`;
+}
+
+// "较上周 +9" / "较上周 -6" / "与上周持平"。三者优先级：持平 > 上升 > 下降。
+function formatWeekDifference(difference) {
+  if (difference === null || difference === undefined || Number.isNaN(difference)) return null;
+  if (difference === 0) return '与上周持平';
+  if (difference > 0) return `较上周 +${difference}`;
+  return `较上周 ${difference}`;
+}
+
 function ApprovalTab() {
   const [drafts, setDrafts] = useState([]);
-  const [counts, setCounts] = useState({ pending_review: 0, high_risk: 0, approved: 0 });
   const [filters, setFilters] = useState({});
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -69,13 +103,14 @@ function ApprovalTab() {
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  const [dashboard, setDashboard] = useState(EMPTY_DASHBOARD_SUMMARY);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
 
   const fetchDrafts = useCallback(async () => {
     setLoading(true);
     try {
       const data = await getDrafts(filters);
       setDrafts(data.drafts || []);
-      setCounts(data.counts || { pending_review: 0, high_risk: 0, approved: 0 });
       if (selected) {
         const still = (data.drafts || []).find((d) => d.id === selected.id);
         if (still) selectDraft(still);
@@ -89,7 +124,28 @@ function ApprovalTab() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
+  // 顶部指标独立拉取：失败不影响审批列表；骨架屏期间显示占位。
+  const fetchDashboard = useCallback(async () => {
+    setDashboardLoading(true);
+    try {
+      const summary = await getApprovalDashboardSummary();
+      setDashboard(summary);
+    } catch (error) {
+      // 静默降级：单卡失败时显示 —，不打断审批台
+      setDashboard(EMPTY_DASHBOARD_SUMMARY);
+    } finally {
+      setDashboardLoading(false);
+    }
+  }, []);
+
   useEffect(() => { fetchDrafts(); }, [fetchDrafts]);
+  useEffect(() => { fetchDashboard(); }, [fetchDashboard]);
+
+  // 审批动作完成后顺带刷新指标，保持"今日/本周"数字与最新外联状态同步。
+  const refreshAll = useCallback(() => {
+    fetchDrafts();
+    fetchDashboard();
+  }, [fetchDrafts, fetchDashboard]);
 
   const selectDraft = (draft) => {
     setSelected(draft);
@@ -128,7 +184,7 @@ function ApprovalTab() {
     try {
       await approveDraft(selected.id);
       message.success('邮件已发送，外联状态已同步');
-      fetchDrafts();
+      refreshAll();
     } catch (error) {
       message.error(error.response?.data?.error || (error.code === 'ECONNABORTED'
         ? '发送请求超时，请先检查邮箱发件箱，切勿重复点击发送'
@@ -155,7 +211,7 @@ function ApprovalTab() {
     try {
       await sendDraft(selected.id);
       message.success('发送成功，状态已回写');
-      fetchDrafts();
+      refreshAll();
     } catch (error) {
       message.error(error.response?.data?.error || '发送失败');
     } finally {
@@ -168,7 +224,7 @@ function ApprovalTab() {
     try {
       await confirmManualSent(selected.id);
       message.success('已标记为手动发送，外联状态已同步');
-      fetchDrafts();
+      refreshAll();
     } catch (error) {
       message.error(error.response?.data?.error || '标记失败');
     } finally {
@@ -201,12 +257,49 @@ function ApprovalTab() {
 
   const evidence = selected?.evidence;
 
+  const weekDeltaText = formatWeekDifference(dashboard.weekDifference);
+  const replyRateText = formatMetric(dashboard.replyRate30d, { percent: true });
+
   return (
     <>
       <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={8}><Card><Statistic title="待审阅" value={counts.pending_review} /></Card></Col>
-        <Col span={8}><Card><Statistic title="高风险" value={counts.high_risk} valueStyle={{ color: '#cf1322' }} prefix={<WarningOutlined />} /></Card></Col>
-        <Col span={8}><Card><Statistic title="已批准待发送" value={counts.approved} valueStyle={{ color: '#3f8600' }} /></Card></Col>
+        <Col span={8}>
+          <Card>
+            <Statistic
+              title="今日联络 KOL"
+              value={dashboardLoading ? '—' : formatMetric(dashboard.todayContactedKols)}
+              loading={dashboardLoading}
+            />
+          </Card>
+        </Col>
+        <Col span={8}>
+          <Card>
+            <Statistic
+              title="本周联络 KOL"
+              value={dashboardLoading ? '—' : formatMetric(dashboard.weekContactedKols)}
+              loading={dashboardLoading}
+            />
+            {!dashboardLoading && weekDeltaText && (
+              <div style={{ color: dashboard.weekDifference > 0 ? '#3f8600' : (dashboard.weekDifference < 0 ? '#cf1322' : '#8c8c8c'), marginTop: 4 }}>
+                {weekDeltaText}
+              </div>
+            )}
+          </Card>
+        </Col>
+        <Col span={8}>
+          <Card>
+            <Statistic
+              title="30天回复率"
+              value={dashboardLoading ? '—' : replyRateText}
+              loading={dashboardLoading}
+            />
+            {!dashboardLoading && (
+              <div style={{ color: '#8c8c8c', marginTop: 4, fontSize: 12 }}>
+                {formatRatioCounts({ replied: dashboard.repliedKols30d, delivered: dashboard.deliveredKols30d })}
+              </div>
+            )}
+          </Card>
+        </Col>
       </Row>
 
       <Space style={{ marginBottom: 12 }} wrap>
@@ -475,7 +568,7 @@ function RepliesTab() {
   const fetchReplies = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
-      const rows = viewMode === 'unmatched' ? await getUnmatchedReplies() : await getEmailReplies('pending');
+      const rows = viewMode === 'unmatched' ? await getUnmatchedReplies() : await getReplyTodos();
       if (viewMode === 'pending' && prevCountRef.current !== null && rows.length > prevCountRef.current) {
         message.info(`收到 ${rows.length - prevCountRef.current} 条新回复`);
       }
@@ -611,7 +704,9 @@ function RepliesTab() {
     {
       title: '操作', width: 260, render: (_, record) => (
         <Space size={0}>
-          <Button type="link" size="small" onClick={() => openConfirm(record)}>确认</Button>
+          {record.confirm_status === 'pending'
+            ? <Button type="link" size="small" onClick={() => openConfirm(record)}>确认意向</Button>
+            : <Tag color="green">意向已确认</Tag>}
           <Button type="link" size="small" icon={<MailOutlined />} onClick={() => handleDraftReply(record)}>回复草稿</Button>
           <Popconfirm title="忽略这条回复？" onConfirm={() => handleIgnore(record)}>
             <Button type="link" size="small" danger>忽略</Button>
@@ -640,12 +735,19 @@ function RepliesTab() {
 
   return (
     <>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="邮件待办"
+        description="这里集中显示当前轮到我方处理的 KOL 来信；确认意向不会清除待办，我方回复发送成功后才会完成。"
+      />
       <Space style={{ marginBottom: 12 }} wrap>
         <Radio.Group
           value={viewMode}
           onChange={changeView}
           options={[
-            { value: 'pending', label: '待确认' },
+            { value: 'pending', label: '待回复' },
             { value: 'unmatched', label: '未识别回复' }
           ]}
           optionType="button"
@@ -1007,7 +1109,7 @@ function Emails() {
         items={[
           { key: 'approval', label: '审批台', children: <ApprovalTab /> },
           { key: 'records', label: '发送记录', children: <RecordsTab /> },
-          { key: 'replies', label: '回复待确认', children: <RepliesTab /> },
+          { key: 'replies', label: '邮件待办', children: <RepliesTab /> },
           { key: 'templates', label: '模板与口径', children: <TemplatesTab /> },
           { key: 'settings', label: '邮箱配置', children: <SettingsTab /> }
         ]}

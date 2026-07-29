@@ -558,7 +558,7 @@ test('candidate pool push writes only 外联状态 and omits 状态/项目状态
   assert.equal(poolCalls.length, 1);
   const fields = JSON.parse(poolCalls[0].options.body).fields;
   assert.equal(fields['外联状态'], '已联系');
-  for (const name of ['状态', '项目状态', '发货日期', '物流单号', '交付内容', '预计上线时间', '收货地址']) {
+  for (const name of ['状态', '项目状态', '发货日期', '物流单号', '交付内容', '预计上线时间', '收货地址', '内容形式']) {
     assert.equal(Object.prototype.hasOwnProperty.call(fields, name), false, `${name} should be omitted`);
   }
   assert.equal(fields['达人名称'], 'Alice');

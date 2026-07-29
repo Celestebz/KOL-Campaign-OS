@@ -5,7 +5,7 @@ const { dbOperations } = require('../database');
 
 const INTENT_TO_OUTREACH = {
   interested: 'interested',
-  question: 'waiting_reply',
+  question: 'negotiating',
   rejected: 'terminated',
   other: 'negotiating'
 };
@@ -77,6 +77,20 @@ async function ignoreReply(replyId) {
     `UPDATE email_replies SET confirm_status = 'ignored', updated_at = NOW() WHERE id = ?`,
     [reply.id]
   );
+  if (reply.campaign_id && reply.customer_id) {
+    await dbOperations.run(
+      `UPDATE campaign_kols SET needs_reply = 0, sync_status = 'sync_pending', updated_at = NOW()
+       WHERE campaign_id = ? AND customer_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM email_replies newer
+           WHERE newer.campaign_id = ? AND newer.customer_id = ?
+             AND newer.confirm_status <> 'ignored'
+             AND (newer.received_at > ? OR (newer.received_at = ? AND newer.id > ?))
+         )`,
+      [reply.campaign_id, reply.customer_id, reply.campaign_id, reply.customer_id,
+       reply.received_at, reply.received_at, reply.id]
+    );
+  }
 }
 
 module.exports = {

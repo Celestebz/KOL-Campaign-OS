@@ -5,6 +5,7 @@ const emailDrafter = require('../services/emailDrafter');
 const emailReviewActions = require('../services/emailReviewActions');
 const emailDraftSender = require('../services/emailDraftSender');
 const emailLiveSync = require('../services/emailLiveSync');
+const emailDashboardSummary = require('../services/emailDashboardSummary');
 const automationRuns = require('../services/automationRuns');
 
 const router = express.Router();
@@ -344,6 +345,35 @@ router.get('/drafts/:id', async (req, res) => {
   }
 });
 
+// ---- 审批台顶部指标卡：今日/本周联络 KOL、30天回复率 ----
+// 只读统计接口，与审批列表解耦：失败时返回 200 + 占位 null，前端单独降级显示 —。
+router.get('/approval-dashboard/summary', async (req, res) => {
+  try {
+    const summary = await emailDashboardSummary.buildSummary(dbOperations, new Date());
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    console.error('[email] approval dashboard summary failed:', error.message);
+    console.error(error.stack);
+    res.status(200).json({
+      success: true,
+      data: {
+        todayContactedKols: null,
+        weekContactedKols: null,
+        previousWeekContactedKols: null,
+        weekDifference: null,
+        replyRate30d: null,
+        repliedKols30d: null,
+        deliveredKols30d: null,
+        denominatorType: 'sent_success',
+        timezone: 'Asia/Shanghai',
+        replyWindowDays: 30,
+        generatedAt: new Date().toISOString(),
+        error: error.message
+      }
+    });
+  }
+});
+
 router.put('/drafts/:id', async (req, res) => {
   try {
     const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
@@ -446,6 +476,15 @@ router.get('/replies', async (req, res) => {
     const conditions = [];
     const params = [];
     if (scope === 'unmatched') conditions.push('er.customer_id IS NULL');
+    if (scope === 'needs_reply') {
+      conditions.push('ck.needs_reply = 1');
+      conditions.push(`er.id = (
+        SELECT er2.id FROM email_replies er2
+        WHERE er2.campaign_id = er.campaign_id AND er2.customer_id = er.customer_id
+          AND er2.confirm_status <> 'ignored'
+        ORDER BY er2.received_at DESC, er2.id DESC LIMIT 1
+      )`);
+    }
     if (confirm_status) { conditions.push('er.confirm_status = ?'); params.push(confirm_status); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const replies = await dbOperations.query(
@@ -453,6 +492,7 @@ router.get('/replies', async (req, res) => {
        FROM email_replies er
        LEFT JOIN customers k ON k.id = er.customer_id
        LEFT JOIN campaigns c ON c.id = er.campaign_id
+       LEFT JOIN campaign_kols ck ON ck.campaign_id = er.campaign_id AND ck.customer_id = er.customer_id
        ${where}
        ORDER BY er.received_at DESC
        LIMIT 200`,
@@ -537,6 +577,7 @@ router.post('/replies/:id/bind', async (req, res) => {
       'UPDATE email_replies SET customer_id = ?, campaign_id = ?, updated_at = NOW() WHERE id = ?',
       [customerId, campaignId, reply.id]
     );
+    await require('../services/emailReplyPoller').markWaitingReply(campaignId, customerId);
     // 绑定后补 AI 摘要（未识别回复此前不做摘要，避免广告消耗 AI）
     const { summarizeReply } = require('../services/emailReplyPoller');
     summarizeReply(reply.id).catch(() => {});

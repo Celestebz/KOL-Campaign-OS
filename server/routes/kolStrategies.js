@@ -217,8 +217,8 @@ function readTextFileIfExists(filePath) {
 }
 
 function loadKolStrategySkillContext() {
-  const skillRoot = path.join(__dirname, '..', '..', 'skills', 'kol-strategy');
-  const skill = readTextFileIfExists(path.join(skillRoot, 'SKILL.md'));
+  const skillRoot = path.join(__dirname, '..', '..', 'skills', 'kol-campaign-os-agent');
+  const skill = readTextFileIfExists(path.join(skillRoot, 'references', 'strategy.md'));
   const schema = readTextFileIfExists(path.join(skillRoot, 'references', 'strategy-output-schema.md'));
   return [skill, schema].filter(Boolean).join('\n\n---\n\n');
 }
@@ -372,8 +372,8 @@ async function callMiniMax(setting, systemPrompt, userPrompt) {
 function buildStrategyPrompt(strategy, campaign, materialContext = null) {
   return JSON.stringify({
     task: materialContext
-      ? 'Analyze the provided product materials and generate a KOL campaign strategy draft by following the bundled kol-strategy skill. Return JSON only.'
-      : 'Generate a KOL campaign strategy draft by following the bundled kol-strategy skill. Return JSON only.',
+      ? 'Analyze the provided product materials and generate a KOL campaign strategy draft by following the bundled kol-campaign-os-agent strategy references. Return JSON only.'
+      : 'Generate a KOL campaign strategy draft by following the bundled kol-campaign-os-agent strategy references. Return JSON only.',
     campaign: {
       name: campaign?.name || strategy.name,
       brand: strategy.brand || campaign?.brand || '',
@@ -454,7 +454,7 @@ async function generateDraft(strategy, materialContext = null) {
   const systemPrompt = [
     'You are a senior KOL campaign strategist inside KOL Campaign OS.',
     'Return valid JSON only. Do not include Markdown, comments, or chain-of-thought.',
-    'Follow the bundled kol-strategy skill instructions and output schema exactly.',
+    'Follow the bundled kol-campaign-os-agent strategy references and output schema exactly.',
     skillContext || 'Use a structured KOL strategy schema with product_context, persona_config, scoring_weights, and finder_handoff.'
   ].join('\n\n');
   const userPrompt = buildStrategyPrompt(strategy, campaign, materialContext);

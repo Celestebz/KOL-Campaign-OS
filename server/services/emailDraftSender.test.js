@@ -42,6 +42,41 @@ test('sendApprovedDraft claims, sends, records, and completes an approved draft'
   assert.equal(result.message_id, 'message-7');
   assert.ok(writes.some(({ sql }) => sql.includes("status = 'sent'")));
   assert.ok(writes.some(({ sql }) => sql.includes('UPDATE campaign_kols')));
+  const outreachUpdate = writes.find(({ sql }) => sql.includes('UPDATE campaign_kols'));
+  assert.equal(outreachUpdate.params[0], 'contacted');
+  assert.match(outreachUpdate.sql, /needs_reply = CASE/);
+  assert.equal(outreachUpdate.params[1], '');
+});
+
+test('sendApprovedDraft marks a reply as negotiating', async () => {
+  const writes = [];
+  dbOperations.run = async (sql, params) => {
+    writes.push({ sql, params });
+    return { changes: 1 };
+  };
+  dbOperations.get = async (sql) => {
+    if (sql.includes('FROM email_drafts')) {
+      return { id: 12, status: 'sending', kind: 'reply', source_reply_id: 55, campaign_id: 2, customer_id: 3, subject: 'Re: Hello', body_text: 'Body' };
+    }
+    if (sql.includes('FROM email_settings')) return { username: 'sender@example.com', default_cc: '' };
+    if (sql.includes('FROM customers')) return { id: 3, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  mailer.sendMail = async () => ({ messageId: 'message-12' });
+
+  await emailDraftSender.sendApprovedDraft(12);
+
+  const outreachUpdate = writes.find(({ sql }) => sql.includes('UPDATE campaign_kols'));
+  assert.equal(outreachUpdate.params[0], 'negotiating');
+  assert.equal(outreachUpdate.params[1], 'reply');
+  assert.equal(outreachUpdate.params[2], 55);
+  assert.match(outreachUpdate.sql, /WHEN outreach_status IN \('interested', 'confirmed', 'terminated', 'rejected'\) THEN outreach_status/);
+});
+
+test('outreachStatusAfterSend keeps non-reply mail as contacted', () => {
+  assert.equal(emailDraftSender.outreachStatusAfterSend('reply'), 'negotiating');
+  assert.equal(emailDraftSender.outreachStatusAfterSend('first_touch'), 'contacted');
+  assert.equal(emailDraftSender.outreachStatusAfterSend('follow_up'), 'contacted');
 });
 
 test('sendApprovedDraft blocks a duplicate send before SMTP', async () => {

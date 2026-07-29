@@ -1,5 +1,7 @@
 const express = require('express');
+const crypto = require('crypto');
 const { dbOperations } = require('../database');
+const agentCampaignOps = require('../services/agentCampaignOps');
 
 const router = express.Router();
 const AGENT_API_PROVIDER_KEY = 'agent.external_api';
@@ -28,7 +30,14 @@ function parseList(value) {
 function bearerToken(req) {
   const auth = clean(req.headers.authorization);
   if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
-  return clean(req.headers['x-agent-token'] || req.query.agent_token || req.body?.agent_token);
+  return '';
+}
+
+function secureEqual(actual, expected) {
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length
+    && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 async function requireAgentToken(req, res, next) {
@@ -41,7 +50,7 @@ async function requireAgentToken(req, res, next) {
     if (!expected) {
       return res.status(403).json({ success: false, error: 'External Agent API Token is not configured' });
     }
-    if (bearerToken(req) !== expected) {
+    if (!secureEqual(bearerToken(req), expected)) {
       return res.status(401).json({ success: false, error: 'Invalid External Agent API Token' });
     }
     return next();
@@ -180,6 +189,56 @@ router.post('/raw-candidates/import', requireAgentToken, (req, res) => {
     success: false,
     error: 'Direct Agent Raw Candidate import is retired. Import target-platform video evidence through Finder.'
   });
+});
+
+function campaignId(req) {
+  const value = Number(req.params.campaignId);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    const error = new Error('campaignId must be a positive integer');
+    error.statusCode = 400;
+    throw error;
+  }
+  return value;
+}
+
+function sendAgentError(res, error) {
+  res.status(error.statusCode || 400).json({ success: false, error: error.message });
+}
+
+router.get('/campaigns/:campaignId/kol-master/search', requireAgentToken, async (req, res) => {
+  try {
+    const data = await agentCampaignOps.searchKols(campaignId(req), req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    sendAgentError(res, error);
+  }
+});
+
+router.post('/campaigns/:campaignId/candidate-pool/batch', requireAgentToken, async (req, res) => {
+  try {
+    const data = await agentCampaignOps.batchCandidates(campaignId(req), req.body || {});
+    res.json({ success: true, data });
+  } catch (error) {
+    sendAgentError(res, error);
+  }
+});
+
+router.post('/campaigns/:campaignId/email-drafts/batch-upsert', requireAgentToken, async (req, res) => {
+  try {
+    const data = await agentCampaignOps.batchDrafts(campaignId(req), req.body || {});
+    res.json({ success: true, data });
+  } catch (error) {
+    sendAgentError(res, error);
+  }
+});
+
+router.get('/campaigns/:campaignId/email-drafts', requireAgentToken, async (req, res) => {
+  try {
+    const data = await agentCampaignOps.listDrafts(campaignId(req), req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    sendAgentError(res, error);
+  }
 });
 
 module.exports = router;

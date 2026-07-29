@@ -119,6 +119,25 @@ export async function getAutomationRun(id) {
   return res.data.data;
 }
 
+// ---- 审批台顶部指标卡 ----
+// 单接口出错返回 200 + 字段为 null 的 payload；这里统一给前端兜底空对象，
+// 避免调用方每次都要判 res.data.success。
+export async function getApprovalDashboardSummary() {
+  const res = await axios.get('/api/emails/approval-dashboard/summary');
+  const data = res.data?.data || {};
+  return {
+    todayContactedKols: data.todayContactedKols ?? null,
+    weekContactedKols: data.weekContactedKols ?? null,
+    previousWeekContactedKols: data.previousWeekContactedKols ?? null,
+    weekDifference: data.weekDifference ?? null,
+    replyRate30d: data.replyRate30d ?? null,
+    repliedKols30d: data.repliedKols30d ?? null,
+    deliveredKols30d: data.deliveredKols30d ?? null,
+    denominatorType: data.denominatorType ?? 'sent_success',
+    timezone: data.timezone ?? 'Asia/Shanghai'
+  };
+}
+
 // ---- 发送记录 ----
 
 export async function getEmailRecords(status, params = {}) {
@@ -130,6 +149,11 @@ export async function getEmailRecords(status, params = {}) {
 
 export async function getEmailReplies(confirmStatus) {
   const res = await axios.get('/api/emails/replies', { params: confirmStatus ? { confirm_status: confirmStatus } : {} });
+  return res.data.data || [];
+}
+
+export async function getReplyTodos() {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'needs_reply' } });
   return res.data.data || [];
 }
 

@@ -73,26 +73,11 @@ Use this default unless the campaign goal justifies small changes:
   "competitor_keywords": ["competitors and alternatives"],
   "exclusion_keywords": ["irrelevant or unsafe terms"],
   "evidence_signals": {
-    "competitor": {
-      "keywords": ["competitor and comparison terms"],
-      "proof": ["Observable comparison, replacement, or competitor-use evidence"]
-    },
-    "category": {
-      "keywords": ["category terms"],
-      "proof": ["Credible category content history or demonstration"]
-    },
-    "use_case": {
-      "keywords": ["target problems, workflows, and situations"],
-      "proof": ["A relevant use situation shown in the video"]
-    },
-    "feature": {
-      "keywords": ["functions and technical proof points"],
-      "proof": ["A required function or differentiator demonstrated"]
-    },
-    "community": {
-      "keywords": ["audience, profession, niche, and community terms"],
-      "proof": ["Content clearly serving a relevant community"]
-    }
+    "competitor": { "keywords": ["comparison terms"], "proof": ["Observable competitor evidence"] },
+    "category": { "keywords": ["category terms"], "proof": ["Credible category history"] },
+    "use_case": { "keywords": ["problems and situations"], "proof": ["Relevant use shown"] },
+    "feature": { "keywords": ["functions and proof points"], "proof": ["Required function demonstrated"] },
+    "community": { "keywords": ["audience and profession terms"], "proof": ["Relevant community served"] }
   },
   "minimum_followers": "minimum rule or empty string",
   "maximum_followers": "maximum rule or empty string",
@@ -107,11 +92,6 @@ Use this default unless the campaign goal justifies small changes:
 }
 ```
 
-AI assigns zero or more evidence signals after each target-platform video is analyzed. A video may match multiple evidence signals; the labels do not prescribe discovery order.
+AI assigns zero or more evidence signals after each target-platform video is analyzed. A video may match multiple evidence signals; labels do not prescribe discovery order.
 
-## Quality Bar
-
-- Use concrete keywords that can find real videos on YouTube, Instagram, or TikTok.
-- Prefer phrases revealing buyer intent, content history, and observable product proof.
-- Avoid unobservable filler such as "high quality creator".
-- Do not invent exact follower or view thresholds when the brief gives no tier or budget.
+Use concrete, observable discovery terms. Do not invent follower or view thresholds when the brief gives no tier or budget.

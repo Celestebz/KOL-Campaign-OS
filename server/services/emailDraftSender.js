@@ -36,6 +36,35 @@ function isAmbiguousSendError(error) {
     || message.includes('timed out');
 }
 
+function outreachStatusAfterSend(kind) {
+  return kind === 'reply' ? 'negotiating' : 'contacted';
+}
+
+async function markOutreachAfterSend(draft) {
+  const nextStatus = outreachStatusAfterSend(draft.kind);
+  await dbOperations.run(
+    `UPDATE campaign_kols SET
+     outreach_status = CASE
+       WHEN outreach_status IN ('interested', 'confirmed', 'terminated', 'rejected') THEN outreach_status
+       ELSE ?
+     END,
+     needs_reply = CASE
+       WHEN ? = 'reply' AND ? = (
+         SELECT er.id FROM email_replies er
+         WHERE er.campaign_id = campaign_kols.campaign_id
+           AND er.customer_id = campaign_kols.customer_id
+           AND er.confirm_status <> 'ignored'
+         ORDER BY er.received_at DESC, er.id DESC LIMIT 1
+       ) THEN 0
+       ELSE COALESCE(needs_reply, 0)
+     END,
+     last_outreach_at = NOW(),
+     sync_status = 'sync_pending', updated_at = NOW()
+     WHERE campaign_id = ? AND customer_id = ?`,
+    [nextStatus, draft.kind || '', draft.source_reply_id || null, draft.campaign_id, draft.customer_id]
+  );
+}
+
 async function sendApprovedDraft(draftId) {
   const claim = await dbOperations.run(
     `UPDATE email_drafts SET status = 'sending', updated_at = NOW()
@@ -108,12 +137,7 @@ async function sendApprovedDraft(draftId) {
      WHERE id = ? AND status = 'sending'`,
     [draft.id]
   );
-  await dbOperations.run(
-    `UPDATE campaign_kols SET outreach_status = ?, last_outreach_at = NOW(),
-     sync_status = 'sync_pending', updated_at = NOW()
-     WHERE campaign_id = ? AND customer_id = ?`,
-    ['contacted', draft.campaign_id, draft.customer_id]
-  );
+  await markOutreachAfterSend(draft);
   return { draft_id: draft.id, message_id: messageId, to: customer.email };
 }
 
@@ -143,12 +167,7 @@ async function confirmManuallySent(draftId) {
     [draft.id, draft.campaign_id, draft.customer_id, customer?.name || null, customer?.email || null,
      draft.subject, draft.body_text, note]
   );
-  await dbOperations.run(
-    `UPDATE campaign_kols SET outreach_status = ?, last_outreach_at = NOW(),
-     sync_status = 'sync_pending', updated_at = NOW()
-     WHERE campaign_id = ? AND customer_id = ?`,
-    ['contacted', draft.campaign_id, draft.customer_id]
-  );
+  await markOutreachAfterSend(draft);
   return { draft_id: draft.id, manually_confirmed: true, to: customer?.email || null };
 }
 
@@ -178,4 +197,11 @@ async function confirmNotSent(draftId) {
   return { draft_id: Number(draftId), status: 'pending_review' };
 }
 
-module.exports = { sendApprovedDraft, isAmbiguousSendError, confirmManuallySent, confirmNotSent, SENDING_RECOVERY_TIMEOUT_MS };
+module.exports = {
+  sendApprovedDraft,
+  isAmbiguousSendError,
+  confirmManuallySent,
+  confirmNotSent,
+  outreachStatusAfterSend,
+  SENDING_RECOVERY_TIMEOUT_MS
+};

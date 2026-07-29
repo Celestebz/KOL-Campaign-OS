@@ -68,6 +68,9 @@ async function processFetchedMessage(message) {
       [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
        message.envelope?.subject || '', bodyText, message.envelope?.date || new Date()]
     );
+    if (owner?.customer_id) {
+      await emailReplyPoller.markWaitingReply(owner.campaign_id, owner.customer_id);
+    }
     if (result.id && owner?.customer_id) emailReplyPoller.summarizeReply(result.id).catch(() => {});
     return { matched: Boolean(owner?.customer_id), replyId: result.id || null };
   } catch (error) {

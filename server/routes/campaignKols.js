@@ -44,7 +44,6 @@ const EDITABLE_FIELDS = [
   'priority_level',
   'project_status',
   'contact_email_override',
-  'contact_name_override',
   'owner',
   'best_evidence_url',
   'evidence_summary',
@@ -74,6 +73,20 @@ const CAMPAIGN_KOL_PRODUCT_STATUSES = {
 };
 
 const JSON_FIELDS = new Set(['evidence_summary', 'project_override', 'cooperation_platforms']);
+const COLLABORATION_ONLY_FIELDS = [
+  'shipping_address',
+  'content_format',
+  'expected_publish_at',
+  'shipping_date',
+  'tracking_number'
+];
+
+function hideCandidateCollaborationFields(row) {
+  if (!row || row.pipeline_stage !== 'candidate') return row;
+  const sanitized = { ...row, published_video_count: 0 };
+  for (const field of COLLABORATION_ONLY_FIELDS) delete sanitized[field];
+  return sanitized;
+}
 
 function normalizeJsonField(value) {
   if (value === undefined || value === null) return value;
@@ -196,7 +209,7 @@ router.get('/', async (req, res) => {
     sql += ' ORDER BY ck.candidate_priority_score DESC, ck.created_at DESC, ck.id DESC';
     const rows = await dbOperations.query(sql, params);
     res.json({ success: true, data: rows.map((row) => ({
-      ...row,
+      ...hideCandidateCollaborationFields(row),
       master_snapshot: safeParseJson(row.master_snapshot),
       project_override: safeParseJson(row.project_override),
       evidence_summary: safeParseJson(row.evidence_summary)
@@ -310,6 +323,11 @@ router.put('/:id/products/:campaignProductId', async (req, res) => {
 
 router.get('/:id/published-videos', async (req, res) => {
   try {
+    const campaignKol = await dbOperations.get('SELECT pipeline_stage FROM campaign_kols WHERE id = ?', [req.params.id]);
+    if (!campaignKol) return res.status(404).json({ success: false, error: 'KOL 合作记录不存在' });
+    if (campaignKol.pipeline_stage === 'candidate') {
+      return res.status(409).json({ success: false, error: '合作发布视频仅可在 KOL 合作阶段查看' });
+    }
     const rows = await dbOperations.query(
       `SELECT vs.id, vs.platform, vs.source_url, vs.canonical_url, vs.crawl_status
        FROM campaign_videos cv JOIN video_sources vs ON vs.id = cv.video_source_id
@@ -326,6 +344,9 @@ router.put('/:id/published-videos', async (req, res) => {
   try {
     const campaignKol = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [req.params.id]);
     if (!campaignKol) return res.status(404).json({ success: false, error: 'KOL 合作记录不存在' });
+    if (campaignKol.pipeline_stage === 'candidate') {
+      return res.status(409).json({ success: false, error: '合作发布视频仅可在 KOL 合作阶段维护' });
+    }
     const rawUrls = Array.isArray(req.body.urls) ? req.body.urls : String(req.body.urls || '').split(/\r?\n/);
     const normalized = Array.from(new Map(rawUrls.filter(Boolean).map((url) => {
       const item = normalizeVideoUrl(String(url).trim());
@@ -466,7 +487,16 @@ router.patch('/:id', async (req, res) => {
 
     // 阶段字段白名单：候选阶段只改外联状态，合作阶段只改项目状态，互不覆盖。
     const stage = row.pipeline_stage || 'candidate';
-    if (stage === 'candidate') delete updates.project_status;
+    if (stage === 'candidate') {
+      delete updates.project_status;
+      const forbiddenFields = COLLABORATION_ONLY_FIELDS.filter((field) => req.body[field] !== undefined);
+      if (forbiddenFields.length) {
+        return res.status(409).json({
+          success: false,
+          error: `以下字段仅可在 KOL 合作阶段维护：${forbiddenFields.join(', ')}`
+        });
+      }
+    }
     if (stage === 'confirmed') delete updates.outreach_status;
 
     if (Object.keys(updates).length === 0) {

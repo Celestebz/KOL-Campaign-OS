@@ -1,4 +1,4 @@
 interface:
   display_name: "KOL Campaign OS"
-  short_description: "Create Strategy, then discover creators from one-platform video evidence."
-  default_prompt: "Use KOL Campaign OS through HTTP APIs. Confirm campaign/product, one target platform, and strategy before Finder runs. Create a Finder task with strategy_id, target_platform, and limit only. Import valid target-platform videos with author_profile_url, then run evidence analysis and generate candidates from evidence. AI may assign zero or more evidence signals from competitor, category, use_case, feature, and community to each video. Do not create candidates from profile-only or unprocessed search results, do not approve candidates, and use MySQL only through app APIs."
+  short_description: "Run strategy, discovery, candidate, and email workflows."
+  default_prompt: "Use $kol-campaign-os-agent to connect to KOL Campaign OS and manage the requested creator workflow through its safe APIs."

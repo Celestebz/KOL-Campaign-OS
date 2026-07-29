@@ -204,13 +204,47 @@ test('PATCH applies outreach_status for candidates and ignores project_status', 
   assert.ok(update.params.includes('contacted'));
 });
 
+test('PATCH rejects cooperation-only fields for candidates without changing legacy data', async () => {
+  const legacyCandidate = {
+    ...candidateRow,
+    shipping_address: '历史地址',
+    content_format: '历史内容形式'
+  };
+  const { response, writes } = await runPatch(legacyCandidate, {
+    shipping_address: '新地址',
+    content_format: '新内容形式',
+    expected_publish_at: '2026-08-01',
+    shipping_date: '2026-07-30',
+    tracking_number: 'SF999'
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.ok(response.payload.error.includes('仅可在 KOL 合作阶段维护'));
+  assert.equal(writes.length, 0, 'candidate collaboration fields must not be written');
+});
+
+test('database migration creates confirmed-only views without rewriting historical rows', async () => {
+  const statements = [];
+  const migration = require('../migrations/20260729000002-enforce-collaboration-stage-fields');
+  const queryInterface = {
+    sequelize: { query: async (sql) => statements.push(String(sql)) }
+  };
+
+  await migration.up(queryInterface);
+
+  assert.equal(statements.some((sql) => /^\s*(UPDATE|DELETE)\s/i.test(sql)), false);
+  assert.ok(statements.some((sql) => sql.includes('CREATE VIEW confirmed_campaign_kol_collaboration')));
+  assert.ok(statements.some((sql) => sql.includes('CREATE VIEW confirmed_campaign_kol_videos')));
+  assert.ok(statements.some((sql) => sql.includes("pipeline_stage = 'confirmed'")));
+});
+
 test('PATCH normalizes legacy outreach values on write', async () => {
   const { response, writes } = await runPatch(candidateRow, { outreach_status: 'replied' });
 
   assert.equal(response.statusCode, 200, JSON.stringify(response.payload));
   const update = writes.find((write) => write.sql.includes('UPDATE campaign_kols SET'));
   assert.ok(update.sql.includes('outreach_status = ?'));
-  assert.ok(update.params.includes('waiting_reply'), 'legacy replied is written as waiting_reply');
+  assert.ok(update.params.includes('negotiating'), 'legacy replied is written as negotiating');
 });
 
 test('PATCH applies project_status for confirmed rows and ignores outreach_status', async () => {
@@ -229,11 +263,48 @@ test('PATCH applies project_status for confirmed rows and ignores outreach_statu
   assert.ok(update.params.includes('shipped'));
 });
 
+test('PATCH rejects contact_name_override so contacts stay owned by KOL management', async () => {
+  const { response, writes } = await runPatch(candidateRow, { contact_name_override: 'Project Contact' });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.payload.error, 'No editable fields provided');
+  assert.equal(writes.length, 0);
+});
+
 test('PATCH rejects invalid outreach_status values', async () => {
   const { response } = await runPatch(candidateRow, { outreach_status: 'best_friends' });
 
   assert.equal(response.statusCode, 400);
   assert.ok(response.payload.error.includes('Invalid outreach_status'));
+});
+
+test('published-video endpoints reject candidate-stage records', async () => {
+  const originalGet = dbOperations.get;
+  const originalQuery = dbOperations.query;
+  const originalRun = dbOperations.run;
+  dbOperations.get = async () => ({ ...candidateRow });
+  dbOperations.query = async () => [];
+  dbOperations.run = async () => ({ changes: 0 });
+  try {
+    const router = require('./campaignKols');
+    const getResponse = await callHandler(
+      findHandler(router, 'get', '/:id/published-videos'),
+      { params: { id: String(candidateRow.id) } }
+    );
+    const putResponse = await callHandler(
+      findHandler(router, 'put', '/:id/published-videos'),
+      { params: { id: String(candidateRow.id) }, body: { urls: ['https://youtu.be/test'] } }
+    );
+
+    assert.equal(getResponse.statusCode, 409);
+    assert.equal(putResponse.statusCode, 409);
+    assert.ok(getResponse.payload.error.includes('KOL 合作阶段'));
+    assert.ok(putResponse.payload.error.includes('KOL 合作阶段'));
+  } finally {
+    dbOperations.get = originalGet;
+    dbOperations.query = originalQuery;
+    dbOperations.run = originalRun;
+  }
 });
 
 test('GET / filters by outreach_status with legacy alias expansion', async () => {
@@ -258,6 +329,32 @@ test('GET / filters by outreach_status with legacy alias expansion', async () =>
     queries.length = 0;
     await callHandler(handler, { query: { outreach_status: 'bogus' } });
     assert.ok(!queries[0].sql.includes('ck.outreach_status'), 'invalid outreach_status is ignored');
+  } finally {
+    dbOperations.query = originalQuery;
+  }
+});
+
+test('GET / hides cooperation-only values for candidates while preserving project notes', async () => {
+  const originalQuery = dbOperations.query;
+  dbOperations.query = async () => [{
+    ...candidateRow,
+    shipping_address: '历史地址',
+    content_format: '历史内容形式',
+    expected_publish_at: '2026-08-01',
+    shipping_date: '2026-07-30',
+    tracking_number: 'SF-LEGACY',
+    published_video_count: 2,
+    project_notes: '候选备注'
+  }];
+  try {
+    const response = await callHandler(findHandler(require('./campaignKols'), 'get', '/'));
+    const row = response.payload.data[0];
+    assert.equal(response.statusCode, 200);
+    for (const field of ['shipping_address', 'content_format', 'expected_publish_at', 'shipping_date', 'tracking_number']) {
+      assert.equal(Object.prototype.hasOwnProperty.call(row, field), false, `${field} should be hidden`);
+    }
+    assert.equal(row.published_video_count, 0);
+    assert.equal(row.project_notes, '候选备注');
   } finally {
     dbOperations.query = originalQuery;
   }

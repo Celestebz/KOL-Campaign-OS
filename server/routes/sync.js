@@ -140,7 +140,7 @@ const OUTREACH_STATUS_LABELS = {
 
 // Mirrors the candidate pool table curated by the user in Feishu. The system
 // only adds missing fields/options here; it never recreates the logistics and
-// lifecycle fields the user removed (项目状态/发货日期/物流单号/交付内容/预计上线时间/收货地址).
+// lifecycle fields the user removed (项目状态/发货日期/物流单号/交付内容/预计上线时间/收货地址/内容形式).
 const CANDIDATE_POOL_FIELD_SCHEMA = [
   { field_name: '达人名称', type: 1 },
   { field_name: '国家地区', type: 1 },
@@ -165,7 +165,6 @@ const CANDIDATE_POOL_FIELD_SCHEMA = [
   { field_name: '达人系统编号', type: 1 },
   { field_name: '创建时间', type: 5 },
   { field_name: '数据更新时间', type: 5 },
-  { field_name: '内容形式', type: 1 },
   { field_name: '预计合作曝光', type: 2 },
   { field_name: '跟进人', type: 1 },
   {
@@ -1029,7 +1028,7 @@ function campaignKolFields(row) {
 
 // Fields never written to the candidate pool table: 候选阶段只有外联状态；
 // 「状态」「项目状态」与物流字段都属于确认合作后的项目跟进语义。
-const CANDIDATE_POOL_OMITTED_FIELDS = ['状态', '项目状态', '交付内容', '预计上线时间', '收货地址', '发货日期', '物流单号'];
+const CANDIDATE_POOL_OMITTED_FIELDS = ['状态', '项目状态', '交付内容', '预计上线时间', '收货地址', '内容形式', '发货日期', '物流单号'];
 
 function candidatePoolKolFields(row) {
   const fields = campaignKolFields(row);

@@ -80,6 +80,12 @@ function validateSources(manifest) {
   if (!manifest.skills.includes(manifest.entry_skill)) {
     throw new Error(`entry_skill must be included in skills: ${manifest.entry_skill}`);
   }
+  for (const skill of manifest.removed_skills || []) {
+    validateSkillName(skill);
+    if (manifest.skills.includes(skill)) {
+      throw new Error(`removed_skills must not include an installed skill: ${skill}`);
+    }
+  }
 }
 
 function defaultTarget() {
@@ -110,6 +116,17 @@ function installSkill(skill, targetRoot) {
   return targetDir;
 }
 
+function removeLegacySkills(manifest, targetRoot) {
+  const removed = [];
+  for (const skill of manifest.removed_skills || []) {
+    const targetDir = path.join(targetRoot, skill);
+    if (!fs.existsSync(targetDir)) continue;
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    removed.push({ skill, path: targetDir });
+  }
+  return removed;
+}
+
 function verifyInstall(manifest, targetRoot) {
   for (const skill of manifest.skills) {
     const targetDir = path.join(targetRoot, skill);
@@ -131,6 +148,7 @@ function main() {
   const targetRoot = path.resolve(expandHome(args.target) || defaultTarget());
 
   fs.mkdirSync(targetRoot, { recursive: true });
+  const removed = removeLegacySkills(manifest, targetRoot);
   const installed = manifest.skills.map((skill) => ({
     skill,
     path: installSkill(skill, targetRoot)
@@ -143,6 +161,10 @@ function main() {
   console.log('Installed skills:');
   for (const item of installed) {
     console.log(`- ${item.skill}: ${item.path}`);
+  }
+  if (removed.length) {
+    console.log('Removed legacy skills:');
+    for (const item of removed) console.log(`- ${item.skill}: ${item.path}`);
   }
   console.log('');
   console.log('Next: start KOL Campaign OS, then choose the entry skill in your agent.');

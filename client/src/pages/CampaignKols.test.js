@@ -8,7 +8,10 @@ import CampaignKols, {
   defaultCooperationType,
   normalizeLegacyPriority,
   normalizeLegacyProjectStatus,
-  OUTREACH_STATUS_OPTIONS
+  OUTREACH_STATUS_OPTIONS,
+  OUTREACH_PHASE_OPTIONS,
+  hasPendingEmail,
+  outreachPhaseForDisplay
 } from './CampaignKols';
 import { describeSyncResult } from './campaignKolSyncResult';
 
@@ -248,13 +251,13 @@ describe('CampaignKols confirm cooperation', () => {
   });
 });
 
-describe('CampaignKols 联系人列与编辑', () => {
+describe('CampaignKols 联系人列', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockListRequests();
   });
 
-  test('candidate pool shows a dedicated 联系人 column and the edit form exposes it', async () => {
+  test('candidate pool shows the contact from KOL management and does not expose a duplicate input', async () => {
     render(<CampaignKols view="candidate" />);
     expect(await screen.findByText('Alice')).toBeInTheDocument();
     expect(screen.getByText('联系人')).toBeInTheDocument();
@@ -264,8 +267,20 @@ describe('CampaignKols 联系人列与编辑', () => {
     // antd 固定列克隆节点 pointer-events:none，用 fireEvent 触发
     fireEvent.click(editButtons[editButtons.length - 1]);
     expect(await screen.findByText('编辑项目候选')).toBeInTheDocument();
-    expect(screen.getByText('该项目下使用的联系人名称，不影响 KOL 总表')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByPlaceholderText('联系人姓名')).toHaveValue('Alice Manager'));
+    expect(screen.queryByText('该项目下使用的联系人名称，不影响 KOL 总表')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('联系人姓名')).not.toBeInTheDocument();
+  });
+
+  test('ignores a legacy project contact override in favor of the latest KOL management value', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/campaigns') return Promise.resolve({ data: { data: [{ id: 3, name: 'Lobster Co' }] } });
+      if (url === '/api/campaign-kols') return Promise.resolve({ data: { data: [{ ...kolRow, contact_name_override: 'Old Contact' }] } });
+      return Promise.resolve({ data: { data: [] } });
+    });
+
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice Manager')).toBeInTheDocument();
+    expect(screen.queryByText('Old Contact')).not.toBeInTheDocument();
   });
 });
 
@@ -303,11 +318,19 @@ describe('CampaignKols 状态字段按阶段分离', () => {
     return screen.findByRole('dialog');
   }
 
-  test('outreach options are exactly the seven specified values', () => {
+  test('outreach options contain phases only, excluding the email todo', () => {
     expect(OUTREACH_STATUS_OPTIONS.map((option) => option.value)).toEqual([
-      'not_contacted', 'contacted', 'waiting_reply', 'negotiating',
+      'not_contacted', 'contacted', 'negotiating',
       'interested', 'confirmed', 'terminated'
     ]);
+  });
+
+  test('UI separates outreach phase from the email reply todo', () => {
+    expect(OUTREACH_PHASE_OPTIONS.map((option) => option.value)).not.toContain('waiting_reply');
+    expect(hasPendingEmail({ outreach_status: 'waiting_reply' })).toBe(true);
+    expect(hasPendingEmail({ outreach_status: 'interested', needs_reply: true })).toBe(true);
+    expect(hasPendingEmail({ outreach_status: 'interested', needs_reply: false })).toBe(false);
+    expect(outreachPhaseForDisplay('waiting_reply')).toBe('negotiating');
   });
 
   test('candidate edit modal shows only 外联状态 with the waiting-note, save submits no project_status', async () => {
@@ -317,7 +340,12 @@ describe('CampaignKols 状态字段按阶段分离', () => {
 
     expect(await within(dialog).findByText('外联状态')).toBeInTheDocument();
     expect(within(dialog).queryByText('项目状态')).not.toBeInTheDocument();
-    expect(within(dialog).getByText('“待回复”表示 KOL 已回复，正在等待我方跟进回复')).toBeInTheDocument();
+    expect(within(dialog).getByText('邮件是否待回复会由系统根据最新收发邮件单独维护')).toBeInTheDocument();
+    expect(within(dialog).getByText('项目备注')).toBeInTheDocument();
+    ['收货地址', '内容形式', '预计上线时间', '发货日期', '物流单号', '合作发布视频'].forEach((label) => {
+      expect(within(dialog).queryByText(label)).not.toBeInTheDocument();
+    });
+    expect(axios.get).not.toHaveBeenCalledWith('/api/campaign-kols/7/published-videos');
 
     await userEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }));
     await waitFor(() => expect(axios.patch).toHaveBeenCalled());
@@ -325,6 +353,10 @@ describe('CampaignKols 状态字段按阶段分离', () => {
     expect(url).toBe('/api/campaign-kols/7');
     expect(body.outreach_status).toBe('not_contacted');
     expect('project_status' in body).toBe(false);
+    ['shipping_address', 'content_format', 'expected_publish_at', 'shipping_date', 'tracking_number'].forEach((field) => {
+      expect(field in body).toBe(false);
+    });
+    expect(axios.put).not.toHaveBeenCalledWith('/api/campaign-kols/7/published-videos', expect.anything());
   });
 
   test('cooperation edit modal shows only 项目状态, save submits no outreach_status', async () => {
@@ -334,6 +366,9 @@ describe('CampaignKols 状态字段按阶段分离', () => {
 
     expect(await within(dialog).findByText('项目状态')).toBeInTheDocument();
     expect(within(dialog).queryByText('外联状态')).not.toBeInTheDocument();
+    ['收货地址', '内容形式', '预计上线时间', '发货日期', '物流单号', '合作发布视频', '项目备注'].forEach((label) => {
+      expect(within(dialog).getByText(label)).toBeInTheDocument();
+    });
 
     await userEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }));
     await waitFor(() => expect(axios.patch).toHaveBeenCalled());
@@ -388,11 +423,12 @@ describe('CampaignKols 筛选栏按阶段使用对应状态', () => {
     expect(await screen.findByText('Alice')).toBeInTheDocument();
     // 表格列 + 筛选占位，至少两处
     expect(screen.getAllByText('外联状态').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('邮件待办')).toHaveLength(1);
 
     await userEvent.click(screen.getAllByRole('combobox')[1]);
-    await userEvent.click(await screen.findByText('待回复'));
+    await userEvent.click(await screen.findByText('沟通中'));
     await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/campaign-kols', expect.objectContaining({
-      params: expect.objectContaining({ outreach_status: 'waiting_reply', pipeline_stage: 'candidate' })
+      params: expect.objectContaining({ outreach_status: 'negotiating', pipeline_stage: 'candidate' })
     })));
   });
 
@@ -402,5 +438,16 @@ describe('CampaignKols 筛选栏按阶段使用对应状态', () => {
     expect(screen.getAllByText('项目状态').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText('外联状态')).not.toBeInTheDocument();
     expect(screen.queryByText('状态')).not.toBeInTheDocument();
+  });
+
+  test('labels Feishu sync status and shows localized options', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getAllByText('飞书同步状态').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('待同步')).toBeInTheDocument();
+
+    await userEvent.click(screen.getAllByRole('combobox')[2]);
+    expect(await screen.findByText('已同步')).toBeInTheDocument();
+    expect(await screen.findByText('同步失败')).toBeInTheDocument();
   });
 });

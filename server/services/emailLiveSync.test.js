@@ -38,6 +38,7 @@ function fakeClient({ uidNext = 101, messages = [] } = {}) {
 function mockDb({ settings, existingMessageIds = new Set(), matchedEmails = {}, throwOnInsert = null } = {}) {
   const inserts = [];
   const uidWrites = [];
+  const outreachWrites = [];
   const originalGet = dbOperations.get;
   const originalRun = dbOperations.run;
 
@@ -68,11 +69,16 @@ function mockDb({ settings, existingMessageIds = new Set(), matchedEmails = {}, 
       uidWrites.push(params[0]);
       return { changes: 1 };
     }
+    if (text.includes('UPDATE campaign_kols SET needs_reply = 1')) {
+      outreachWrites.push({ sql: text, params });
+      return { changes: 1 };
+    }
     return { changes: 1 };
   };
   return {
     inserts,
     uidWrites,
+    outreachWrites,
     restore() {
       dbOperations.get = originalGet;
       dbOperations.run = originalRun;
@@ -114,6 +120,8 @@ test('UID incremental fetch processes only new mail, matches KOLs and parks unkn
     assert.equal(unmatchedInsert[2], null, 'unmatched reply has no customer (未识别回复)');
 
     assert.deepEqual(db.uidWrites, [101, 102], 'cursor advances per message');
+    assert.equal(db.outreachWrites.length, 1, 'only matched inbound mail changes outreach state');
+    assert.deepEqual(db.outreachWrites[0].params, [2, 7]);
     assert.equal(client.calls.flagsAdd, 0, 'mailbox read state is never modified');
   } finally {
     db.restore();

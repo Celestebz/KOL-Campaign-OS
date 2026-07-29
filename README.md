@@ -111,7 +111,7 @@ npm run db:down
 npm run install-skills
 ```
 
-安装清单由 `skills/manifest.json` 管理，入口为 `kol-campaign-os-agent`，并协同 `kol-strategy` 和 `kol-finder`。如需指定自定义 Skills 目录：
+安装清单由 `skills/manifest.json` 管理，仅安装整合后的 `kol-campaign-os-agent`，覆盖策略、Finder、候选池和 Agent 邮件草稿流程。如需指定自定义 Skills 目录：
 
 ```bash
 npm run install-skills -- --target ~/.agents/skills
