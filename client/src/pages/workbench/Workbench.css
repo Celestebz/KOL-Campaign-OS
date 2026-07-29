@@ -1,9 +1,15 @@
 .workbench-page { padding: 16px 0; }
 .workbench-summary { margin-bottom: 16px; }
 .workbench-toolbar { margin-bottom: 8px; }
+.workbench-inbox-alert { margin-bottom: 16px; }
 .workbench-loading { padding: 48px; text-align: center; }
 .workbench-decision-card { border-left: 3px solid #1677ff; }
 .workbench-decision-card .decision-question { font-size: 16px; }
 .workbench-evidence { margin: 0; padding-left: 18px; color: #595959; }
 .workbench-next-step { padding: 8px 12px; background: #f6ffed; border-radius: 6px; color: #237804; }
+.workbench-projects { background: transparent; }
+.workbench-projects > .ant-collapse-item { margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 10px !important; background: #fff; overflow: hidden; }
+.workbench-project-label { width: 100%; display: flex; gap: 16px; align-items: center; justify-content: space-between; padding-right: 12px; }
+.workbench-project-label > div:first-child { display: flex; flex-direction: column; gap: 2px; }
 @media (max-width: 767px) { .workbench-summary .ant-col { margin-bottom: 8px; } }
+@media (max-width: 767px) { .workbench-project-label { align-items: flex-start; flex-direction: column; } }
