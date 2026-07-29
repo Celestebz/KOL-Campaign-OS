@@ -81,8 +81,8 @@ function Workbench() {
     setSearchParams(next, { replace: true });
   };
 
-  const bulkDecision = async (decision) => {
-    const chosen = approvals.filter((item) => selectedCandidates.includes(item.approval_item_id));
+  const bulkDecision = async (decision, candidatePool) => {
+    const chosen = candidatePool.filter((item) => selectedCandidates.includes(item.approval_item_id));
     if (!chosen.length) return;
     setBulkLoading(true);
     try {
@@ -109,6 +109,7 @@ function Workbench() {
     const counts = itemCounts(group.items);
     const candidates = group.items.filter((item) => item.type === 'candidate');
     const otherItems = group.items.filter((item) => item.type !== 'candidate');
+    const selectedInGroup = selectedCandidates.filter((id) => candidates.some((item) => item.approval_item_id === id));
     const nextType = otherItems[0]?.type || (candidates.length ? 'candidate' : null);
     const nextLabel = nextType ? getItemType(nextType).label : '暂无待办';
     return {
@@ -125,9 +126,9 @@ function Workbench() {
           {candidates.length > 0 && (
             <Card size="small" title={`候选达人池（${candidates.length}）`} extra={
               <Space>
-                <Typography.Text type="secondary">已选 {selectedCandidates.filter((id) => candidates.some((item) => item.approval_item_id === id)).length} 位</Typography.Text>
-                <Popconfirm title="确认批量通过选中的候选达人？" onConfirm={() => bulkDecision('approve')}><Button type="primary" size="small" loading={bulkLoading}>批量通过</Button></Popconfirm>
-                <Popconfirm title="确认批量淘汰选中的候选达人？" onConfirm={() => bulkDecision('reject')}><Button danger size="small" loading={bulkLoading}>批量淘汰</Button></Popconfirm>
+                <Typography.Text type="secondary">已选 {selectedInGroup.length} 位</Typography.Text>
+                <Popconfirm title="确认批量通过选中的候选达人？" onConfirm={() => bulkDecision('approve', candidates)}><Button type="primary" size="small" loading={bulkLoading} disabled={!selectedInGroup.length}>批量通过</Button></Popconfirm>
+                <Popconfirm title="确认批量淘汰选中的候选达人？" onConfirm={() => bulkDecision('reject', candidates)}><Button danger size="small" loading={bulkLoading} disabled={!selectedInGroup.length}>批量淘汰</Button></Popconfirm>
               </Space>
             }>
               <Table
