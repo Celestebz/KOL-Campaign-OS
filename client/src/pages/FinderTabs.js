@@ -3,18 +3,20 @@ import { Tabs } from 'antd';
 import { useNavigate } from 'react-router-dom';
 
 const tabItems = [
-  { key: 'finder', label: 'Raw候选' },
+  { key: 'finder', label: '原始候选' },
   { key: 'candidate', label: '项目候选池' },
-  { key: 'strategy', label: '策略管理' }
+  { key: 'strategy', label: '策略管理' },
+  { key: 'tasks', label: '寻找任务' }
 ];
 
 const tabPaths = {
   finder: '/finder',
   candidate: '/candidate-pool',
-  strategy: '/strategy'
+  strategy: '/strategy',
+  tasks: '/finder-tasks'
 };
 
-// 「KOL 寻找」合并入口：寻找审批与策略管理共用 Tab，两个路由保持独立可直达。
+// 「KOL 寻找」统一入口：各业务阶段共用 Tab，每个路由保持独立可直达。
 const FinderTabs = ({ activeKey, children }) => {
   const navigate = useNavigate();
   return (

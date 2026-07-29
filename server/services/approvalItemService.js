@@ -236,12 +236,82 @@ async function listApprovalItems({ status, type } = {}) {
 // 工作台待审核列表：保持阶段 B 的类型分组顺序（strategy→candidate→budget→outreach→reply→exception）
 async function listPendingWorkbenchItems() {
   const rows = await dbOperations.query(
-    `SELECT * FROM approval_items
-     WHERE status = 'pending'
-     ORDER BY FIELD(type, 'strategy', 'candidate', 'budget', 'outreach', 'reply', 'exception'),
-              updated_at DESC, id DESC`
+    `SELECT ai.* FROM approval_items ai
+     LEFT JOIN campaigns c ON c.id = ai.campaign_id
+     WHERE ai.status = 'pending' AND (ai.campaign_id IS NULL OR c.status = 'active')
+     ORDER BY FIELD(ai.type, 'strategy', 'candidate', 'budget', 'outreach', 'reply', 'exception'),
+              ai.updated_at DESC, ai.id DESC`
   );
   return rows.map(toApiItem);
+}
+
+function exceptionText(item) {
+  return [item.title, item.opinion, ...(item.facts || []), ...(item.risks || [])]
+    .filter(Boolean).join('｜');
+}
+
+function exceptionCategory(item) {
+  const text = exceptionText(item);
+  if (/无法连接 AI 接口|connect EACCES|api\.minimaxi\.com/i.test(text)) {
+    return {
+      key: 'ai_service_unavailable',
+      title: 'AI 邮件生成服务暂时不可用',
+      what_happened: '系统已完成达人审核，但暂时无法调用 AI 生成触达邮件或回复草稿。',
+      recommendation: '先检查 AI 服务网络连接；恢复后再统一重试，不需要逐条修改达人资料。',
+      urgency: 'high'
+    };
+  }
+  if (/YouTube API Key 未配置|YouTube.*API Key/i.test(text)) {
+    return {
+      key: 'youtube_api_key_missing',
+      title: 'YouTube 数据服务尚未配置',
+      what_happened: '达人搜索需要读取 YouTube 数据，但系统没有可用的 API Key。',
+      recommendation: '到系统设置补充 YouTube API Key，然后重试达人搜索。',
+      urgency: 'medium'
+    };
+  }
+  if (/Authorization|API secret key|binding failed|login fail/i.test(text)) {
+    return {
+      key: 'finder_authorization_failed',
+      title: '达人搜索服务鉴权失败',
+      what_happened: '搜索已经产生部分结果，但保存或收尾时没有通过服务鉴权。',
+      recommendation: '检查 Finder 的 Authorization 配置；已有搜索结果无需重新抓取。',
+      urgency: 'medium'
+    };
+  }
+  const normalized = text.replace(/#?\d+/g, '#').slice(0, 120);
+  return {
+    key: `other:${item.subject_type}:${normalized}`,
+    title: item.subject_type === 'automation_run' ? '后台自动任务未完成' : '自动流程未完成',
+    what_happened: '系统未能完成预定的自动步骤。',
+    recommendation: item.opinion || '查看技术详情，确认原因后再决定是否重试。',
+    urgency: item.risk_level === 'high' ? 'high' : 'medium'
+  };
+}
+
+function summarizeExceptionGroups(items) {
+  const groups = new Map();
+  items.filter((item) => item.type === 'exception').forEach((item) => {
+    const category = exceptionCategory(item);
+    if (!groups.has(category.key)) groups.set(category.key, {
+      ...category,
+      affected_count: 0,
+      campaigns: [],
+      item_ids: [],
+      technical_details: []
+    });
+    const group = groups.get(category.key);
+    group.affected_count += 1;
+    group.item_ids.push(item.id);
+    if (item.campaign_name && !group.campaigns.includes(item.campaign_name)) group.campaigns.push(item.campaign_name);
+    const detail = (item.facts || []).find((fact) => /失败原因|错误信息|失败节点/.test(fact));
+    if (detail && !group.technical_details.includes(detail)) group.technical_details.push(detail);
+  });
+  const urgencyOrder = { high: 0, medium: 1, low: 2 };
+  return [...groups.values()].sort((a, b) =>
+    (urgencyOrder[a.urgency] ?? 9) - (urgencyOrder[b.urgency] ?? 9)
+      || b.affected_count - a.affected_count
+  );
 }
 
 // summary 口径与阶段 B 一致：pending 不含 exception；handled_today 为 approval_items 当日人工决定数
@@ -398,6 +468,7 @@ module.exports = {
   getApprovalItem,
   listApprovalItems,
   listPendingWorkbenchItems,
+  summarizeExceptionGroups,
   getSummary,
   listActiveRuns,
   listRecentDecisions,

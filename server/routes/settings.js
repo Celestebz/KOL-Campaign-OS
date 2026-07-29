@@ -87,6 +87,7 @@ function cleanProvider(row, provider) {
     api_key: maskSecret(row?.api_key),
     base_url: row?.base_url || '',
     model: row?.model || '',
+    api_protocol: extra.api_protocol || (provider === 'minimax' ? 'anthropic_token_plan' : 'openai'),
     auth_header_name: extra.auth_header_name || '',
     auth_scheme: extra.auth_scheme || '',
     connection_id: extra.connection_id || '',
@@ -158,7 +159,15 @@ function mergeSelection(saved) {
 
 async function upsertProvider(key, row = {}) {
   const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ?', [key]);
+  const apiProtocol = row.api_protocol || (key === 'ai.minimax' ? 'anthropic_token_plan' : 'openai');
+  const submittedBaseUrl = String(row.base_url || '').trim();
+  const baseUrl = key === 'ai.minimax'
+    && apiProtocol === 'anthropic_token_plan'
+    && (!submittedBaseUrl || /^https:\/\/api\.minimaxi?\.com\/v1\/?$/i.test(submittedBaseUrl) || /^https:\/\/api\.minimax\.io\/v1\/?$/i.test(submittedBaseUrl))
+    ? 'https://api.minimaxi.com/anthropic'
+    : submittedBaseUrl;
   const extraConfig = {
+    api_protocol: apiProtocol,
     auth_header_name: row.auth_header_name || '',
     auth_scheme: row.auth_scheme || '',
     connection_id: row.connection_id || '',
@@ -178,7 +187,7 @@ async function upsertProvider(key, row = {}) {
     [
       key,
       preserveSecret(row.api_key, current?.api_key),
-      row.base_url || '',
+      baseUrl,
       row.model || '',
       JSON.stringify(extraConfig)
     ]
@@ -342,6 +351,19 @@ router.post('/', async (req, res) => {
     res.json({ success: true, message: 'Settings saved' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/test-ai', async (req, res) => {
+  try {
+    const aiClient = require('../services/aiClient');
+    const result = await aiClient.callActiveAi(
+      'Return valid JSON only.',
+      'Return exactly {"summary":"connection ok"}.'
+    );
+    res.json({ success: true, data: { provider: result.provider, model: result.model } });
+  } catch (error) {
+    res.status(error.status || 502).json({ success: false, error: error.message });
   }
 });
 

@@ -1,35 +1,31 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AppstoreOutlined,
   BarsOutlined,
   ClockCircleOutlined,
-  ExclamationCircleOutlined,
+  PlusOutlined,
   ReloadOutlined,
   RobotOutlined,
+  SettingOutlined,
   TeamOutlined
 } from '@ant-design/icons';
 import {
   Badge, Button, Card, Col, Empty, Input, message, Row, Segmented, Select, Space, Spin,
-  Statistic, Switch, Table, Tag, Tooltip, Typography
+  Statistic, Table, Tag, Tooltip, Typography
 } from 'antd';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import {
   CAMPAIGN_STAGES,
   normalizeCampaignProgress,
   progressSort
 } from './campaignProgress';
+import CampaignCreateModal from './CampaignCreateModal';
+import CampaignManageModal from './CampaignManageModal';
+import { subscribeCampaignProgressChanged } from './campaignProgressSync';
 import './Campaigns.css';
 
 const VIEW_STORAGE_KEY = 'campaign-management-view';
-
-const responsibilityOptions = [
-  { value: 'all', label: '全部责任方' },
-  { value: 'ai', label: 'AI 处理中' },
-  { value: 'human', label: '待你审核' },
-  { value: 'external', label: '等待外部' },
-  { value: 'exception', label: '系统异常' }
-];
 
 function formatUpdatedAt(value) {
   if (!value) return '暂无更新';
@@ -56,37 +52,13 @@ function deadlineMeta(value) {
 }
 
 function stageMetrics(row) {
-  if (row.stage === 'preparation') return [['关联产品', row.detail.products?.length || 0], ['待审核', row.approvalCount]];
-  if (row.stage === 'finding') return [['项目达人', row.totalKols], ['待审核候选', row.candidatesPendingReview]];
+  if (row.stage === 'preparation') return [['关联产品', row.detail.products?.length || 0], ['项目达人', row.totalKols]];
+  if (row.stage === 'finding') return [['项目达人', row.totalKols], ['确认中', row.candidatesPendingReview]];
   if (row.stage === 'outreach') return [['已联系', row.contacted], ['已回复', row.replied]];
   if (row.stage === 'fulfillment') return [['已合作', row.confirmedKols], ['项目达人', row.totalKols]];
   const published = Number(row.detail.summary?.by_project_status?.published || 0);
   const pending = Number(row.detail.summary?.by_project_status?.pending_publish || 0);
   return [['已上线', published], ['待上线', pending]];
-}
-
-function ProjectSignals({ row, compact = false }) {
-  const navigate = useNavigate();
-  const goWorkbench = (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    navigate(`/?campaign_id=${row.id}`);
-  };
-  return (
-    <Space size={[6, 4]} wrap>
-      {row.riskCount > 0 && (
-        <Tag color="red" onClick={goWorkbench} className="project-signal-tag">
-          异常 {row.riskCount}
-        </Tag>
-      )}
-      {row.candidatesPendingReview > 0 && (
-        <Tag color="blue" onClick={goWorkbench} className="project-signal-tag">
-          候选待确认 {row.candidatesPendingReview}
-        </Tag>
-      )}
-      {!compact && <Tag color={row.responsibility.color}>{row.responsibility.label}</Tag>}
-    </Space>
-  );
 }
 
 function ProjectCard({ row }) {
@@ -97,7 +69,7 @@ function ProjectCard({ row }) {
       <Card
         size="small"
         hoverable
-        className={`project-board-card${row.riskCount ? ' has-risk' : ''}${deadline.overdue ? ' is-overdue' : ''}`}
+        className="project-board-card"
       >
         <div className="project-card-heading">
           <div>
@@ -106,7 +78,7 @@ function ProjectCard({ row }) {
               {row.primaryProductSku || row.primaryProductName || '暂未关联主推产品'}
             </div>
           </div>
-          <Badge status={row.riskCount ? 'error' : 'processing'} />
+          <Badge status="processing" />
         </div>
 
         <Space size={6} wrap className="project-card-stage">
@@ -114,7 +86,7 @@ function ProjectCard({ row }) {
           {row.finderRunning > 0 && <Tag icon={<RobotOutlined />} color="processing">AI执行中</Tag>}
         </Space>
 
-        <Typography.Text type={deadline.urgent ? 'danger' : 'secondary'} className="project-card-deadline">
+        <Typography.Text type="secondary" className="project-card-deadline">
           <ClockCircleOutlined /> {deadline.label}
         </Typography.Text>
 
@@ -137,7 +109,7 @@ function ProjectCard({ row }) {
         </div>
 
         <div className="project-card-footer">
-          <ProjectSignals row={row} compact />
+          <span>{CAMPAIGN_STAGES.find((item) => item.key === row.stage)?.label}</span>
           <span>{formatUpdatedAt(row.updated_at)} 更新</span>
         </div>
       </Card>
@@ -151,7 +123,7 @@ function BoardView({ campaigns, loading }) {
     <div className="project-board">
       {CAMPAIGN_STAGES.map((stage) => {
         const rows = campaigns.filter((item) => item.stage === stage.key).sort(progressSort);
-        const helper = `${rows.filter((item) => item.riskCount > 0).length} 个风险项目`;
+        const helper = `${rows.length} 个项目`;
         return (
           <section key={stage.key} className="project-board-column">
             <header>
@@ -192,15 +164,13 @@ function ListView({ campaigns, loading }) {
       sorter: (a, b) => a.confirmedKols - b.confirmedKols,
       render: (_, row) => <div className="project-list-progress"><strong>{row.confirmedKols}</strong> 已合作<br /><Typography.Text type="secondary">{row.totalKols} 位项目达人</Typography.Text></div>
     },
-    { title: '截止日期', dataIndex: 'deadline', key: 'deadline', width: 160, render: (value) => { const meta = deadlineMeta(value); return <Typography.Text type={meta.urgent ? 'danger' : undefined}>{meta.label}</Typography.Text>; } },
+    { title: '截止日期', dataIndex: 'deadline', key: 'deadline', width: 160, render: (value) => <Typography.Text>{deadlineMeta(value).label}</Typography.Text> },
     { title: '下一步', dataIndex: 'nextStep', key: 'nextStep', ellipsis: true, render: (value) => <Tooltip title={value}>{value}</Tooltip> },
-    { title: '责任方', key: 'responsibility', width: 120, filters: responsibilityOptions.slice(1).map((item) => ({ text: item.label, value: item.value })), onFilter: (value, row) => row.responsibility.key === value, render: (_, row) => <Tag color={row.responsibility.color}>{row.responsibility.label}</Tag> },
-    { title: '提示', key: 'signals', width: 150, render: (_, row) => <ProjectSignals row={row} compact /> },
     { title: '最近更新', dataIndex: 'updated_at', key: 'updated_at', width: 130, sorter: (a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')), render: formatUpdatedAt }
   ];
   return (
     <Card className="content-card project-list-card">
-      <Table columns={columns} dataSource={campaigns} rowKey="id" loading={loading} scroll={{ x: 1250 }} pagination={{ defaultPageSize: 20, showSizeChanger: true }} />
+      <Table columns={columns} dataSource={campaigns} rowKey="id" loading={loading} scroll={{ x: 900 }} pagination={{ defaultPageSize: 20, showSizeChanger: true }} />
     </Card>
   );
 }
@@ -210,12 +180,12 @@ function Campaigns() {
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
-  const [responsibilityFilter, setResponsibilityFilter] = useState('all');
-  const [riskOnly, setRiskOnly] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const [view, setView] = useState(() => window.localStorage.getItem(VIEW_STORAGE_KEY) || 'board');
 
-  const fetchCampaigns = async () => {
-    setLoading(true);
+  const fetchCampaigns = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const listResponse = await axios.get('/api/campaigns');
       const baseRows = listResponse.data.data || [];
@@ -227,14 +197,41 @@ function Campaigns() {
       });
       setCampaigns(normalized.sort(progressSort));
     } catch (error) {
-      message.error(error.response?.data?.error || '获取项目进度失败');
-      setCampaigns([]);
+      if (!silent) {
+        message.error(error.response?.data?.error || '获取项目进度失败');
+        setCampaigns([]);
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { fetchCampaigns(); }, []);
+  const refreshCampaigns = useCallback(async (campaignIds) => {
+    const ids = [...new Set((campaignIds || []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    if (!ids.length) return fetchCampaigns({ silent: true });
+    const results = await Promise.allSettled(ids.map((id) => axios.get(`/api/campaigns/${id}/detail`)));
+    setCampaigns((current) => {
+      const updates = new Map();
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') updates.set(ids[index], normalizeCampaignProgress(result.value.data.data || {}));
+      });
+      return current.map((item) => updates.get(Number(item.id)) || item).sort(progressSort);
+    });
+  }, [fetchCampaigns]);
+
+  useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeCampaignProgressChanged(({ campaignIds }) => refreshCampaigns(campaignIds));
+    const refreshOnFocus = () => fetchCampaigns({ silent: true });
+    window.addEventListener('focus', refreshOnFocus);
+    const timer = window.setInterval(() => fetchCampaigns({ silent: true }), 30 * 1000);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', refreshOnFocus);
+      window.clearInterval(timer);
+    };
+  }, [fetchCampaigns, refreshCampaigns]);
 
   const changeView = (value) => {
     setView(value);
@@ -245,10 +242,8 @@ function Campaigns() {
     const term = searchText.trim().toLowerCase();
     if (term && ![item.name, item.primaryProductName, item.primaryProductSku].some((value) => String(value || '').toLowerCase().includes(term))) return false;
     if (stageFilter !== 'all' && item.stage !== stageFilter) return false;
-    if (responsibilityFilter !== 'all' && item.responsibility.key !== responsibilityFilter) return false;
-    if (riskOnly && item.riskCount === 0) return false;
     return true;
-  }), [campaigns, searchText, stageFilter, responsibilityFilter, riskOnly]);
+  }), [campaigns, searchText, stageFilter]);
 
   const dueSoon = campaigns.filter((item) => {
     const date = parseDeadline(item.deadline);
@@ -256,7 +251,7 @@ function Campaigns() {
     const days = Math.ceil((date.getTime() - Date.now()) / 86400000);
     return days >= 0 && days <= 14;
   }).length;
-  const riskProjects = campaigns.filter((item) => item.riskCount > 0).length;
+  const aiRunningProjects = campaigns.filter((item) => item.finderRunning > 0).length;
   const confirmedTotal = campaigns.reduce((sum, item) => sum + item.confirmedKols, 0);
 
   return (
@@ -264,15 +259,19 @@ function Campaigns() {
       <div className="page-header project-page-header">
         <div>
           <h1 className="page-title">项目管理</h1>
-          <p className="page-subtitle">按真实业务进度查看项目；审核与异常处理统一进入工作台。</p>
+          <p className="page-subtitle">这里只展示项目推进情况，决策事项统一在工作台处理。</p>
         </div>
-        <Button icon={<ReloadOutlined />} onClick={fetchCampaigns} loading={loading}>刷新进度</Button>
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchCampaigns()} loading={loading}>刷新进度</Button>
+          <Button icon={<SettingOutlined />} onClick={() => setManageOpen(true)}>管理项目</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建项目</Button>
+        </Space>
       </div>
 
       <Row gutter={[16, 16]} className="project-summary-row">
         <Col xs={12} lg={6}><Card><Statistic title="进行中项目" value={campaigns.length} prefix={<AppstoreOutlined />} /></Card></Col>
         <Col xs={12} lg={6}><Card><Statistic title="未来14天到期" value={dueSoon} prefix={<ClockCircleOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card><Statistic title="存在风险" value={riskProjects} valueStyle={riskProjects ? { color: '#cf1322' } : undefined} prefix={<ExclamationCircleOutlined />} /></Card></Col>
+        <Col xs={12} lg={6}><Card><Statistic title="AI 推进中" value={aiRunningProjects} prefix={<RobotOutlined />} /></Card></Col>
         <Col xs={12} lg={6}><Card><Statistic title="已合作达人" value={confirmedTotal} prefix={<TeamOutlined />} /></Card></Col>
       </Row>
 
@@ -289,8 +288,6 @@ function Campaigns() {
           <Space size={[8, 8]} wrap>
             <Input.Search allowClear placeholder="搜索项目、产品或 SKU" value={searchText} onChange={(event) => setSearchText(event.target.value)} style={{ width: 250 }} />
             <Select value={stageFilter} onChange={setStageFilter} style={{ width: 140 }} options={[{ value: 'all', label: '全部阶段' }, ...CAMPAIGN_STAGES.map((item) => ({ value: item.key, label: item.label }))]} />
-            <Select value={responsibilityFilter} onChange={setResponsibilityFilter} style={{ width: 140 }} options={responsibilityOptions} />
-            <Space><Switch checked={riskOnly} onChange={setRiskOnly} /><span>仅看风险</span></Space>
           </Space>
         </div>
       </Card>
@@ -302,6 +299,19 @@ function Campaigns() {
       ) : (
         <ListView campaigns={filteredCampaigns} loading={loading} />
       )}
+      <CampaignCreateModal
+        open={createOpen}
+        onCancel={() => setCreateOpen(false)}
+        onCreated={async () => {
+          setCreateOpen(false);
+          await fetchCampaigns();
+        }}
+      />
+      <CampaignManageModal
+        open={manageOpen}
+        onCancel={() => setManageOpen(false)}
+        onChanged={fetchCampaigns}
+      />
     </div>
   );
 }

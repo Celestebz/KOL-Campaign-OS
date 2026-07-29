@@ -1,5 +1,6 @@
 import {
   deriveCampaignStage,
+  deriveProgressText,
   deriveResponsibility,
   normalizeCampaignProgress,
   pendingApprovalCount
@@ -38,9 +39,18 @@ test('项目进度聚合主推产品、计数和下一步', () => {
   const row = normalizeCampaignProgress(detail({
     products: [{ role: 'hero', product: { name: '割草机', sku: 'TMB-1401' } }],
     summary: { kols_total: 8, kols_candidate: 5, kols_confirmed: 2, by_project_status: {} },
-    next_step: '继续补充达人'
+    next_step: '有 5 位候选达人待审核，请到工作台处理'
   }));
   expect(row.primaryProductSku).toBe('TMB-1401');
   expect(row.confirmedKols).toBe(2);
-  expect(row.nextStep).toBe('继续补充达人');
+  expect(row.nextStep).toBe('合作履约推进中');
+});
+
+test('项目管理使用中性进度文案，不展示审核催促或异常', () => {
+  expect(deriveProgressText(detail({
+    summary: { candidates_pending_review: 108, exceptions: 3, by_project_status: {} }
+  }))).toBe('候选达人确认中 · 108 位');
+  expect(deriveProgressText(detail({
+    summary: { drafts_pending: 5, by_project_status: {} }
+  }))).toBe('外联邮件准备中 · 5 封');
 });

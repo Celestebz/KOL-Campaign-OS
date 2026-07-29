@@ -175,6 +175,11 @@ export async function ignoreReply(id) {
   await axios.post(`/api/emails/replies/${id}/ignore`);
 }
 
+export async function markReplyManuallyHandled(id) {
+  const res = await axios.post(`/api/emails/replies/${id}/manually-replied`, { handled_by: 'boss' });
+  return res.data.data;
+}
+
 export async function retryReplySummary(id) {
   await axios.post(`/api/emails/replies/${id}/retry-summary`);
 }

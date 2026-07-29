@@ -73,7 +73,15 @@ if %errorlevel% equ 0 (
 )
 
 rem 6. Start the server (blocks here; logon task keeps it alive in background).
-echo [INFO] Launching node server\index.js ... >> "%LOG%"
-node server\index.js >> "%LOG%" 2>&1
+rem Prefer the Kimi runtime node.exe: the host firewall blocks outbound connections
+rem from "C:\Program Files\nodejs\node.exe" (AI/网关调用会 EACCES)，而 Kimi 运行时 node 放行。
+set "KIMI_NODE=C:\Users\Administrator\AppData\Local\Programs\kimi-desktop\resources\resources\runtime\node.exe"
+if exist "%KIMI_NODE%" (
+    echo [INFO] Launching "%KIMI_NODE%" server\index.js ... >> "%LOG%"
+    "%KIMI_NODE%" server\index.js >> "%LOG%" 2>&1
+) else (
+    echo [INFO] Launching node server\index.js ... >> "%LOG%"
+    node server\index.js >> "%LOG%" 2>&1
+)
 
 echo [%DATE% %TIME%] Server process exited with code %errorlevel%. >> "%LOG%"

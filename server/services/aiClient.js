@@ -115,7 +115,13 @@ async function getSelection() {
 
 async function fetchJson(url, options = {}) {
   if (typeof fetch !== 'function') throw new Error('Node.js 18+ is required');
-  const response = await fetch(url, options);
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    const detail = error?.cause?.message || error?.cause?.code || error.message;
+    throw new Error(`无法连接 AI 接口 ${url}: ${detail}`);
+  }
   const text = await response.text();
   let data = {};
   try {
@@ -163,8 +169,37 @@ async function callAi(setting, provider, systemPrompt, userPrompt) {
   if (!setting?.api_key) throw new Error(`${PROVIDER_LABELS[provider] || provider} API Key is not configured`);
 
   if (provider === 'minimax') {
-    const configuredBase = (setting.base_url || 'https://api.minimaxi.com').replace(/\/$/, '');
+    const extra = parseJson(setting.extra_config, {});
+    const configuredBase = (setting.base_url || 'https://api.minimaxi.com/anthropic').replace(/\/$/, '');
     const model = setting.model || 'MiniMax-M3';
+    const protocol = extra.api_protocol || (/\/anthropic(?:\/|$)/i.test(configuredBase) ? 'anthropic_token_plan' : 'openai');
+    if (protocol === 'anthropic_token_plan') {
+      const endpoint = /\/v1\/messages$/i.test(configuredBase)
+        ? configuredBase
+        : `${configuredBase}/v1/messages`;
+      const data = await fetchJson(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': setting.api_key,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 2048,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+          temperature: 0.2
+        })
+      });
+      const content = (data.content || [])
+        .filter((block) => block?.type === 'text')
+        .map((block) => block.text || '')
+        .join('\n')
+        .trim();
+      if (!content) throw new Error(data?.error?.message || 'MiniMax Token Plan 未返回文本内容');
+      return { parsed: parseAiContentRobust(content), raw: data, model, content };
+    }
     const endpoint = /\/v1$/i.test(configuredBase) || /minimax-m3/i.test(model)
       ? `${configuredBase}/chat/completions`
       : `${configuredBase.replace(/\/v1$/i, '')}/v1/text/chatcompletion_v2`;

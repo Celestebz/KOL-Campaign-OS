@@ -12,6 +12,7 @@ export async function getWorkbench() {
   return {
     summary: data.summary || {},
     items: data.items || [],
+    exception_groups: data.exception_groups || [],
     recent_decisions: data.recent_decisions || [],
     active_runs: data.active_runs || []
   };

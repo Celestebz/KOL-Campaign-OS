@@ -18,9 +18,16 @@ router.get('/', async (req, res) => {
       approvalItemService.listRecentDecisions(),
       approvalItemService.listActiveRuns()
     ]);
+    const exceptionGroups = approvalItemService.summarizeExceptionGroups(items);
     res.json({
-      summary: { ...summary, active_runs: activeRuns.length },
+      summary: {
+        ...summary,
+        exceptions: exceptionGroups.length,
+        exception_records: items.filter((item) => item.type === 'exception').length,
+        active_runs: activeRuns.length
+      },
       items,
+      exception_groups: exceptionGroups,
       recent_decisions: recentDecisions,
       active_runs: activeRuns
     });

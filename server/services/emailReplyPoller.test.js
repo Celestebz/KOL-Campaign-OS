@@ -58,6 +58,8 @@ test('summarizeReply marks ai_status failed when AI throws', async () => {
   }
   const update = statements.find((s) => /UPDATE email_replies/.test(s.sql));
   assert.match(update.sql, /ai_status = 'failed'/);
+  assert.match(update.sql, /ai_error = \?/);
+  assert.equal(update.params[0], 'AI 超时');
 });
 
 test('pollOnce dedupes by message-id, inserts matched replies, skips unmatched without marking seen', async () => {

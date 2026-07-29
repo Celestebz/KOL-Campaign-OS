@@ -721,7 +721,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           loading={loading}
           rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
           scroll={{ x: 2100 }}
-          pagination={{ defaultPageSize: 20, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 10, showSizeChanger: true }}
         />
       </Card>
 

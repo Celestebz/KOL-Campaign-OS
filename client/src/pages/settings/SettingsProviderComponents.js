@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Alert, Button, Card, Drawer, Form, Input, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Drawer, Form, Input, Select, Space, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, SettingOutlined, WarningOutlined } from '@ant-design/icons';
 import { getProviderState } from './settingsContract';
 
@@ -45,6 +45,10 @@ export const ProviderCard = ({ meta, value, active, showReserved, contextLabel, 
 };
 
 const FIELD_META = {
+  api_protocol: { label: '接入方式', select: true, options: [
+    { value: 'anthropic_token_plan', label: 'Token Plan（订阅 Key）' },
+    { value: 'openai', label: '按量 API（OpenAI 兼容）' }
+  ] },
   custom_provider_name: { label: 'Provider 名称', placeholder: '例如：新的数据服务商' },
   api_key: { label: 'API Key', password: true, placeholder: '留空保留现有密钥；输入新值则更新' },
   base_url: { label: 'Base URL', placeholder: '可留空使用默认值' },
@@ -89,10 +93,11 @@ export const ProviderDrawer = ({ drawer, saving, error, onCancel, onSave }) => {
             {meta.fields.map((field) => {
               const config = FIELD_META[field];
               if (!config) return null;
-              const Control = config.password ? Input.Password : field === 'notes' ? Input.TextArea : Input;
+              const Control = config.select ? Select : config.password ? Input.Password : field === 'notes' ? Input.TextArea : Input;
               return (
                 <Form.Item key={field} name={field} label={config.label}>
                   <Control
+                    options={config.options}
                     autoComplete={config.password ? 'new-password' : undefined}
                     placeholder={config.placeholder}
                     autoSize={field === 'notes' ? { minRows: 2, maxRows: 4 } : undefined}

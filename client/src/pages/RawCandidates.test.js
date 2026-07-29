@@ -106,6 +106,23 @@ describe('RawCandidates product-scoped UI', () => {
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/sync/feishu/push', { scope: 'campaign_kols' }));
     await waitFor(() => expect(message.success).toHaveBeenCalledWith('同步完成：成功 2，失败 0'));
   });
+
+  test('keeps the original candidate view focused on the candidate list', async () => {
+    render(<RawCandidates />);
+
+    expect(await screen.findByRole('heading', { name: '原始候选' })).toBeInTheDocument();
+    expect(screen.queryByText('最近寻找任务')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /创建寻找任务/ })).not.toBeInTheDocument();
+  });
+
+  test('renders finder task controls in the dedicated task view', async () => {
+    render(<RawCandidates view="tasks" />);
+
+    expect(await screen.findByRole('heading', { name: '寻找任务' })).toBeInTheDocument();
+    expect(screen.getByText('最近寻找任务')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /创建寻找任务/ })).toBeInTheDocument();
+    expect(screen.queryByText('Test Creator')).not.toBeInTheDocument();
+  });
 });
 
 test('handles initial campaign and strategy network failures without unhandled runtime errors', async () => {

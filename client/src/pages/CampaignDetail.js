@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, Col, Descriptions, Empty, List, Result, Row, Space, Spin, Statistic, Table, Tabs, Tag } from 'antd';
+import { Alert, Button, Card, Col, Descriptions, Empty, Result, Row, Space, Spin, Statistic, Table, Tabs, Tag } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import { getMainStatus } from './campaignKolStatus';
 import { getEmailRecords } from './emailApi';
+import { subscribeCampaignProgressChanged } from './campaignProgressSync';
+import { deriveCampaignStage, deriveProgressText } from './campaignProgress';
 
 // 后端并行开发，契约固定但字段命名以 snake_case 为准；这里对个别字段做兜底取值。
 const pick = (obj, keys) => {
@@ -71,31 +73,6 @@ const formatFee = (value, currency) => {
 
 const formatTime = (value) => (value ? new Date(value).toLocaleString('zh-CN') : '-');
 
-// 按 summary 推导一句话"当前阶段"，优先级：异常 > 待审草稿 > 待确认回复 > 合作推进。
-const deriveStage = (summary) => {
-  if (!summary) return '-';
-  const num = (v) => Number(v ?? 0) || 0;
-  if (num(summary.exceptions) > 0) return `有 ${num(summary.exceptions)} 条异常待处理`;
-  if (num(summary.drafts_pending) > 0) return `${num(summary.drafts_pending)} 封邮件草稿待审核`;
-  if (num(summary.replies_pending) > 0) return `${num(summary.replies_pending)} 条达人回复待确认`;
-  if (num(summary.kols_total) === 0) return '项目刚创建，尚未纳入达人';
-  if (num(summary.replied) > 0) return `${num(summary.replied)} 位达人已回复，合作推进中`;
-  if (num(summary.contacted) > 0) return `已联系 ${num(summary.contacted)} 位达人，等待回复`;
-  return `${num(summary.kols_total)} 位达人待联系`;
-};
-
-const riskText = (risk) => (
-  typeof risk === 'string' ? risk : (risk?.message || risk?.title || risk?.description || JSON.stringify(risk))
-);
-
-const riskLevelTag = (risk) => {
-  const level = typeof risk === 'object' && risk ? (risk.level || risk.severity) : null;
-  if (!level) return null;
-  const colors = { high: 'red', medium: 'orange', low: 'blue' };
-  const labels = { high: '高', medium: '中', low: '低' };
-  return <Tag color={colors[level] || 'default'}>{labels[level] || level}</Tag>;
-};
-
 const normalizeProduct = (product) => ({
   id: pick(product, ['id', 'product_id']),
   name: pick(product, ['product_name', 'productName', 'name']),
@@ -116,8 +93,8 @@ const CampaignDetail = () => {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState('');
 
-  const fetchAll = useCallback(async () => {
-    setLoading(true);
+  const fetchAll = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError('');
     setNotFound(false);
     try {
@@ -132,17 +109,34 @@ const CampaignDetail = () => {
     } catch (err) {
       if (err.response?.status === 404) {
         setNotFound(true);
-      } else {
+      } else if (!silent) {
         setError(err.response?.data?.error || '项目详情加载失败，请稍后重试');
       }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [id]);
 
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  useEffect(() => {
+    const currentId = Number(id);
+    const unsubscribe = subscribeCampaignProgressChanged(({ campaignIds }) => {
+      if (!campaignIds?.length || campaignIds.some((campaignId) => Number(campaignId) === currentId)) {
+        fetchAll({ silent: true });
+      }
+    });
+    const refreshOnFocus = () => fetchAll({ silent: true });
+    window.addEventListener('focus', refreshOnFocus);
+    const timer = window.setInterval(() => fetchAll({ silent: true }), 30 * 1000);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', refreshOnFocus);
+      window.clearInterval(timer);
+    };
+  }, [fetchAll, id]);
 
   if (loading && !detail) {
     return (
@@ -179,8 +173,9 @@ const CampaignDetail = () => {
   const campaign = detail?.campaign || {};
   const strategy = detail?.strategy || null;
   const summary = detail?.summary || {};
-  const risks = Array.isArray(detail?.risks) ? detail.risks : [];
-  const nextStep = detail?.next_step || '';
+  const progressDetail = detail || {};
+  const progressStage = deriveCampaignStage(progressDetail);
+  const progressText = deriveProgressText(progressDetail, progressStage);
   const products = (Array.isArray(detail?.products) ? detail.products : []).map(normalizeProduct);
   const strategyStatus = STRATEGY_STATUS[strategy?.status] || { label: strategy?.status || '暂无策略', color: 'default' };
 
@@ -285,12 +280,12 @@ const CampaignDetail = () => {
 
   const overviewTab = (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      {nextStep && (
+      {progressText && (
         <Alert
           type="info"
           showIcon
-          message="下一步建议"
-          description={<span style={{ fontSize: 15, fontWeight: 500 }}>{nextStep}</span>}
+          message="当前推进"
+          description={<span style={{ fontSize: 15, fontWeight: 500 }}>{progressText}</span>}
         />
       )}
       <Row gutter={[16, 16]}>
@@ -300,20 +295,19 @@ const CampaignDetail = () => {
               <Descriptions.Item label="项目目标">{strategy?.campaign_goal || '-'}</Descriptions.Item>
               <Descriptions.Item label="目标市场">{strategy?.target_market || '-'}</Descriptions.Item>
               <Descriptions.Item label="达人策略状态"><Tag color={strategyStatus.color}>{strategyStatus.label}</Tag></Descriptions.Item>
-              <Descriptions.Item label="当前阶段">{deriveStage(summary)}</Descriptions.Item>
+              <Descriptions.Item label="当前阶段">{progressText}</Descriptions.Item>
             </Descriptions>
           </Card>
         </Col>
         <Col xs={24} lg={12}>
           <Card title="关键数据" size="small">
             <Row gutter={[16, 16]}>
+              <Col span={8}><Statistic title="项目达人" value={summary.kols_total ?? 0} /></Col>
               <Col span={8}><Statistic title="项目候选" value={summary.kols_candidate ?? 0} /></Col>
               <Col span={8}><Statistic title="KOL合作" value={summary.kols_confirmed ?? 0} /></Col>
               <Col span={8}><Statistic title="已联系" value={summary.contacted ?? 0} /></Col>
               <Col span={8}><Statistic title="已回复" value={summary.replied ?? 0} /></Col>
-              <Col span={8}><Statistic title="待审草稿" value={summary.drafts_pending ?? 0} /></Col>
-              <Col span={8}><Statistic title="待确认回复" value={summary.replies_pending ?? 0} /></Col>
-              <Col span={8}><Statistic title="异常" value={summary.exceptions ?? 0} valueStyle={Number(summary.exceptions) > 0 ? { color: '#cf1322' } : undefined} /></Col>
+              <Col span={8}><Statistic title="已上线" value={summary.by_project_status?.published ?? 0} /></Col>
             </Row>
           </Card>
         </Col>
@@ -331,19 +325,6 @@ const CampaignDetail = () => {
           pagination={false}
           locale={{ emptyText: <Empty description="暂无推广产品" /> }}
         />
-      </Card>
-      <Card title="关键风险" size="small">
-        {risks.length ? (
-          <List
-            size="small"
-            dataSource={risks}
-            renderItem={(risk) => (
-              <List.Item>
-                <Space>{riskLevelTag(risk)}<span>{riskText(risk)}</span></Space>
-              </List.Item>
-            )}
-          />
-        ) : <Empty description="暂无关键风险" />}
       </Card>
     </Space>
   );

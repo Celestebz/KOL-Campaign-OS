@@ -182,6 +182,7 @@ function App() {
             <Route path="/strategy" element={<FinderTabs activeKey="strategy"><KolStrategy /></FinderTabs>} />
             <Route path="/finder" element={<FinderTabs activeKey="finder"><RawCandidates /></FinderTabs>} />
             <Route path="/candidate-pool" element={<FinderTabs activeKey="candidate"><CampaignKols view="candidate" /></FinderTabs>} />
+            <Route path="/finder-tasks" element={<FinderTabs activeKey="tasks"><RawCandidates view="tasks" /></FinderTabs>} />
             <Route path="/customers" element={<Customers />} />
             <Route path="/campaign-kols" element={<CampaignKols />} />
             <Route path="/emails" element={<Emails />} />

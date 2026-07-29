@@ -39,7 +39,7 @@ function createFakeDb({ sources = {}, initialItems = [] } = {}) {
         rows = rows.filter((r) => r.decision && r.decision !== 'source_gone' && r.decided_at);
       }
       if (/status = \?/.test(sql)) rows = rows.filter((r) => r.status === params[0]);
-      else if (/WHERE status = 'pending'/.test(sql)) rows = rows.filter((r) => r.status === 'pending');
+      else if (/WHERE (?:ai\.)?status = 'pending'/.test(sql)) rows = rows.filter((r) => r.status === 'pending');
       if (/type = \?/.test(sql)) rows = rows.filter((r) => r.type === params[params.length - 1]);
       return rows;
     }
@@ -54,6 +54,9 @@ function createFakeDb({ sources = {}, initialItems = [] } = {}) {
     if (/FROM campaign_kols WHERE campaign_id = \? AND customer_id = \?/.test(sql)) return sources.kolRow || null;
     if (/FROM campaign_kols WHERE id = \?/.test(sql)) {
       return sources.campaignKolRow || { id: Number(params[0]), customer_id: 1 };
+    }
+    if (/COUNT\(\*\) AS unmatched_replies/.test(sql)) {
+      return { unmatched_replies: sources.unmatchedReplies || 0 };
     }
     if (/SUM\(CASE/.test(sql)) return sources.summaryRow || null;
     throw new Error(`Unexpected get: ${sql}`);
@@ -385,11 +388,11 @@ test('submitDecision 非 pending 事项不能重复决定', async () => {
 
 test('getSummary 口径：pending 不含 exception，handled_today 取当日决定数', async () => {
   const fake = createFakeDb({
-    sources: { summaryRow: { pending: '5', high_risk: '1', exceptions: '2', handled_today: '3' } }
+    sources: { summaryRow: { pending: '5', high_risk: '1', exceptions: '2', handled_today: '3' }, unmatchedReplies: 4 }
   });
   await withPatchedDb(fake, async () => {
     const summary = await approvalItemService.getSummary();
-    assert.deepEqual(summary, { pending: 5, high_risk: 1, exceptions: 2, handled_today: 3 });
+    assert.deepEqual(summary, { pending: 5, high_risk: 1, exceptions: 2, handled_today: 3, unmatched_replies: 4 });
   });
 });
 
@@ -573,4 +576,23 @@ test('listPendingWorkbenchItems automation_run 异常卡 legacy id 为 exception
     assert.equal(items[0].subject_type, 'automation_run');
     assert.equal(items[0].title, '批量邮件起草 #31 · 执行失败');
   });
+});
+
+test('summarizeExceptionGroups 将同一 AI 连接故障合并为一个业务问题', () => {
+  const base = {
+    id: 'exception:auto_followup:1', approval_item_id: 1,
+    type: 'exception', subject_type: 'auto_followup', campaign_id: 10,
+    title: '达人邮件自动执行失败', campaign_name: '春季推广', facts: [
+      '失败原因：无法连接 AI 接口 https://api.minimaxi.com/anthropic/v1/messages: connect EACCES 1.2.3.4:443'
+    ], opinion: '', risks: [], risk_level: 'high'
+  };
+  const groups = approvalItemService.summarizeExceptionGroups([
+    base,
+    { ...base, id: 'exception:auto_followup:2', approval_item_id: 2 }
+  ]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].key, 'ai_service_unavailable');
+  assert.equal(groups[0].affected_count, 2);
+  assert.deepEqual(groups[0].campaigns, ['春季推广']);
+  assert.match(groups[0].title, /AI 邮件生成服务/);
 });

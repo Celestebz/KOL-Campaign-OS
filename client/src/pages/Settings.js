@@ -137,6 +137,14 @@ const Settings = () => {
       }
       const next = updateAtPath(mergeSettings(settings, pendingPageValues), drawer.path, providerValues);
       await persistSettings(next, `${drawer.meta.label} 配置已保存`);
+      if (drawer.path?.[0] === 'aiModels') {
+        try {
+          await axios.post('/api/settings/test-ai');
+          message.success(`${drawer.meta.label} 连接测试成功`);
+        } catch (testError) {
+          throw new Error(testError.response?.data?.error || '配置已保存，但连接测试失败');
+        }
+      }
       setDrawer(null);
       setDrawerError('');
     } catch (error) {

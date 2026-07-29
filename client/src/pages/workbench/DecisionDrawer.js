@@ -7,6 +7,7 @@ import FactPanel from './FactPanel';
 import OpinionPanel from './OpinionPanel';
 import RiskPanel from './RiskPanel';
 import DecisionActions from './DecisionActions';
+import { notifyCampaignProgressChanged } from '../campaignProgressSync';
 
 function Section({ title, children }) {
   return (
@@ -50,6 +51,7 @@ function DecisionDrawer({ item, open, onClose, onRefresh }) {
         note: noteText || undefined,
         version: item.version
       });
+      notifyCampaignProgressChanged(item.campaign_id);
       message.success(`已${DECISIONS[decision].label}：${item.title}`);
       closeNoteModal();
       onClose();

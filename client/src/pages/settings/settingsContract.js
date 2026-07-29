@@ -61,7 +61,7 @@ export const PLATFORM_META = {
 export const AI_PROVIDERS = [
   provider('openai', 'OpenAI', { fields: ['api_key', 'base_url', 'model'] }),
   provider('deepseek', 'DeepSeek', { fields: ['api_key', 'base_url', 'model'] }),
-  provider('minimax', 'MiniMax', { fields: ['api_key', 'base_url', 'model'] }),
+  provider('minimax', 'MiniMax', { fields: ['api_protocol', 'api_key', 'base_url', 'model'] }),
   provider('custom_openai_compatible', 'Custom OpenAI-Compatible', {
     fields: ['custom_provider_name', 'api_key', 'base_url', 'model', 'auth_header_name', 'auth_scheme', 'notes']
   }),

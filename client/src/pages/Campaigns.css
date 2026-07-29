@@ -72,14 +72,6 @@
   border-top: 3px solid #91caff;
 }
 
-.project-board-card.has-risk {
-  border-top-color: #ff7875;
-}
-
-.project-board-card.is-overdue {
-  border-color: #ff4d4f;
-}
-
 .project-card-heading,
 .project-card-progress-label,
 .project-card-footer {
@@ -153,10 +145,6 @@
 .project-card-footer {
   align-items: center;
   margin-top: 12px;
-}
-
-.project-signal-tag {
-  cursor: pointer;
 }
 
 .project-loading {

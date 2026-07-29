@@ -93,10 +93,40 @@ async function ignoreReply(replyId) {
   }
 }
 
+async function markReplyManuallyHandled(replyId, handledBy = 'boss') {
+  const reply = await getReplyOrThrow(replyId);
+  if (reply.confirm_status === 'ignored' || reply.confirm_status === 'manually_replied') {
+    throw actionError('该邮件待办已经处理', 409);
+  }
+  await dbOperations.run(
+    `UPDATE email_replies
+     SET confirm_status = 'manually_replied', handled_at = NOW(), handled_by = ?, updated_at = NOW()
+     WHERE id = ?`,
+    [handledBy || 'boss', reply.id]
+  );
+  if (reply.campaign_id && reply.customer_id) {
+    await dbOperations.run(
+      `UPDATE campaign_kols
+       SET needs_reply = 0, sync_status = 'sync_pending', updated_at = NOW()
+       WHERE campaign_id = ? AND customer_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM email_replies newer
+           WHERE newer.campaign_id = ? AND newer.customer_id = ?
+             AND newer.confirm_status NOT IN ('ignored', 'manually_replied')
+             AND (newer.received_at > ? OR (newer.received_at = ? AND newer.id > ?))
+         )`,
+      [reply.campaign_id, reply.customer_id, reply.campaign_id, reply.customer_id,
+       reply.received_at, reply.received_at, reply.id]
+    );
+  }
+  return { confirm_status: 'manually_replied', handled_by: handledBy || 'boss' };
+}
+
 module.exports = {
   INTENT_TO_OUTREACH,
   approveDraft,
   rejectDraft,
   confirmReply,
-  ignoreReply
+  ignoreReply,
+  markReplyManuallyHandled
 };

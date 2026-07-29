@@ -31,15 +31,17 @@ async function summarizeReply(replyId) {
     const intent = VALID_INTENTS.has(parsed?.intent) ? parsed.intent : 'other';
     if (!summary) throw new Error('AI 未返回有效摘要');
     await dbOperations.run(
-      `UPDATE email_replies SET ai_summary = ?, ai_intent = ?, ai_status = 'success', updated_at = NOW() WHERE id = ?`,
+      `UPDATE email_replies SET ai_summary = ?, ai_intent = ?, ai_status = 'success', ai_error = NULL, updated_at = NOW() WHERE id = ?`,
       [summary, intent, replyId]
     );
+    return { success: true };
   } catch (error) {
     console.error(`回复总结失败 (reply ${replyId}):`, error.message);
     await dbOperations.run(
-      `UPDATE email_replies SET ai_status = 'failed', updated_at = NOW() WHERE id = ?`,
-      [replyId]
+      `UPDATE email_replies SET ai_status = 'failed', ai_error = ?, updated_at = NOW() WHERE id = ?`,
+      [String(error.message || 'AI 摘要失败').slice(0, 2000), replyId]
     ).catch(() => {});
+    return { success: false, error: error.message || 'AI 摘要失败' };
   }
 }
 

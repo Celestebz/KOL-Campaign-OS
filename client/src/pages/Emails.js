@@ -13,7 +13,7 @@ import {
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
   getEmailRecords,
-  getReplyTodos, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, retryReplySummary, draftReply,
+  getReplyTodos, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, markReplyManuallyHandled, retryReplySummary, draftReply,
   getApprovalDashboardSummary
 } from './emailApi';
 
@@ -620,6 +620,16 @@ function RepliesTab() {
     }
   };
 
+  const handleManuallyReplied = async (record) => {
+    try {
+      await markReplyManuallyHandled(record.id);
+      message.success('已记录为人工回复，邮件待办已完成');
+      fetchReplies();
+    } catch (error) {
+      message.error(error.response?.data?.error || '操作失败');
+    }
+  };
+
   const handleRetry = async (record) => {
     try {
       await retryReplySummary(record.id);
@@ -689,7 +699,7 @@ function RepliesTab() {
       render: (v, record) => {
         const ai = AI_STATUS_LABELS[record.ai_status] || {};
         if (record.ai_status === 'failed') {
-          return <Space><Tag color={ai.color}>{ai.text}</Tag><Button type="link" size="small" onClick={() => handleRetry(record)}>重试</Button></Space>;
+          return <Space><Tooltip title={record.ai_error || '暂无详细错误'}><Tag color={ai.color}>{ai.text}</Tag></Tooltip><Button type="link" size="small" onClick={() => handleRetry(record)}>重试</Button></Space>;
         }
         return v || <Tag color={ai.color}>{ai.text}</Tag>;
       }
@@ -702,12 +712,21 @@ function RepliesTab() {
       }
     },
     {
-      title: '操作', width: 260, render: (_, record) => (
+      title: '操作', width: 360, render: (_, record) => (
         <Space size={0}>
           {record.confirm_status === 'pending'
             ? <Button type="link" size="small" onClick={() => openConfirm(record)}>确认意向</Button>
             : <Tag color="green">意向已确认</Tag>}
           <Button type="link" size="small" icon={<MailOutlined />} onClick={() => handleDraftReply(record)}>回复草稿</Button>
+          <Popconfirm
+            title="确认已经通过外部邮箱回复该达人？"
+            description="系统只记录完成状态，不会发送邮件。"
+            okText="确认已回复"
+            cancelText="取消"
+            onConfirm={() => handleManuallyReplied(record)}
+          >
+            <Button type="link" size="small">已人工回复</Button>
+          </Popconfirm>
           <Popconfirm title="忽略这条回复？" onConfirm={() => handleIgnore(record)}>
             <Button type="link" size="small" danger>忽略</Button>
           </Popconfirm>
@@ -740,7 +759,7 @@ function RepliesTab() {
         showIcon
         style={{ marginBottom: 12 }}
         message="邮件待办"
-        description="这里集中显示当前轮到我方处理的 KOL 来信；确认意向不会清除待办，我方回复发送成功后才会完成。"
+        description="这里集中显示当前轮到我方处理的 KOL 来信；确认意向不会清除待办。通过系统发送回复，或标记“已人工回复”后，待办才会完成。"
       />
       <Space style={{ marginBottom: 12 }} wrap>
         <Radio.Group

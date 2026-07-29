@@ -278,11 +278,42 @@ test('POST /replies/:id/ignore sets confirm_status ignored', async () => {
   assert.deepEqual(statements[1].params, [2, 3, 2, 3, '2026-07-29 10:00:00', '2026-07-29 10:00:00', 7]);
 });
 
+test('POST /replies/:id/manually-replied closes the todo without sending an email', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/FROM email_replies/.test(sql)) {
+        return {
+          id: 17, campaign_id: 2, customer_id: 3,
+          received_at: '2026-07-29 10:00:00', confirm_status: 'confirmed'
+        };
+      }
+      return null;
+    },
+    run: async (sql, params) => { statements.push({ sql: String(sql), params }); return { id: 0, changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/manually-replied');
+    const response = await callHandler(handler, {
+      params: { id: 17 }, body: { handled_by: 'Celeste' }
+    });
+    assert.equal(response.payload.success, true);
+    assert.equal(response.payload.data.confirm_status, 'manually_replied');
+  });
+  const updateReply = statements.find((statement) => /UPDATE email_replies/.test(statement.sql));
+  assert.match(updateReply.sql, /confirm_status = 'manually_replied'/);
+  assert.match(updateReply.sql, /handled_at = NOW\(\)/);
+  assert.deepEqual(updateReply.params, ['Celeste', 17]);
+  const updateKol = statements.find((statement) => /UPDATE campaign_kols/.test(statement.sql));
+  assert.match(updateKol.sql, /needs_reply = 0/);
+  assert.match(updateKol.sql, /NOT IN \('ignored', 'manually_replied'\)/);
+  assert.equal(statements.some((statement) => /email_records|email_drafts/.test(statement.sql)), false);
+});
+
 test('POST /replies/:id/retry-summary re-runs summarizeReply and returns updated reply', async () => {
   const poller = require('../services/emailReplyPoller');
   const original = poller.summarizeReply;
   const seen = [];
-  poller.summarizeReply = async (id) => { seen.push(id); };
+  poller.summarizeReply = async (id) => { seen.push(id); return { success: true }; };
   try {
     await withPatchedDb({
       get: async () => ({ id: 8, ai_status: 'success', ai_summary: '重试后的摘要' })

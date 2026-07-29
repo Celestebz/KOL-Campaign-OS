@@ -27,6 +27,7 @@ const {
 const router = express.Router();
 
 const MIN_RELEVANT_SIGNAL_SCORE = 20; // soft-signal floor for entering raw candidate pool
+const FINDER_ANALYSIS_VERSION = 'finder-evidence-v1';
 const EVIDENCE_SIGNAL_TYPES = new Set(['competitor', 'category', 'use_case', 'feature', 'community']);
 
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
@@ -84,6 +85,55 @@ function buildCandidateIdentity(platform, profileUrl, authorName) {
     identityKey,
     identityKeyHash: crypto.createHash('sha256').update(identityKey).digest('hex')
   };
+}
+
+function normalizeCreatorLabel(value) {
+  return clean(value).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function youtubeChannelIdentity(profileUrl) {
+  const normalized = normalizeProfileIdentity('youtube', profileUrl);
+  if (!normalized) return { channelId: '', handle: '' };
+  try {
+    const parts = new URL(normalized).pathname.split('/').filter(Boolean);
+    if (parts[0]?.toLowerCase() === 'channel' && parts[1]) {
+      return { channelId: parts[1], handle: '' };
+    }
+    if (parts[0]?.startsWith('@')) {
+      return { channelId: '', handle: normalizeCreatorLabel(parts[0].slice(1)) };
+    }
+  } catch (error) {
+    // Invalid legacy URLs are handled by the display-name exclusion fallback.
+  }
+  return { channelId: '', handle: '' };
+}
+
+async function loadYoutubeExclusionSet() {
+  const [customers, accounts, candidates] = await Promise.all([
+    dbOperations.query(`SELECT name, profile_url, youtube_url FROM customers`),
+    dbOperations.query(`SELECT username, profile_url FROM kol_platform_accounts WHERE LOWER(platform) = 'youtube'`),
+    dbOperations.query(`SELECT kol_name, profile_url FROM raw_candidates WHERE LOWER(platform) = 'youtube'`)
+  ]);
+  const channelIds = new Set();
+  const labels = new Set();
+  const add = (name, ...urls) => {
+    const label = normalizeCreatorLabel(name);
+    if (label) labels.add(label);
+    for (const url of urls) {
+      const identity = youtubeChannelIdentity(url);
+      if (identity.channelId) channelIds.add(identity.channelId.toLowerCase());
+      if (identity.handle) labels.add(identity.handle);
+    }
+  };
+  customers.forEach((row) => add(row.name, row.profile_url, row.youtube_url));
+  accounts.forEach((row) => add(row.username, row.profile_url));
+  candidates.forEach((row) => add(row.kol_name, row.profile_url));
+  return { channelIds, labels };
+}
+
+function isExcludedYoutubeCreator(exclusions, channelId, channelTitle) {
+  return exclusions.channelIds.has(clean(channelId).toLowerCase())
+    || exclusions.labels.has(normalizeCreatorLabel(channelTitle));
 }
 
 function redactKnownSecrets(value, secrets = []) {
@@ -738,17 +788,19 @@ async function resolveExistingCreatorContext(platform, profileUrl, authorName) {
         `, [normalized, username]);
       }
     }
-  } else if (normalizedAuthor) {
+  }
+  if (!matched && normalizedAuthor) {
     matched = await dbOperations.get(`
       SELECT ${customerFields}, kpa.id AS platform_account_id,
         kpa.platform AS account_platform, kpa.username AS account_username,
         kpa.profile_url AS account_profile_url, kpa.followers_text AS account_followers
-      FROM kol_platform_accounts kpa
-      JOIN customers c ON c.id = kpa.customer_id
-      WHERE LOWER(kpa.platform) = ? AND LOWER(kpa.username) = ?
-      ORDER BY kpa.id ASC
+      FROM customers c
+      LEFT JOIN kol_platform_accounts kpa
+        ON kpa.customer_id = c.id AND LOWER(kpa.platform) = ?
+      WHERE LOWER(c.name) = ? OR LOWER(kpa.username) = ?
+      ORDER BY c.id ASC, kpa.id ASC
       LIMIT 1
-    `, [normalized, normalizedAuthor]);
+    `, [normalized, normalizedAuthor, normalizedAuthor]);
   }
 
   if (!matched) return null;
@@ -1051,34 +1103,50 @@ async function matonFinderAdapter(request) {
 async function youtubeMatonGatewayAdapter(request, setting, baseUrl) {
   const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
   const candidates = [];
+  const exclusions = await loadYoutubeExclusionSet();
+  const seenChannelIds = new Set();
+  const maxSearchPages = Math.max(2, Math.min(20, Math.ceil(maxResults / 5) * 3));
+  let searchedPages = 0;
   let lastEndpoint = '';
   for (const query of keywordQueries(request)) {
-    const remaining = maxResults - candidates.length;
-    if (remaining <= 0) break;
-    const searchUrl = buildUrl(baseUrl, '/youtube/youtube/v3/search', {
-      part: 'snippet',
-      type: 'video',
-      maxResults: Math.min(remaining, 10),
-      q: query
-    });
-    lastEndpoint = searchUrl;
-    const searchData = await fetchJson(searchUrl, { headers: matonHeaders(setting) });
-    const items = searchData.items || [];
-    const channelIds = [...new Set(items.map((item) => item.snippet?.channelId).filter(Boolean))];
-    let channels = {};
-    if (channelIds.length) {
-      const channelEndpoint = buildUrl(baseUrl, '/youtube/youtube/v3/channels', {
-        part: 'snippet,statistics',
-        id: channelIds.join(',')
+    let pageToken = '';
+    do {
+      const remaining = maxResults - candidates.length;
+      if (remaining <= 0 || searchedPages >= maxSearchPages) break;
+      const searchUrl = buildUrl(baseUrl, '/youtube/youtube/v3/search', {
+        part: 'snippet',
+        type: 'video',
+        maxResults: Math.min(50, Math.max(10, remaining * 2)),
+        q: query,
+        ...(pageToken ? { pageToken } : {})
       });
-      lastEndpoint = channelEndpoint;
-      const channelData = await fetchJson(channelEndpoint, { headers: matonHeaders(setting) });
-      channels = Object.fromEntries((channelData.items || []).map((item) => [item.id, item]));
-    }
-    candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, discovery: { ...request.discovery, keywords: query } }, `Matched Maton YouTube Gateway search: ${query}`));
+      lastEndpoint = searchUrl;
+      const searchData = await fetchJson(searchUrl, { headers: matonHeaders(setting) });
+      searchedPages += 1;
+      pageToken = clean(searchData.nextPageToken);
+      const items = (searchData.items || []).filter((item) => {
+        const channelId = clean(item.snippet?.channelId);
+        if (!channelId || seenChannelIds.has(channelId.toLowerCase())) return false;
+        seenChannelIds.add(channelId.toLowerCase());
+        return !isExcludedYoutubeCreator(exclusions, channelId, item.snippet?.channelTitle);
+      }).slice(0, remaining);
+      const channelIds = items.map((item) => item.snippet.channelId);
+      let channels = {};
+      if (channelIds.length) {
+        const channelEndpoint = buildUrl(baseUrl, '/youtube/youtube/v3/channels', {
+          part: 'snippet,statistics',
+          id: channelIds.join(',')
+        });
+        lastEndpoint = channelEndpoint;
+        const channelData = await fetchJson(channelEndpoint, { headers: matonHeaders(setting) });
+        channels = Object.fromEntries((channelData.items || []).map((item) => [item.id, item]));
+      }
+      candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, discovery: { ...request.discovery, keywords: query } }, `Matched Maton YouTube Gateway search: ${query}`));
+    } while (pageToken && candidates.length < maxResults && searchedPages < maxSearchPages);
+    if (candidates.length >= maxResults || searchedPages >= maxSearchPages) break;
   }
   if (!candidates.length) throw new Error('Maton 已连通，但 YouTube Search 返回 0 条候选；建议先用更短关键词测试，例如单个竞品名 + review。');
-  return { provider: 'maton_youtube_gateway', endpoint: lastEndpoint, candidates };
+  return { provider: 'maton_youtube_gateway', endpoint: lastEndpoint, candidates: candidates.slice(0, maxResults) };
 }
 
 async function youtubeSearchAdapter(request) {
@@ -2234,6 +2302,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
     const strategy = await getReadyStrategyForTask(task);
     const ids = (req.body?.evidence_ids || req.body?.evidenceIds || []).map(Number).filter(Boolean);
+    const forceReanalyze = req.body?.force_reanalyze === true || req.body?.forceReanalyze === true;
     let sql = `
       SELECT fve.*, vs.source_url as video_url, vs.title as video_title, vs.author_name as video_author_name,
         vs.author_profile_url, vs.kol_name, vs.published_at, vs.content_type
@@ -2245,9 +2314,10 @@ router.post('/:id/evidence-analysis', async (req, res) => {
     if (ids.length) {
       sql += ` AND fve.id IN (${ids.map(() => '?').join(',')})`;
       params.push(...ids);
-    } else {
-      // 阶段 D2 断点续跑：默认只分析未分析和上次失败的证据，已成功的不重复消耗 AI 额度
-      //（spec 11.3 已完成节点不重跑）；显式传 evidence_ids 时仍按指定集合强制分析。
+    }
+    if (!forceReanalyze) {
+      // 阶段 D2 断点续跑：默认只分析未分析和上次失败的证据，已成功的不重复消耗 AI 额度。
+      // evidence_ids 仅限定范围；只有 force_reanalyze=true 才强制重跑。
       sql += ` AND NOT EXISTS (
         SELECT 1 FROM video_ai_analysis_results vai
         WHERE vai.analysis_scope_id = fve.id AND vai.analysis_type = 'finder_evidence' AND vai.status = 'success'
@@ -2264,11 +2334,62 @@ router.post('/:id/evidence-analysis', async (req, res) => {
       try {
         const video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [evidence.video_source_id]);
         const snapshot = await dbOperations.get('SELECT * FROM video_snapshots WHERE video_source_id = ? ORDER BY snapshot_at DESC LIMIT 1', [evidence.video_source_id]);
+        const reusable = forceReanalyze ? null : await dbOperations.get(`
+          SELECT vai.*
+          FROM video_ai_analysis_results vai
+          JOIN finder_video_evidence cached_fve ON cached_fve.id = vai.analysis_scope_id
+          WHERE vai.video_source_id = ?
+            AND vai.analysis_type = 'finder_evidence'
+            AND vai.status = 'success'
+            AND cached_fve.strategy_id = ?
+            AND cached_fve.id <> ?
+            AND COALESCE(
+              JSON_UNQUOTE(JSON_EXTRACT(vai.extra_data, '$.analysis_version')),
+              ?
+            ) = ?
+          ORDER BY vai.updated_at DESC, vai.id DESC
+          LIMIT 1
+        `, [evidence.video_source_id, strategy.id, evidence.id, FINDER_ANALYSIS_VERSION, FINDER_ANALYSIS_VERSION]);
+        if (reusable) {
+          const reusedExtraData = {
+            ...parseJson(reusable.extra_data, {}),
+            finder_task_id: task.id,
+            analysis_version: FINDER_ANALYSIS_VERSION,
+            reused_from_analysis_id: reusable.id,
+            reused_at: new Date().toISOString()
+          };
+          await withActiveTaskBindingForWrite(task.id, ({ transaction }) => scopedRun(
+            `INSERT INTO video_ai_analysis_results
+             (video_source_id, analysis_type, analysis_scope_id, status, model_name, score, summary,
+              raw_result, extra_data, evidence_signals, final_prompt)
+             VALUES (?, 'finder_evidence', ?, 'success', ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+              status = 'success', model_name = VALUES(model_name), score = VALUES(score),
+              summary = VALUES(summary), raw_result = VALUES(raw_result), extra_data = VALUES(extra_data),
+              evidence_signals = VALUES(evidence_signals), final_prompt = VALUES(final_prompt),
+              error_message = NULL, updated_at = CURRENT_TIMESTAMP`,
+            [
+              evidence.video_source_id,
+              evidence.id,
+              reusable.model_name,
+              reusable.score,
+              reusable.summary,
+              reusable.raw_result,
+              JSON.stringify(reusedExtraData),
+              reusable.evidence_signals,
+              reusable.final_prompt
+            ], transaction
+          ).then(() => scopedRun('UPDATE finder_video_evidence SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['analyzed', evidence.id], transaction)));
+          successCount += 1;
+          results.push({ evidence_id: evidence.id, success: true, reused: true, reused_from_analysis_id: reusable.id });
+          continue;
+        }
         const ai = await runFinderEvidenceAnalysis(video || {}, snapshot, evidence, strategy);
         const parsed = ai.parsed || {};
         const normalized = normalizeFinderEvidenceResult(parsed);
         const extraData = JSON.stringify({
           finder_task_id: task.id,
+          analysis_version: FINDER_ANALYSIS_VERSION,
           ...normalized
         });
         await withActiveTaskBindingForWrite(task.id, ({ transaction }) => scopedRun(
@@ -2294,7 +2415,7 @@ router.post('/:id/evidence-analysis', async (req, res) => {
           ], transaction
         ).then(() => scopedRun('UPDATE finder_video_evidence SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['analyzed', evidence.id], transaction)));
         successCount += 1;
-        results.push({ evidence_id: evidence.id, success: true });
+        results.push({ evidence_id: evidence.id, success: true, reused: false });
       } catch (error) {
         // 仅绑定失效（404/409，见 taskBindingError）中止整批；单条 AI 调用失败（fetchJson 的
         // HTTP 错误同样带 status）记为失败项继续分析其余证据（spec 11.3 单失败不影响整批）
@@ -2421,6 +2542,16 @@ router.post('/:id/generate-candidates-from-evidence', async (req, res) => {
         evidenceGroup.normalizedProfileUrl,
         best.author_name || best.video_author_name || best.kol_name
       );
+      if (creatorContext?.customer_id) {
+        skipped.push({
+          inserted: false,
+          duplicate: true,
+          master_duplicate: true,
+          customer_id: creatorContext.customer_id,
+          reason: 'Creator already exists in KOL Master'
+        });
+        continue;
+      }
       const candidate = {
         platform: best.target_platform,
         target_platform: best.target_platform,
@@ -2652,5 +2783,7 @@ router.post('/:id/cancel', async (req, res) => {
 module.exports = router;
 module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
 module.exports.buildCandidateIdentity = buildCandidateIdentity;
+module.exports.youtubeChannelIdentity = youtubeChannelIdentity;
+module.exports.normalizeCreatorLabel = normalizeCreatorLabel;
 module.exports.createFinderTask = createFinderTask;
 module.exports.markInterruptedFinderTasks = markInterruptedFinderTasks;

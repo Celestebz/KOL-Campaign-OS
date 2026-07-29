@@ -488,7 +488,9 @@ router.post('/:campaignId/products/:campaignProductId/archive', async (req, res)
 
 router.post('/', async (req, res) => {
   try {
-    const { name, brand, product, brand_keywords, purchase_keywords, negative_keywords } = req.body;
+    const {
+      name, brand, product, period, brand_keywords, purchase_keywords, negative_keywords
+    } = req.body;
     if (!name) {
       return res.status(400).json({ success: false, error: '产品/活动名称为必填字段' });
     }
@@ -499,9 +501,14 @@ router.post('/', async (req, res) => {
     }
 
     const result = await dbOperations.run(
-      `INSERT INTO campaigns (name, brand, product, brand_keywords, purchase_keywords, negative_keywords)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [name, brand || '', product || '', brand_keywords || '', purchase_keywords || '', negative_keywords || '']
+      `INSERT INTO campaigns
+        (name, brand, product, campaign_type, status, period,
+         brand_keywords, purchase_keywords, negative_keywords)
+       VALUES (?, ?, ?, 'active_project', 'active', ?, ?, ?, ?)`,
+      [
+        name.trim(), brand || '', product || '', period || '',
+        brand_keywords || '', purchase_keywords || '', negative_keywords || ''
+      ]
     );
     const created = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [result.id]);
     res.json({ success: true, data: created, message: '产品/活动已创建' });
@@ -513,7 +520,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name, brand, product, brand_keywords, purchase_keywords, negative_keywords } = req.body;
+    const { name, brand, product, period, brand_keywords, purchase_keywords, negative_keywords } = req.body;
     const cleanName = String(name || '').trim();
 
     if (!cleanName) {
@@ -535,6 +542,7 @@ router.put('/:id', async (req, res) => {
        name = ?,
        brand = COALESCE(?, brand),
        product = ?,
+       period = COALESCE(?, period),
        brand_keywords = COALESCE(?, brand_keywords),
        purchase_keywords = COALESCE(?, purchase_keywords),
        negative_keywords = COALESCE(?, negative_keywords),
@@ -544,6 +552,7 @@ router.put('/:id', async (req, res) => {
         cleanName,
         brand ?? null,
         product !== undefined ? product : cleanName,
+        period ?? null,
         brand_keywords ?? null,
         purchase_keywords ?? null,
         negative_keywords ?? null,

@@ -5,10 +5,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getWorkbench, submitCandidateDecisions } from './workbenchApi';
 import { getItemType, sortItemsByRisk } from './constants';
 import DecisionCard from './DecisionCard';
-import ExceptionCard from './ExceptionCard';
+import ExceptionProblemCard from './ExceptionProblemCard';
 import DecisionDrawer from './DecisionDrawer';
 import RecentDecisions from './RecentDecisions';
 import './Workbench.css';
+import { notifyCampaignProgressChanged } from '../campaignProgressSync';
 
 const POLL_INTERVAL = 30 * 1000;
 
@@ -37,7 +38,7 @@ function Workbench() {
   const requestedTab = searchParams.get('tab');
   const [activeTab, setActiveTab] = useState(['approvals', 'exceptions', 'running', 'recent'].includes(requestedTab) ? requestedTab : 'approvals');
   const [campaignId, setCampaignId] = useState(searchParams.get('campaign_id') || 'all');
-  const [data, setData] = useState({ summary: {}, items: [], recent_decisions: [], active_runs: [] });
+  const [data, setData] = useState({ summary: {}, items: [], exception_groups: [], recent_decisions: [], active_runs: [] });
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedCandidates, setSelectedCandidates] = useState([]);
@@ -57,6 +58,10 @@ function Workbench() {
     item.type !== 'exception' && (campaignId === 'all' || String(item.campaign_id) === campaignId)
   ), [data.items, campaignId]);
   const exceptions = data.items.filter((item) => item.type === 'exception' && (campaignId === 'all' || String(item.campaign_id) === campaignId));
+  const exceptionGroups = useMemo(() => data.exception_groups.map((group) => ({
+    ...group,
+    item_ids: group.item_ids.filter((id) => exceptions.some((item) => item.id === id))
+  })).filter((group) => group.item_ids.length).map((group) => ({ ...group, affected_count: group.item_ids.length })), [data.exception_groups, exceptions]);
   const projectGroups = useMemo(() => groupByCampaign(approvals), [approvals]);
   const campaigns = useMemo(() => groupByCampaign(data.items.filter((item) => item.campaign_id)).map((group) => ({ value: group.key, label: group.name })), [data.items]);
   const replyCount = data.items.filter((item) => item.type === 'reply').length;
@@ -89,6 +94,7 @@ function Workbench() {
       const result = await submitCandidateDecisions(chosen, decision);
       if (result.failed) message.warning(`已处理 ${result.succeeded} 位，${result.failed} 位处理失败`);
       else message.success(`已${decision === 'approve' ? '通过' : '淘汰'} ${result.succeeded} 位候选达人`);
+      if (result.succeeded > 0) notifyCampaignProgressChanged(chosen.map((item) => item.campaign_id));
       setSelectedCandidates([]);
       await fetchWorkbench();
     } catch (error) {
@@ -161,7 +167,7 @@ function Workbench() {
       <Row gutter={16} className="workbench-summary">
         <Col xs={24} md={8}><Card><Statistic title="有待办的进行中项目" value={groupByCampaign(data.items.filter((item) => item.type !== 'exception')).length} prefix={<ProjectOutlined />} /></Card></Col>
         <Col xs={24} md={8}><Card><Statistic title="等待我方回复" value={replyCount} valueStyle={{ color: replyCount ? '#1677ff' : undefined }} prefix={<MailOutlined />} /></Card></Col>
-        <Col xs={24} md={8}><Card><Statistic title="影响项目的系统异常" value={data.summary.exceptions || 0} valueStyle={{ color: data.summary.exceptions ? '#d4380d' : undefined }} prefix={<ExceptionOutlined />} /></Card></Col>
+        <Col xs={24} md={8}><Card><Statistic title="需要处理的系统问题" value={data.summary.exceptions || 0} suffix={data.summary.exception_records ? `（${data.summary.exception_records} 条记录）` : undefined} valueStyle={{ color: data.summary.exceptions ? '#d4380d' : undefined }} prefix={<ExceptionOutlined />} /></Card></Col>
       </Row>
 
       {data.summary.unmatched_replies > 0 && <Alert className="workbench-inbox-alert" type="warning" showIcon message={`${data.summary.unmatched_replies} 封新邮件尚未匹配到项目`} description="这些邮件已从审核队列分流，不会干扰项目决策。请先到邮件中心完成归属。" action={<Button onClick={() => navigate('/emails')}>去邮件中心</Button>} />}
@@ -170,7 +176,7 @@ function Workbench() {
 
       <Tabs activeKey={activeTab} onChange={changeTab} items={[
         { key: 'approvals', label: `项目决策 ${approvals.length}`, children: approvalContent },
-        { key: 'exceptions', label: `异常 ${exceptions.length}`, children: exceptions.length ? exceptions.map((item) => <ExceptionCard key={item.id} item={item} onOpen={(current) => setSelectedId(current.id)} />) : <Card><Empty description="当前没有影响进行中项目的异常" /></Card> },
+        { key: 'exceptions', label: `系统问题 ${exceptionGroups.length}`, children: exceptionGroups.length ? exceptionGroups.map((group) => <ExceptionProblemCard key={group.key} group={group} items={exceptions} onOpen={(current) => setSelectedId(current.id)} />) : <Card><Empty description="当前没有影响进行中项目的系统问题" /></Card> },
         { key: 'running', label: <span><RobotOutlined /> AI 执行中 {activeRuns.length}</span>, children: <Card><Table rowKey={(row) => `${row.source}:${row.id}`} columns={runColumns} dataSource={activeRuns} pagination={false} /></Card> },
         { key: 'recent', label: '最近已处理', children: <Card><RecentDecisions items={data.recent_decisions} /></Card> }
       ]} />

@@ -12,6 +12,7 @@ import {
   UploadOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
+import CampaignCreateModal from './CampaignCreateModal';
 
 const { TextArea } = Input;
 
@@ -85,8 +86,6 @@ const Customers = () => {
   const [poolNotes, setPoolNotes] = useState('');
   const [poolCampaignProducts, setPoolCampaignProducts] = useState([]);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
-  const [creatingProject, setCreatingProject] = useState(false);
   const drawerRequest = useRef(0);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [currentPageKolIds, setCurrentPageKolIds] = useState([]);
@@ -231,29 +230,6 @@ const Customers = () => {
       }
     } finally {
       setAddingToProject(false);
-    }
-  };
-
-  const createProject = async () => {
-    const name = newProjectName.trim();
-    if (!name) {
-      message.warning('请输入项目名称');
-      return;
-    }
-    setCreatingProject(true);
-    try {
-      const response = await axios.post('/api/campaigns', { name, product: name });
-      const created = response.data.data;
-      setCampaigns((items) => [...items, created]);
-      setTargetCampaignId(created.id);
-      setNewProjectOpen(false);
-      setNewProjectName('');
-      message.success('项目已创建');
-      await addToProject(created.id);
-    } catch (error) {
-      message.error(error.response?.data?.error || '创建项目失败');
-    } finally {
-      setCreatingProject(false);
     }
   };
 
@@ -763,21 +739,20 @@ const Customers = () => {
         </Button>
       </Modal>
 
-      <Modal
-        title="新建项目"
+      <CampaignCreateModal
         open={newProjectOpen}
         onCancel={() => setNewProjectOpen(false)}
-        onOk={createProject}
-        confirmLoading={creatingProject}
-      >
-        <Input
-          autoFocus
-          placeholder="请输入项目名称"
-          value={newProjectName}
-          onChange={(event) => setNewProjectName(event.target.value)}
-          onPressEnter={createProject}
-        />
-      </Modal>
+        createAndContinue
+        onCreated={async (created) => {
+          setCampaigns((items) => (
+            items.some((item) => item.id === created.id) ? items : [...items, created]
+          ));
+          setTargetCampaignId(created.id);
+          setNewProjectOpen(false);
+          await handlePoolCampaignChange(created.id);
+          await addToProject(created.id);
+        }}
+      />
 
       <Modal
         title={editingKol ? '编辑 KOL' : '新增 KOL'}

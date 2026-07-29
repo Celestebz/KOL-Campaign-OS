@@ -522,13 +522,28 @@ router.post('/replies/:id/ignore', async (req, res) => {
   }
 });
 
+router.post('/replies/:id/manually-replied', async (req, res) => {
+  try {
+    const result = await emailReviewActions.markReplyManuallyHandled(
+      req.params.id,
+      req.body?.handled_by || 'boss'
+    );
+    res.json({ success: true, message: '已标记为人工回复', data: result });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
 router.post('/replies/:id/retry-summary', async (req, res) => {
   try {
     const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
     if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
     const { summarizeReply } = require('../services/emailReplyPoller');
-    await summarizeReply(reply.id);
+    const result = await summarizeReply(reply.id);
     const updated = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
+    if (!result?.success) {
+      return res.status(502).json({ success: false, error: result?.error || 'AI 摘要失败', data: updated });
+    }
     res.json({ success: true, data: updated });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

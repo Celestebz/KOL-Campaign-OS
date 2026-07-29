@@ -67,17 +67,16 @@ export function deriveResponsibility(detail = {}) {
 
 export function deriveSubstage(detail = {}, stage = deriveCampaignStage(detail)) {
   const summary = detail.summary || {};
-  if (count(summary.exceptions) > 0) return '存在执行异常';
-  if (detail.strategy?.status === 'draft') return '达人策略待审核';
+  if (detail.strategy?.status === 'draft') return '达人策略准备中';
   if (stage === 'preparation') return detail.strategy ? '完善项目需求' : '等待生成达人策略';
   if (stage === 'finding') {
-    if (count(summary.candidates_pending_review) > 0) return '候选达人待审核';
+    if (count(summary.candidates_pending_review) > 0) return '候选达人确认中';
     if (count(summary.finder_tasks_running) > 0) return '正在寻找达人';
     return '补充候选达人';
   }
   if (stage === 'outreach') {
-    if (count(summary.replies_pending) > 0) return '达人回复待确认';
-    if (count(summary.drafts_pending) > 0) return '邮件草稿待审核';
+    if (count(summary.replies_pending) > 0) return '达人回复确认中';
+    if (count(summary.drafts_pending) > 0) return '外联邮件准备中';
     if (count(summary.contacted) > count(summary.replied)) return '等待达人回复';
     return '沟通跟进中';
   }
@@ -92,9 +91,43 @@ export function deriveSubstage(detail = {}, stage = deriveCampaignStage(detail))
   return '内容制作中';
 }
 
+export function deriveProgressText(detail = {}, stage = deriveCampaignStage(detail)) {
+  const summary = detail.summary || {};
+  if (detail.strategy?.status === 'draft') return '达人策略准备中';
+  if (stage === 'preparation') return '项目需求准备中';
+  if (stage === 'finding') {
+    const candidates = count(summary.candidates_pending_review);
+    if (candidates > 0) return `候选达人确认中 · ${candidates} 位`;
+    const running = count(summary.finder_tasks_running);
+    if (running > 0) return `正在寻找达人 · ${running} 个任务`;
+    return '候选达人持续补充中';
+  }
+  if (stage === 'outreach') {
+    const replies = count(summary.replies_pending);
+    if (replies > 0) return `达人回复确认中 · ${replies} 条`;
+    const drafts = count(summary.drafts_pending);
+    if (drafts > 0) return `外联邮件准备中 · ${drafts} 封`;
+    const waiting = Math.max(0, count(summary.contacted) - count(summary.replied));
+    return waiting > 0 ? `等待达人回复 · ${waiting} 位` : '沟通持续跟进中';
+  }
+  if (stage === 'fulfillment') {
+    if (projectStatusCount(summary, 'pending_shipping') > 0) return '合作达人等待发货';
+    if (projectStatusCount(summary, 'shipped') > 0) return '合作样品运输中';
+    if (projectStatusCount(summary, 'delivered') > 0) return '合作内容准备中';
+    return '合作履约推进中';
+  }
+  if (projectStatusCount(summary, 'pending_publish') > 0) return '合作内容等待上线';
+  if (projectStatusCount(summary, 'published') > 0) return '合作内容已上线';
+  return '合作内容制作中';
+}
+
 export function primaryProduct(detail = {}) {
   const products = Array.isArray(detail.products) ? detail.products : [];
-  return products.find((item) => item.role === 'hero') || products[0] || null;
+  return products.find((item) => item.status !== 'archived' && item.role === 'hero')
+    || products.find((item) => item.status !== 'archived')
+    || products.find((item) => item.role === 'hero')
+    || products[0]
+    || null;
 }
 
 export function normalizeCampaignProgress(detail = {}) {
@@ -122,14 +155,12 @@ export function normalizeCampaignProgress(detail = {}) {
     finderRunning: count(summary.finder_tasks_running),
     primaryProductName: product?.product?.name || campaign.product || '',
     primaryProductSku: product?.product?.sku || '',
-    nextStep: detail.next_step || '等待 AI 更新下一步',
+    nextStep: deriveProgressText(detail, stage),
     risks: detail.risks || [],
     deadline: campaign.period || ''
   };
 }
 
 export function progressSort(a, b) {
-  if (a.riskCount !== b.riskCount) return b.riskCount - a.riskCount;
-  if (a.approvalCount !== b.approvalCount) return b.approvalCount - a.approvalCount;
   return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
 }

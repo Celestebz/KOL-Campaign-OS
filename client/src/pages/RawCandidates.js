@@ -170,7 +170,8 @@ const renderClue = (record = {}) => {
   );
 };
 
-const RawCandidates = () => {
+const RawCandidates = ({ view = 'candidates' }) => {
+  const isTaskView = view === 'tasks';
   const [candidates, setCandidates] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [campaignProducts, setCampaignProducts] = useState([]);
@@ -205,23 +206,24 @@ const RawCandidates = () => {
   ), [strategies, filters.strategy_id]);
 
   const displayedFinderTask = useMemo(() => {
+    if (isTaskView) return finderTasks[0];
     const candidateTaskIds = new Set(candidates.map((item) => item.finder_task_id).filter(Boolean));
     return finderTasks.find((task) => candidateTaskIds.has(task.id)) || finderTasks[0];
-  }, [candidates, finderTasks]);
+  }, [candidates, finderTasks, isTaskView]);
 
   useEffect(() => {
     fetchCampaigns();
     fetchStrategies();
-    fetchCandidates();
-    fetchFinderTasks();
+    if (isTaskView) fetchFinderTasks();
+    else fetchCandidates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (!filters.strategy_id) return;
+    if (!isTaskView || !filters.strategy_id) return;
     fetchFinderTasks(filters.strategy_id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.strategy_id]);
+  }, [filters.strategy_id, isTaskView]);
 
   useEffect(() => {
     fetchCampaignProducts(filters.campaign_id);
@@ -229,6 +231,7 @@ const RawCandidates = () => {
   }, [filters.campaign_id]);
 
   useEffect(() => {
+    if (!isTaskView) return undefined;
     const hasRunning = finderTasks.some((task) => ['draft', 'running'].includes(task.status));
     if (!hasRunning) return undefined;
     const timer = setInterval(() => {
@@ -237,7 +240,7 @@ const RawCandidates = () => {
     }, 3000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finderTasks, filters.strategy_id]);
+  }, [finderTasks, filters.strategy_id, isTaskView]);
 
   useEffect(() => {
     if (!displayedFinderTask?.id) {
@@ -339,7 +342,7 @@ const RawCandidates = () => {
     setVideoEvidenceLoading(true);
     try {
       const res = await axios.post(`/api/finder-tasks/${latestTask.id}/generate-candidates-from-evidence`);
-      message.success(`Generated ${res.data.data?.inserted_count || 0} Raw Candidates from video evidence`);
+      message.success(`已从视频证据生成 ${res.data.data?.inserted_count || 0} 个原始候选`);
       fetchVideoEvidence(latestTask.id);
       fetchCandidates();
     } catch (error) {
@@ -607,30 +610,34 @@ const RawCandidates = () => {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">KOL 寻找</h1>
-        <p className="page-subtitle">这里保留 Finder 找到的原始候选；人工确认后进入项目候选池，不代表已经确认合作。</p>
+        <h1 className="page-title">{isTaskView ? '寻找任务' : '原始候选'}</h1>
+        <p className="page-subtitle">
+          {isTaskView
+            ? '创建并跟踪视频证据寻找任务，完成证据评分后生成原始候选。'
+            : '这里仅保留 Finder 找到的原始候选；人工确认后进入项目候选池，不代表已经确认合作。'}
+        </p>
       </div>
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <Select allowClear placeholder="选择已发布策略" value={filters.strategy_id} onChange={updateStrategyFilter} options={strategyOptions} style={{ width: 300 }} />
           <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 180 }} />
-          <Select allowClear placeholder="项目产品" value={filters.campaign_product_id} onChange={(v) => updateFilter('campaign_product_id', v)} options={campaignProducts.map((item) => ({ value: item.id, label: `${item.product?.name || item.product_name || ''} (${item.role || 'hero'})`.trim() }))} style={{ width: 200 }} />
-          <Select allowClear placeholder="平台" value={filters.platform} onChange={(v) => updateFilter('platform', v)} options={platformOptions} style={{ width: 140 }} />
-          <Select allowClear placeholder="身份识别" value={filters.identity_status} onChange={(v) => updateFilter('identity_status', v)} options={[
+          {!isTaskView ? <Select allowClear placeholder="项目产品" value={filters.campaign_product_id} onChange={(v) => updateFilter('campaign_product_id', v)} options={campaignProducts.map((item) => ({ value: item.id, label: `${item.product?.name || item.product_name || ''} (${item.role || 'hero'})`.trim() }))} style={{ width: 200 }} /> : null}
+          {!isTaskView ? <Select allowClear placeholder="平台" value={filters.platform} onChange={(v) => updateFilter('platform', v)} options={platformOptions} style={{ width: 140 }} /> : null}
+          {!isTaskView ? <Select allowClear placeholder="身份识别" value={filters.identity_status} onChange={(v) => updateFilter('identity_status', v)} options={[
             { value: 'new_kol', label: '新 KOL' },
             { value: 'known_kol_new_product_fit', label: '已有 KOL · 新产品匹配' },
             { value: 'existing_product_fit_updated', label: '已有 KOL · 产品匹配更新' }
-          ]} style={{ width: 200 }} />
-          <Select allowClear placeholder="状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={statusOptions} style={{ width: 140 }} />
-          <InputNumber placeholder="最低评分" min={0} max={100} value={filters.min_score} onChange={(v) => updateFilter('min_score', v)} style={{ width: 120 }} />
-          <Input.Search allowClear placeholder="搜索 KOL、链接、关键词、国家" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchCandidates} style={{ width: 300 }} />
-          <Button icon={<ReloadOutlined />} onClick={fetchCandidates}>刷新</Button>
-          <Button type="primary" icon={<SearchOutlined />} disabled={!selectedStrategy} onClick={openTaskModal}>创建 Finder 任务</Button>
+          ]} style={{ width: 200 }} /> : null}
+          {!isTaskView ? <Select allowClear placeholder="状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={statusOptions} style={{ width: 140 }} /> : null}
+          {!isTaskView ? <InputNumber placeholder="最低评分" min={0} max={100} value={filters.min_score} onChange={(v) => updateFilter('min_score', v)} style={{ width: 120 }} /> : null}
+          {!isTaskView ? <Input.Search allowClear placeholder="搜索 KOL、链接、关键词、国家" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchCandidates} style={{ width: 300 }} /> : null}
+          {!isTaskView ? <Button icon={<ReloadOutlined />} onClick={fetchCandidates}>刷新</Button> : null}
+          {isTaskView ? <Button type="primary" icon={<SearchOutlined />} disabled={!selectedStrategy} onClick={openTaskModal}>创建寻找任务</Button> : null}
         </Space>
       </Card>
 
-      <Card className="content-card" style={{ marginBottom: 16 }}>
+      {isTaskView ? <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Space wrap>
             <strong>最近寻找任务</strong>
@@ -704,8 +711,9 @@ const RawCandidates = () => {
             <span style={{ color: '#666' }}>选择已发布策略后，选择一个目标平台即可开始寻找视频证据。</span>
           )}
         </Space>
-      </Card>
+      </Card> : null}
 
+      {!isTaskView ? <>
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <span>已选 {selectedRowKeys.length} 个候选</span>
@@ -729,8 +737,9 @@ const RawCandidates = () => {
           pagination={{ pageSize: 20, showSizeChanger: true }}
         />
       </Card>
+      </> : null}
 
-      <Modal title="创建视频证据寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText="开始找视频" width={520}>
+      {isTaskView ? <Modal title="创建视频证据寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText="开始找视频" width={520}>
         <Form form={taskForm} layout="vertical">
           <Form.Item label="项目">
             <Input value={selectedStrategy?.campaign_name || campaigns.find((c) => c.id === selectedStrategy?.campaign_id)?.name || ''} disabled />
@@ -749,9 +758,9 @@ const RawCandidates = () => {
           </Form.Item>
           <span style={{ color: '#666' }}>系统会直接在目标平台寻找视频，再由 AI 判断每条视频命中的一个或多个线索。</span>
         </Form>
-      </Modal>
+      </Modal> : null}
 
-      <Modal title="候选详情" open={Boolean(detail)} onCancel={() => setDetail(null)} footer={null} width={760}>
+      {!isTaskView ? <Modal title="候选详情" open={Boolean(detail)} onCancel={() => setDetail(null)} footer={null} width={760}>
         {detail ? (
           <Space direction="vertical" style={{ width: '100%' }}>
             <div><strong>KOL：</strong>{detail.kol_name}</div>
@@ -788,9 +797,9 @@ const RawCandidates = () => {
             <div><strong>错误原因：</strong>{detail.error_message || '-'}</div>
           </Space>
         ) : null}
-      </Modal>
+      </Modal> : null}
 
-      <Modal title="标记为全局不建议合作" open={Boolean(globalRiskRecord)} onCancel={() => setGlobalRiskRecord(null)} onOk={submitGlobalRisk} width={560}>
+      {!isTaskView ? <Modal title="标记为全局不建议合作" open={Boolean(globalRiskRecord)} onCancel={() => setGlobalRiskRecord(null)} onOk={submitGlobalRisk} width={560}>
         <Form form={riskForm} layout="vertical">
           <Form.Item label="KOL">
             <Input value={globalRiskRecord?.kol_name || ''} disabled />
@@ -802,7 +811,7 @@ const RawCandidates = () => {
             <TextArea rows={4} placeholder="例如：历史明确拒绝合作、沟通风险、报价长期不匹配、品牌安全风险等" />
           </Form.Item>
         </Form>
-      </Modal>
+      </Modal> : null}
     </div>
   );
 };

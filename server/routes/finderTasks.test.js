@@ -819,7 +819,7 @@ test('same-name creators with distinct profile identities produce distinct raw c
   assert.equal(await models.RawCandidateProductFit.count(), 2);
 });
 
-test('profile username fallback matches a legacy-hash platform account', async () => {
+test('profile username fallback excludes a creator already present in KOL Master', async () => {
   await resetTestDatabase();
   await initDatabase();
   const app = await buildApp();
@@ -831,9 +831,78 @@ test('profile username fallback matches a legacy-hash platform account', async (
   const imported = await request.post(`/api/finder-tasks/${taskRes.body.data.id}/video-evidence/import`).send({ evidence: [{ video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', author_name: 'Different display name', author_profile_url: 'https://youtube.com/@Legacy.Handle/?x=1' }] });
   const evidence = imported.body.data.results[0].data;
   await models.VideoAiAnalysisResult.create({ video_source_id: evidence.video_source_id, analysis_type: 'finder_evidence', analysis_scope_id: evidence.id, status: 'success', score: 90, summary: 'legacy', extra_data: JSON.stringify({ hard_filter: { passed: true, market_language_match: 'certain' }, signal_scores: { category_fit: 90 }, evidence_strength_score: 90, risk: { risk_level: 'low' }, candidate_decision: { enter_raw_candidates: true, candidate_priority_score: 90, recommended_status: 'manual_review' } }) });
-  await request.post(`/api/finder-tasks/${taskRes.body.data.id}/generate-candidates-from-evidence`).send({}).expect(200);
-  const fit = await dbOperations.get('SELECT * FROM raw_candidate_product_fits WHERE campaign_product_id = ?', [campaignProduct.id]);
-  assert.equal(fit.existing_customer_id, customer.id);
+  const generated = await request.post(`/api/finder-tasks/${taskRes.body.data.id}/generate-candidates-from-evidence`).send({}).expect(200);
+  assert.equal(await models.RawCandidate.count(), 0);
+  assert.equal(await models.RawCandidateProductFit.count({ where: { campaign_product_id: campaignProduct.id } }), 0);
+  assert.equal(generated.body.data.skipped[0].master_duplicate, true);
+  assert.equal(generated.body.data.skipped[0].customer_id, customer.id);
+});
+
+test('YouTube identity helpers normalize channel and handle URL variants', () => {
+  assert.deepEqual(
+    finderTaskRoutes.youtubeChannelIdentity('https://youtube.com/channel/UCAbCdEf1234567890123456/videos?x=1'),
+    { channelId: 'UCAbCdEf1234567890123456', handle: '' }
+  );
+  assert.deepEqual(
+    finderTaskRoutes.youtubeChannelIdentity('https://www.youtube.com/@ViceGripLodge/videos'),
+    { channelId: '', handle: 'vicegriplodge' }
+  );
+  assert.equal(finderTaskRoutes.normalizeCreatorLabel(' Vice Grip Lodge '), 'vicegriplodge');
+});
+
+test('Finder reuses a successful analysis for the same video and Strategy across tasks', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  const evidenceInput = {
+    evidence: [{
+      video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      author_name: 'Reusable Creator',
+      author_profile_url: 'https://youtube.com/@reusable.creator'
+    }]
+  };
+
+  const firstTask = await request.post('/api/finder-tasks').send({ strategy_id: strategy.id, target_platform: 'youtube' });
+  const firstImport = await request.post(`/api/finder-tasks/${firstTask.body.data.id}/video-evidence/import`).send(evidenceInput);
+  const firstEvidence = firstImport.body.data.results[0].data;
+  const cached = await models.VideoAiAnalysisResult.create({
+    video_source_id: firstEvidence.video_source_id,
+    analysis_type: 'finder_evidence',
+    analysis_scope_id: firstEvidence.id,
+    status: 'success',
+    model_name: 'MiniMax-M3',
+    score: 88,
+    summary: 'Reusable analysis',
+    raw_result: JSON.stringify({ cached: true }),
+    evidence_signals: JSON.stringify([{ type: 'category', score: 88 }]),
+    final_prompt: 'cached prompt',
+    extra_data: JSON.stringify({
+      analysis_version: 'finder-evidence-v1',
+      hard_filter: { passed: true, market_language_match: 'certain' },
+      signal_scores: { category_fit: 88 },
+      evidence_strength_score: 88,
+      risk: { risk_level: 'low' },
+      candidate_decision: { enter_raw_candidates: true, candidate_priority_score: 88, recommended_status: 'manual_review' }
+    })
+  });
+
+  const secondTask = await request.post('/api/finder-tasks').send({ strategy_id: strategy.id, target_platform: 'youtube' });
+  const secondImport = await request.post(`/api/finder-tasks/${secondTask.body.data.id}/video-evidence/import`).send(evidenceInput);
+  const secondEvidence = secondImport.body.data.results[0].data;
+  const analyzed = await request.post(`/api/finder-tasks/${secondTask.body.data.id}/evidence-analysis`).send({ evidence_ids: [secondEvidence.id] });
+
+  assert.equal(analyzed.status, 200, JSON.stringify(analyzed.body));
+  assert.equal(analyzed.body.data.success_count, 1);
+  assert.equal(analyzed.body.data.results[0].reused, true);
+  assert.equal(analyzed.body.data.results[0].reused_from_analysis_id, cached.id);
+  const copied = await models.VideoAiAnalysisResult.findOne({ where: { analysis_scope_id: secondEvidence.id, analysis_type: 'finder_evidence' } });
+  const copiedExtra = safeParseJson(copied.extra_data);
+  assert.equal(copied.model_name, 'MiniMax-M3');
+  assert.equal(copied.score, 88);
+  assert.equal(copiedExtra.reused_from_analysis_id, cached.id);
+  assert.equal(copiedExtra.analysis_version, 'finder-evidence-v1');
 });
 
 test('product fit identity normalizes profile variants and repeated discovery preserves a human decision', async () => {
@@ -1089,6 +1158,64 @@ test('video evidence finder reads only canonical YouTube Maton Gateway configura
   } finally {
     process.env.NODE_ENV = originalNodeEnv;
     dbOperations.get = originalGet;
+    await new Promise((resolve) => mockGateway.server.close(resolve));
+  }
+});
+
+test('Maton discovery paginates past KOL Master duplicates and keeps one video per new channel', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  await models.Customer.create({ name: 'Existing Creator', youtube_url: 'https://www.youtube.com/@ExistingCreator/videos' });
+  const searchUrls = [];
+  const mockGateway = await new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.url.startsWith('/youtube/youtube/v3/search')) {
+        searchUrls.push(req.url);
+        const secondPage = req.url.includes('pageToken=next-page');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(secondPage ? {
+          items: [{ id: { videoId: 'newVideo0001' }, snippet: { channelId: 'UCNewChannel12345678901234', channelTitle: 'New Creator', title: 'New field test' } }]
+        } : {
+          nextPageToken: 'next-page',
+          items: [{ id: { videoId: 'oldVideo0001' }, snippet: { channelId: 'UCExisting123456789012345', channelTitle: 'Existing Creator', title: 'Existing field test' } }]
+        }));
+        return;
+      }
+      if (req.url.startsWith('/youtube/youtube/v3/channels')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ items: [{ id: 'UCNewChannel12345678901234', snippet: { title: 'New Creator', country: 'US' }, statistics: { subscriberCount: '12000' } }] }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+
+  const originalNodeEnv = process.env.NODE_ENV;
+  try {
+    await models.ApiSetting.create({ provider: 'system.provider_selection', extra_config: JSON.stringify({ platforms: { youtube: { primary: 'maton_gateway', fallbacks: [] } } }) });
+    await models.ApiSetting.create({ provider: 'youtube.maton_gateway', api_key: 'maton-token', base_url: `http://127.0.0.1:${mockGateway.port}` });
+    process.env.NODE_ENV = 'development';
+    const created = await request.post('/api/finder-tasks').send({ strategy_id: strategy.id, target_platform: 'youtube', limit: 1 });
+    let task = null;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      task = await models.FinderTask.findByPk(created.body.data.id);
+      if (task?.status !== 'draft' && task?.status !== 'running') break;
+      await sleep(20);
+    }
+    assert.equal(task.status, 'success');
+    assert.equal(task.result_count, 1);
+    assert.equal(searchUrls.length, 2);
+    assert.ok(searchUrls[1].includes('pageToken=next-page'));
+    const evidence = await models.FinderVideoEvidence.findOne({ where: { finder_task_id: task.id } });
+    const source = await models.VideoSource.findByPk(evidence.video_source_id);
+    assert.equal(source.author_name, 'New Creator');
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv;
     await new Promise((resolve) => mockGateway.server.close(resolve));
   }
 });
