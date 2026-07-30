@@ -28,6 +28,9 @@ const router = express.Router();
 
 const MIN_RELEVANT_SIGNAL_SCORE = 20; // soft-signal floor for entering raw candidate pool
 const FINDER_ANALYSIS_VERSION = 'finder-evidence-v1';
+const MATON_SEARCH_CACHE_TTL_DAYS = 7;
+const MATON_DISCOVERY_REQUEST_BUDGET = 6;
+const MATON_EXTERNAL_REQUEST_BUDGET = 32;
 const EVIDENCE_SIGNAL_TYPES = new Set(['competitor', 'category', 'use_case', 'feature', 'community']);
 
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
@@ -272,6 +275,18 @@ function parseMetricNumber(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   const text = String(value).trim().toLowerCase().replace(/,/g, '');
   if (!text) return null;
+  // Parse a suffix only when it is an actual standalone unit. For example,
+  // the "m" in "20000 median views" must not be treated as "million".
+  const strictMatch = text.match(/([\d.]+)(?:\s*(k|m|b))?(?![a-z])/i);
+  if (strictMatch) {
+    const strictBase = Number(strictMatch[1]);
+    const strictUnit = strictMatch[2]?.toLowerCase();
+    if (!Number.isFinite(strictBase)) return null;
+    if (strictUnit === 'k') return Math.round(strictBase * 1000);
+    if (strictUnit === 'm') return Math.round(strictBase * 1000000);
+    if (strictUnit === 'b') return Math.round(strictBase * 1000000000);
+    return Math.round(strictBase);
+  }
   const match = text.match(/([\d.]+)\s*([kmb万萬]?)/);
   if (!match) return null;
   const base = Number(match[1]);
@@ -1101,30 +1116,56 @@ async function matonFinderAdapter(request) {
 }
 
 async function youtubeMatonGatewayAdapter(request, setting, baseUrl) {
-  const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
+  const targetQualifiedCount = Math.max(1, Math.min(Number(request.limit || 10), 50));
+  const maxScannedChannels = finderScanLimit(request, targetQualifiedCount);
   const candidates = [];
   const exclusions = await loadYoutubeExclusionSet();
   const seenChannelIds = new Set();
-  const maxSearchPages = Math.max(2, Math.min(20, Math.ceil(maxResults / 5) * 3));
+  const maxSearchPages = Math.max(2, Math.min(20, Math.ceil(maxScannedChannels / 5) * 3));
   let searchedPages = 0;
+  let externalRequestCount = 0;
+  let cacheHitCount = 0;
   let lastEndpoint = '';
-  for (const query of keywordQueries(request)) {
+  for (const query of await rankedKeywordQueries(request)) {
     let pageToken = '';
     do {
-      const remaining = maxResults - candidates.length;
+      const remaining = maxScannedChannels - candidates.length;
       if (remaining <= 0 || searchedPages >= maxSearchPages) break;
+      const requestedMaxResults = Math.min(50, Math.max(10, remaining * 2));
       const searchUrl = buildUrl(baseUrl, '/youtube/youtube/v3/search', {
         part: 'snippet',
         type: 'video',
-        maxResults: Math.min(50, Math.max(10, remaining * 2)),
+        maxResults: requestedMaxResults,
         q: query,
         ...(pageToken ? { pageToken } : {})
       });
       lastEndpoint = searchUrl;
-      const searchData = await fetchJson(searchUrl, { headers: matonHeaders(setting) });
+      const currentPageToken = pageToken;
+      const cached = await getCachedMatonSearch(query, currentPageToken, requestedMaxResults);
+      let searchData;
+      let searchRequestCost = 0;
+      if (cached) {
+        searchData = cached.data;
+        cacheHitCount += 1;
+      } else {
+        if (externalRequestCount >= MATON_DISCOVERY_REQUEST_BUDGET) break;
+        try {
+          searchData = await fetchJson(searchUrl, { headers: matonHeaders(setting) });
+          externalRequestCount += 1;
+          searchRequestCost = 1;
+          await saveMatonSearchCache(query, currentPageToken, requestedMaxResults, searchData);
+        } catch (error) {
+          await recordFinderQueryLedger({
+            taskId: request.finder_task_id, query, pageToken: currentPageToken, cacheHit: false,
+            requestCost: 1, status: 'failed', error: error.message
+          });
+          throw error;
+        }
+      }
       searchedPages += 1;
       pageToken = clean(searchData.nextPageToken);
-      const items = (searchData.items || []).filter((item) => {
+      const returnedItems = searchData.items || [];
+      const items = returnedItems.filter((item) => {
         const channelId = clean(item.snippet?.channelId);
         if (!channelId || seenChannelIds.has(channelId.toLowerCase())) return false;
         seenChannelIds.add(channelId.toLowerCase());
@@ -1132,21 +1173,283 @@ async function youtubeMatonGatewayAdapter(request, setting, baseUrl) {
       }).slice(0, remaining);
       const channelIds = items.map((item) => item.snippet.channelId);
       let channels = {};
-      if (channelIds.length) {
+      let channelRequestCost = 0;
+      if (channelIds.length && externalRequestCount < MATON_DISCOVERY_REQUEST_BUDGET) {
         const channelEndpoint = buildUrl(baseUrl, '/youtube/youtube/v3/channels', {
           part: 'snippet,statistics',
           id: channelIds.join(',')
         });
         lastEndpoint = channelEndpoint;
         const channelData = await fetchJson(channelEndpoint, { headers: matonHeaders(setting) });
+        externalRequestCount += 1;
+        channelRequestCost = 1;
         channels = Object.fromEntries((channelData.items || []).map((item) => [item.id, item]));
       }
       candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, discovery: { ...request.discovery, keywords: query } }, `Matched Maton YouTube Gateway search: ${query}`));
-    } while (pageToken && candidates.length < maxResults && searchedPages < maxSearchPages);
-    if (candidates.length >= maxResults || searchedPages >= maxSearchPages) break;
+      await recordFinderQueryLedger({
+        taskId: request.finder_task_id,
+        query,
+        pageToken: currentPageToken,
+        cacheHit: Boolean(cached),
+        returned: returnedItems.length,
+        excluded: returnedItems.length - items.length,
+        newChannels: items.length,
+        requestCost: searchRequestCost + channelRequestCost
+      });
+    } while (pageToken && candidates.length < maxScannedChannels && searchedPages < maxSearchPages);
+    if (candidates.length >= maxScannedChannels || searchedPages >= maxSearchPages) break;
   }
   if (!candidates.length) throw new Error('Maton 已连通，但 YouTube Search 返回 0 条候选；建议先用更短关键词测试，例如单个竞品名 + review。');
-  return { provider: 'maton_youtube_gateway', endpoint: lastEndpoint, candidates: candidates.slice(0, maxResults) };
+  const preflight = await preflightYoutubeCandidates(
+    candidates.slice(0, maxScannedChannels),
+    request,
+    setting,
+    baseUrl,
+    Math.max(0, MATON_EXTERNAL_REQUEST_BUDGET - externalRequestCount)
+  );
+  externalRequestCount += preflight.requestCount;
+  return {
+    provider: 'maton_youtube_gateway',
+    endpoint: lastEndpoint,
+    candidates: preflight.candidates.slice(0, targetQualifiedCount),
+    preflight_rejected: preflight.rejected,
+    scanned_channel_count: candidates.length,
+    target_qualified_count: targetQualifiedCount,
+    max_scanned_channels: maxScannedChannels,
+    external_request_count: externalRequestCount,
+    cache_hit_count: cacheHitCount
+  };
+}
+
+function parseYoutubeDurationSeconds(value) {
+  const match = clean(value).match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/i);
+  if (!match) return 0;
+  return Number(match[1] || 0) * 86400 + Number(match[2] || 0) * 3600
+    + Number(match[3] || 0) * 60 + Number(match[4] || 0);
+}
+
+function medianNumber(values) {
+  const sorted = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function youtubePreflightConfig(request) {
+  const handoff = request.strategy?.finder_handoff || {};
+  const minimumMedianViews = parseMetricNumber(handoff.minimum_median_views || handoff.minimum_avg_views) || 0;
+  const evidenceText = parseList(handoff.required_evidence).join(' ');
+  const countMatch = evidenceText.match(/at least\s+(\d+)\s+recent/i);
+  return {
+    enabled: minimumMedianViews > 0,
+    targetMarket: clean(request.campaign?.target_market).toLowerCase(),
+    activityDays: 90,
+    minimumLongVideos: countMatch ? Number(countMatch[1]) : 3,
+    minimumLongSeconds: 8 * 60,
+    minimumMedianViews
+  };
+}
+
+function finderScanLimit(request, targetQualifiedCount) {
+  const target = Math.max(1, Number(targetQualifiedCount || 1));
+  return youtubePreflightConfig(request).enabled ? Math.min(100, target * 5) : target;
+}
+
+function looksLikeBrandOrDealer(candidate) {
+  const channel = candidate.raw_data?.channel || {};
+  const text = [candidate.kol_name, channel.snippet?.title, channel.snippet?.description]
+    .map(clean).join(' ').toLowerCase();
+  return /\b(official channel|manufacturer|authorized dealer|dealership|equipment dealer|tractor dealer)\b/.test(text)
+    || /\b(ltd\.?|inc\.?|llc)\s*$/.test(clean(candidate.kol_name).toLowerCase());
+}
+
+function evaluateYoutubePreflight(candidate, videos, config, now = new Date()) {
+  const country = clean(candidate.country_region || candidate.raw_data?.channel?.snippet?.country).toUpperCase();
+  if (config.targetMarket.includes('united states') || config.targetMarket === 'us') {
+    if (country !== 'US') return { passed: false, reason: country ? 'market_mismatch' : 'market_unverified', country };
+  }
+  if (looksLikeBrandOrDealer(candidate)) return { passed: false, reason: 'brand_or_dealer_account', country };
+
+  const cutoff = now.getTime() - config.activityDays * 24 * 60 * 60 * 1000;
+  const normalized = videos.map((video) => ({
+    id: video.id,
+    title: clean(video.snippet?.title),
+    publishedAt: clean(video.snippet?.publishedAt),
+    views: Number(video.statistics?.viewCount || 0),
+    durationSeconds: parseYoutubeDurationSeconds(video.contentDetails?.duration)
+  })).filter((video) => video.id);
+  if (!normalized.length) return { passed: false, reason: 'preflight_unavailable', country };
+  const recent = normalized.filter((video) => new Date(video.publishedAt).getTime() >= cutoff);
+  if (!recent.length) return { passed: false, reason: 'inactive_90d', country, recentCount: 0 };
+
+  const longVideos = normalized
+    .filter((video) => video.durationSeconds >= config.minimumLongSeconds)
+    .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
+    .slice(0, 10);
+  if (longVideos.length < config.minimumLongVideos) {
+    return { passed: false, reason: 'insufficient_long_videos', country, recentCount: recent.length, longVideoCount: longVideos.length };
+  }
+  const medianViews = medianNumber(longVideos.map((video) => video.views));
+  if (medianViews < config.minimumMedianViews) {
+    return {
+      passed: false, reason: 'median_views_below_threshold', country,
+      recentCount: recent.length, longVideoCount: longVideos.length, medianViews,
+      minimumMedianViews: config.minimumMedianViews
+    };
+  }
+  return {
+    passed: true, country, recentCount: recent.length, longVideoCount: longVideos.length,
+    medianViews, minimumMedianViews: config.minimumMedianViews,
+    latestPublishedAt: longVideos[0]?.publishedAt || ''
+  };
+}
+
+async function youtubeFeedVideoIds(channelId) {
+  try {
+    const response = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`);
+    if (!response.ok) return [];
+    const xml = await response.text();
+    return [...new Set([...xml.matchAll(/<yt:videoId>([^<]+)<\/yt:videoId>/g)].map((match) => match[1]))].slice(0, 15);
+  } catch (error) {
+    return [];
+  }
+}
+
+async function preflightYoutubeCandidates(candidates, request, setting, baseUrl, requestBudget) {
+  const config = youtubePreflightConfig(request);
+  if (!config.enabled || !candidates.length) return { candidates, rejected: [], requestCount: 0 };
+  const feeds = candidates.map((candidate) => {
+    const channelId = youtubeChannelIdentity(candidate.profile_url).channelId;
+    return { candidate, channelId, videoIds: [] };
+  });
+  const likelyEligible = feeds.filter((item) => {
+    const country = clean(item.candidate.country_region || item.candidate.raw_data?.channel?.snippet?.country).toUpperCase();
+    const marketMatches = !(config.targetMarket.includes('united states') || config.targetMarket === 'us') || country === 'US';
+    return marketMatches && !looksLikeBrandOrDealer(item.candidate);
+  });
+  await Promise.all(likelyEligible.map(async (item) => {
+    item.videoIds = item.channelId ? await youtubeFeedVideoIds(item.channelId) : [];
+  }));
+  const reservedVideoDetailRequests = Math.ceil(likelyEligible.length * 15 / 50);
+  let requestCount = 0;
+  for (const item of likelyEligible) {
+    if (item.videoIds.length || requestCount >= Math.max(0, requestBudget - reservedVideoDetailRequests)) continue;
+    const endpoint = buildUrl(baseUrl, '/youtube/youtube/v3/search', {
+      part: 'snippet',
+      type: 'video',
+      channelId: item.channelId,
+      order: 'date',
+      maxResults: 15
+    });
+    const data = await fetchJson(endpoint, { headers: matonHeaders(setting) });
+    requestCount += 1;
+    item.videoIds = [...new Set((data.items || []).map((video) => video.id?.videoId).filter(Boolean))].slice(0, 15);
+  }
+  const allVideoIds = [...new Set(feeds.flatMap((item) => item.videoIds))];
+  const videos = new Map();
+  for (let index = 0; index < allVideoIds.length && requestCount < requestBudget; index += 50) {
+    const ids = allVideoIds.slice(index, index + 50);
+    const endpoint = buildUrl(baseUrl, '/youtube/youtube/v3/videos', {
+      part: 'snippet,statistics,contentDetails',
+      id: ids.join(',')
+    });
+    const data = await fetchJson(endpoint, { headers: matonHeaders(setting) });
+    requestCount += 1;
+    for (const video of data.items || []) videos.set(video.id, video);
+  }
+  const passed = [];
+  const rejected = [];
+  for (const item of feeds) {
+    const channelVideos = item.videoIds.map((id) => videos.get(id)).filter(Boolean);
+    const result = evaluateYoutubePreflight(item.candidate, channelVideos, config);
+    const enriched = {
+      ...item.candidate,
+      avg_views: result.medianViews ? String(Math.round(result.medianViews)) : item.candidate.avg_views,
+      raw_data: { ...(item.candidate.raw_data || {}), preflight: result }
+    };
+    if (result.passed) passed.push(enriched);
+    else rejected.push({ kol_name: item.candidate.kol_name, profile_url: item.candidate.profile_url, ...result });
+  }
+  return { candidates: passed, rejected, requestCount };
+}
+
+function finderQueryHash(query) {
+  return crypto.createHash('sha256').update(clean(query).toLowerCase()).digest('hex');
+}
+
+function matonSearchCacheKey(query, pageToken, maxResults) {
+  return crypto.createHash('sha256')
+    .update(['maton_youtube_gateway', 'youtube', clean(query).toLowerCase(), clean(pageToken), Number(maxResults)].join('|'))
+    .digest('hex');
+}
+
+async function getCachedMatonSearch(query, pageToken, maxResults) {
+  const cacheKey = matonSearchCacheKey(query, pageToken, maxResults);
+  const row = await dbOperations.get(
+    `SELECT * FROM finder_search_cache WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAMP LIMIT 1`,
+    [cacheKey]
+  );
+  if (!row) return null;
+  await dbOperations.run(
+    `UPDATE finder_search_cache
+     SET hit_count = hit_count + 1, last_hit_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [row.id]
+  );
+  return { cacheKey, data: parseJson(row.response_json, {}), row };
+}
+
+async function saveMatonSearchCache(query, pageToken, maxResults, data) {
+  const cacheKey = matonSearchCacheKey(query, pageToken, maxResults);
+  const expiresAt = new Date(Date.now() + MATON_SEARCH_CACHE_TTL_DAYS * 24 * 60 * 60 * 1000);
+  await dbOperations.run(
+    `INSERT INTO finder_search_cache
+     (cache_key, provider, platform, query_text, page_token, max_results, response_json,
+      result_count, hit_count, expires_at, created_at, updated_at)
+     VALUES (?, 'maton_youtube_gateway', 'youtube', ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), result_count = VALUES(result_count),
+       expires_at = VALUES(expires_at), updated_at = CURRENT_TIMESTAMP`,
+    [cacheKey, clean(query), clean(pageToken), Number(maxResults), JSON.stringify(data || {}), (data?.items || []).length, toMysqlDatetime(expiresAt)]
+  );
+}
+
+async function recordFinderQueryLedger({ taskId, query, pageToken, cacheHit, returned, excluded, newChannels, requestCost, status = 'success', error = '' }) {
+  await dbOperations.run(
+    `INSERT INTO finder_query_ledger
+     (finder_task_id, provider, platform, query_text, query_hash, page_token, cache_hit,
+      returned_count, excluded_count, new_channel_count, request_cost, status, error_message, created_at)
+     VALUES (?, 'maton_youtube_gateway', 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    [taskId || null, clean(query), finderQueryHash(query), clean(pageToken), cacheHit ? 1 : 0,
+      Number(returned || 0), Number(excluded || 0), Number(newChannels || 0), Number(requestCost || 0), status, clean(error)]
+  );
+}
+
+async function rankedKeywordQueries(request) {
+  const queries = keywordQueries(request);
+  if (queries.length < 2) return queries;
+  const placeholders = queries.map(() => '?').join(',');
+  const rows = await dbOperations.query(
+    `SELECT query_hash, COUNT(*) AS runs,
+       SUM(returned_count) AS returned_count,
+       SUM(new_channel_count) AS new_channel_count,
+       MAX(created_at) AS last_used_at
+     FROM finder_query_ledger
+     WHERE platform = 'youtube' AND query_hash IN (${placeholders})
+     GROUP BY query_hash`,
+    queries.map(finderQueryHash)
+  );
+  const stats = new Map(rows.map((row) => [row.query_hash, row]));
+  return queries.sort((left, right) => {
+    const a = stats.get(finderQueryHash(left));
+    const b = stats.get(finderQueryHash(right));
+    if (!a && b) return -1;
+    if (a && !b) return 1;
+    if (!a && !b) return 0;
+    const aYield = Number(a.new_channel_count || 0) / Math.max(1, Number(a.returned_count || 0));
+    const bYield = Number(b.new_channel_count || 0) / Math.max(1, Number(b.returned_count || 0));
+    if (aYield !== bYield) return bYield - aYield;
+    return new Date(a.last_used_at).getTime() - new Date(b.last_used_at).getTime();
+  });
 }
 
 async function youtubeSearchAdapter(request) {
@@ -1999,6 +2302,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   const keywords = discoveryKeywords(strategy);
   const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
   const request = buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetPlatform, limit);
+  request.finder_task_id = task.id;
   const allAttempts = [];
   const responseSummary = [];
   let insertedCount = 0;
@@ -2092,12 +2396,18 @@ async function processVideoEvidenceTask(taskId, options = {}) {
     checkpoint.imported_video_urls = [...importedUrls];
     checkpoint.import_failures = importFailures;
     await saveTaskCheckpoint(taskId, checkpoint);
-    responseSummary.push({
+      responseSummary.push({
       stage: 'video_evidence_discovery',
       target_platform: targetPlatform,
       provider: importSource.provider,
       resumed_from_checkpoint: canResumeSearch,
-      returned: importSource.candidates.length,
+        returned: importSource.candidates.length,
+        external_request_count: importSource.external_request_count || 0,
+        cache_hit_count: importSource.cache_hit_count || 0,
+        preflight_rejected: importSource.preflight_rejected || [],
+        scanned_channel_count: importSource.scanned_channel_count || importSource.candidates.length,
+        target_qualified_count: importSource.target_qualified_count || limit,
+        max_scanned_channels: importSource.max_scanned_channels || limit,
       inserted: insertedCount,
       already_imported: resumedCount,
       skipped,
@@ -2785,5 +3095,9 @@ module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
 module.exports.buildCandidateIdentity = buildCandidateIdentity;
 module.exports.youtubeChannelIdentity = youtubeChannelIdentity;
 module.exports.normalizeCreatorLabel = normalizeCreatorLabel;
+module.exports.rankedKeywordQueries = rankedKeywordQueries;
+module.exports.evaluateYoutubePreflight = evaluateYoutubePreflight;
+module.exports.youtubePreflightConfig = youtubePreflightConfig;
+module.exports.finderScanLimit = finderScanLimit;
 module.exports.createFinderTask = createFinderTask;
 module.exports.markInterruptedFinderTasks = markInterruptedFinderTasks;

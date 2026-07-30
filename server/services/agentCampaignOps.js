@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { dbOperations } = require('../database');
 const { PRIORITY_LEVELS, normalizePriorityLevel } = require('../utils/campaignKolEnums');
+const { draftDedupeKey, isDuplicateError } = require('./emailDraftDedupe');
 
 const ALLOWED_PLATFORMS = new Set(['youtube', 'instagram', 'tiktok', 'facebook', 'x']);
 const MAX_CANDIDATE_BATCH = 100;
@@ -301,21 +302,40 @@ async function upsertDraft(campaignId, item) {
        risk_level = 'none', risk_reasons = '[]', updated_at = NOW() WHERE id = ?`,
       [subject, bodyText, validation.draft_id]
     );
+    await closeCandidateApproval(campaignId, validation.customer_id);
     return validation;
   }
-  const result = await dbOperations.run(
-    `INSERT INTO email_drafts
+  let result;
+  try {
+    result = await dbOperations.run(
+      `INSERT INTO email_drafts
      (campaign_id, customer_id, kind, subject, body_text, status, risk_level, risk_reasons,
-      evidence, prompt_version, created_at, updated_at)
-     VALUES (?, ?, 'first_touch', ?, ?, 'pending_review', 'none', '[]', ?, 'agent-manual-v1', NOW(), NOW())`,
-    [campaignId, validation.customer_id, subject, bodyText, JSON.stringify({ source: 'external_agent' })]
-  );
+      evidence, prompt_version, dedupe_key, created_at, updated_at)
+     VALUES (?, ?, 'first_touch', ?, ?, 'pending_review', 'none', '[]', ?, 'agent-manual-v1', ?, NOW(), NOW())`,
+      [campaignId, validation.customer_id, subject, bodyText, JSON.stringify({ source: 'external_agent' }),
+        draftDedupeKey({ campaignId, customerId: validation.customer_id, kind: 'first_touch' })]
+    );
+  } catch (error) {
+    if (!isDuplicateError(error)) throw error;
+    return { ...validation, action: 'duplicate', error: 'A first_touch draft already exists' };
+  }
   await dbOperations.run(
     `INSERT INTO email_draft_versions (draft_id, subject, body_text, source, created_at)
      VALUES (?, ?, ?, 'agent', NOW())`,
     [result.id, subject, bodyText]
   );
+  await closeCandidateApproval(campaignId, validation.customer_id);
   return { ...validation, draft_id: result.id };
+}
+
+async function closeCandidateApproval(campaignId, customerId) {
+  await dbOperations.run(
+    `UPDATE approval_items SET status = 'cancelled', decision = 'agent_handled',
+       decided_by = 'external_agent', decided_at = NOW(), updated_at = NOW()
+     WHERE type = 'candidate' AND subject_type = 'campaign_kol' AND status = 'pending'
+       AND subject_id = (SELECT id FROM campaign_kols WHERE campaign_id = ? AND customer_id = ? ORDER BY id DESC LIMIT 1)`,
+    [campaignId, customerId]
+  );
 }
 
 async function batchDrafts(campaignId, body) {

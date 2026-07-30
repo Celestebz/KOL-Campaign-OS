@@ -204,7 +204,8 @@ test('POST /replies/:id/confirm maps intent and writes back campaign_kols', asyn
       if (/FROM email_replies/.test(sql)) {
         return { id: 5, customer_id: 1, campaign_id: 2, ai_intent: 'question', ai_summary: '询问寄送', confirm_status: 'pending' };
       }
-      if (/FROM campaign_kols/.test(sql)) return { id: 77, internal_notes: '旧备注' };
+      if (/FROM campaign_kol_events/.test(sql)) return { outreach_status: 'negotiating', summary: '询问寄送' };
+      if (/FROM campaign_kols/.test(sql)) return { id: 77, campaign_id: 2, customer_id: 1, outreach_status: 'contacted' };
       return null;
     },
     run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
@@ -217,6 +218,8 @@ test('POST /replies/:id/confirm maps intent and writes back campaign_kols', asyn
   assert.ok(updateKol.params.includes('negotiating'), 'question intent maps to negotiating while the email todo stays separate');
   assert.ok(updateKol.params.includes('询问寄送'));
   assert.match(updateKol.sql, /sync_status = 'sync_pending'/);
+  assert.doesNotMatch(updateKol.sql, /internal_notes|project_notes/);
+  assert.ok(statements.some((s) => /INSERT INTO campaign_kol_events/.test(s.sql)));
   const updateReply = statements.find((s) => /UPDATE email_replies/.test(s.sql));
   assert.match(updateReply.sql, /confirm_status = 'confirmed'/);
 });
@@ -228,7 +231,8 @@ test('POST /replies/:id/confirm maps other to negotiating without changing the e
       if (/FROM email_replies/.test(sql)) {
         return { id: 15, campaign_id: 2, customer_id: 7, ai_intent: 'other', ai_summary: 'needs review' };
       }
-      if (/FROM campaign_kols/.test(sql)) return { id: 78, internal_notes: null };
+      if (/FROM campaign_kol_events/.test(sql)) return { outreach_status: 'negotiating', summary: 'needs review' };
+      if (/FROM campaign_kols/.test(sql)) return { id: 78, campaign_id: 2, customer_id: 7, outreach_status: 'contacted' };
       return null;
     },
     run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
@@ -249,7 +253,8 @@ test('POST /replies/:id/confirm uses body summary override and maps interested t
       if (/FROM email_replies/.test(sql)) {
         return { id: 6, customer_id: 1, campaign_id: 2, ai_intent: 'interested', ai_summary: 'AI摘要', confirm_status: 'pending' };
       }
-      if (/FROM campaign_kols/.test(sql)) return { id: 78, internal_notes: null };
+      if (/FROM campaign_kol_events/.test(sql)) return { outreach_status: 'interested', summary: '人工修正摘要' };
+      if (/FROM campaign_kols/.test(sql)) return { id: 78, campaign_id: 2, customer_id: 1, outreach_status: 'contacted' };
       return null;
     },
     run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
@@ -261,6 +266,33 @@ test('POST /replies/:id/confirm uses body summary override and maps interested t
   const updateKol = statements.find((s) => /UPDATE campaign_kols/.test(s.sql));
   assert.ok(updateKol.params.includes('interested'));
   assert.ok(updateKol.params.includes('人工修正摘要'));
+});
+
+test('POST /replies/:id/confirm lets human intent override the AI classification', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/FROM email_replies/.test(sql)) {
+        return { id: 16, customer_id: 1, campaign_id: 2, ai_intent: 'interested', ai_summary: 'AI says yes', received_at: '2026-07-30 09:00:00' };
+      }
+      if (/FROM campaign_kol_events/.test(sql)) return { outreach_status: 'terminated', summary: '人工判断拒绝' };
+      if (/FROM campaign_kols/.test(sql)) return { id: 79, campaign_id: 2, customer_id: 1, outreach_status: 'contacted' };
+      return null;
+    },
+    run: async (sql, params) => { statements.push({ sql, params }); return { id: 1, changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/confirm');
+    const response = await callHandler(handler, {
+      params: { id: 16 }, body: { summary: '人工判断拒绝', intent: 'rejected' }
+    });
+    assert.equal(response.payload.data.confirmed_intent, 'rejected');
+    assert.equal(response.payload.data.outreach_status, 'terminated');
+  });
+  const eventInsert = statements.find((s) => /INSERT INTO campaign_kol_events/.test(s.sql));
+  assert.ok(eventInsert.params.includes('interested'), 'keeps the original AI intent');
+  assert.ok(eventInsert.params.includes('rejected'), 'stores the human-confirmed intent');
+  const replyUpdate = statements.find((s) => /UPDATE email_replies/.test(s.sql));
+  assert.ok(replyUpdate.params.includes('rejected'));
 });
 
 test('POST /replies/:id/ignore sets confirm_status ignored', async () => {

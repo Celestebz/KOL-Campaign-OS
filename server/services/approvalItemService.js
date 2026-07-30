@@ -238,7 +238,8 @@ async function listPendingWorkbenchItems() {
   const rows = await dbOperations.query(
     `SELECT ai.* FROM approval_items ai
      LEFT JOIN campaigns c ON c.id = ai.campaign_id
-     WHERE ai.status = 'pending' AND (ai.campaign_id IS NULL OR c.status = 'active')
+     WHERE ai.status = 'pending' AND ai.type <> 'candidate'
+       AND (ai.campaign_id IS NULL OR c.status = 'active')
      ORDER BY FIELD(ai.type, 'strategy', 'candidate', 'budget', 'outreach', 'reply', 'exception'),
               ai.updated_at DESC, ai.id DESC`
   );
@@ -319,8 +320,8 @@ async function getSummary() {
   const [row, unmatchedReplyRow] = await Promise.all([
     dbOperations.get(
     `SELECT
-       COALESCE(SUM(CASE WHEN status = 'pending' AND type <> 'exception' THEN 1 ELSE 0 END), 0) AS pending,
-       COALESCE(SUM(CASE WHEN status = 'pending' AND type <> 'exception' AND priority = 'high' THEN 1 ELSE 0 END), 0) AS high_risk,
+       COALESCE(SUM(CASE WHEN status = 'pending' AND type NOT IN ('exception', 'candidate') THEN 1 ELSE 0 END), 0) AS pending,
+       COALESCE(SUM(CASE WHEN status = 'pending' AND type NOT IN ('exception', 'candidate') AND priority = 'high' THEN 1 ELSE 0 END), 0) AS high_risk,
        COALESCE(SUM(CASE WHEN status = 'pending' AND type = 'exception' THEN 1 ELSE 0 END), 0) AS exceptions,
        COALESCE(SUM(CASE WHEN decision IS NOT NULL AND decision <> 'source_gone'
                           AND decided_at IS NOT NULL AND DATE(decided_at) = CURDATE() THEN 1 ELSE 0 END), 0) AS handled_today

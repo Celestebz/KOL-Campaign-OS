@@ -12,7 +12,6 @@ import {
   getEmailSettings, saveEmailSettings, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
-  getEmailRecords,
   getReplyTodos, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, markReplyManuallyHandled, retryReplySummary, draftReply,
   getApprovalDashboardSummary
 } from './emailApi';
@@ -25,6 +24,13 @@ const INTENT_LABELS = {
   rejected: { text: '已拒绝', color: 'red' },
   other: { text: '其他', color: 'default' }
 };
+
+const CONFIRMED_INTENT_OPTIONS = [
+  { value: 'interested', label: '有意向' },
+  { value: 'question', label: '需要沟通' },
+  { value: 'unclear', label: '暂不明确' },
+  { value: 'rejected', label: '已拒绝' }
+];
 
 const AI_STATUS_LABELS = {
   pending: { text: '总结中', color: 'blue' },
@@ -502,50 +508,77 @@ function ApprovalTab() {
   );
 }
 
-// ---- 发送记录 ----
+// ---- 审批记录 ----
 
-function RecordsTab() {
-  const [data, setData] = useState({ records: [], total: 0 });
+const HISTORY_STATUSES = new Set(['approved', 'rejected', 'sent', 'send_failed', 'send_unknown']);
+
+function ApprovalHistoryTab() {
+  const [drafts, setDrafts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState();
+  const [selected, setSelected] = useState(null);
 
-  const fetchRecords = useCallback(async () => {
+  const fetchHistory = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await getEmailRecords(status));
+      const data = await getDrafts(status ? { status } : {});
+      setDrafts((data.drafts || []).filter((draft) => HISTORY_STATUSES.has(draft.status)));
     } catch (error) {
-      message.error('获取发送记录失败');
+      message.error('获取审批记录失败');
     } finally {
       setLoading(false);
     }
   }, [status]);
 
-  useEffect(() => { fetchRecords(); }, [fetchRecords]);
+  useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
   const columns = [
     { title: 'KOL', dataIndex: 'kol_name', width: 140 },
-    { title: '收件人', dataIndex: 'to_address', width: 200, render: (v) => v || '-' },
+    { title: '项目', dataIndex: 'campaign_name', width: 160, render: (v) => v || '-' },
+    { title: '类型', dataIndex: 'kind', width: 100, render: (v) => DRAFT_KIND_LABELS[v] || v || '-' },
     { title: '主题', dataIndex: 'subject', ellipsis: true },
     {
       title: '状态', dataIndex: 'status', width: 90,
-      render: (v, record) => (
-        <Tooltip title={record.error || ''}>
-          <Tag color={v === 'success' ? 'green' : 'red'}>{v === 'success' ? '成功' : '失败'}</Tag>
-        </Tooltip>
-      )
+      render: (v) => {
+        const item = DRAFT_STATUS_LABELS[v] || { text: v, color: 'default' };
+        return <Tag color={item.color}>{item.text}</Tag>;
+      }
     },
-    { title: '发送时间', dataIndex: 'created_at', width: 160,
-      render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') }
+    { title: '处理时间', dataIndex: 'updated_at', width: 170,
+      render: (v, record) => {
+        const value = record.sent_at || record.reviewed_at || v;
+        return value ? new Date(value).toLocaleString('zh-CN') : '-';
+      } },
+    { title: '操作', width: 80, render: (_, record) => <Button type="link" size="small" onClick={() => setSelected(record)}>查看</Button> }
   ];
 
   return (
     <>
       <Space style={{ marginBottom: 12 }}>
         <Select allowClear placeholder="全部状态" style={{ width: 140 }} value={status} onChange={setStatus}
-          options={[{ value: 'success', label: '成功' }, { value: 'failed', label: '失败' }]} />
-        <Button icon={<ReloadOutlined />} onClick={fetchRecords}>刷新</Button>
+          options={['sent', 'rejected', 'send_failed', 'send_unknown', 'approved'].map((value) => ({
+            value, label: DRAFT_STATUS_LABELS[value]?.text || value
+          }))} />
+        <Button icon={<ReloadOutlined />} onClick={fetchHistory}>刷新</Button>
       </Space>
-      <Table rowKey="id" loading={loading} columns={columns} dataSource={data.records} />
+      <Table rowKey="id" loading={loading} columns={columns} dataSource={drafts} />
+      <Modal title="审批记录详情" open={Boolean(selected)} footer={null} width={720} onCancel={() => setSelected(null)}>
+        {selected && <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Descriptions bordered size="small" column={2}>
+            <Descriptions.Item label="KOL">{selected.kol_name || '-'}</Descriptions.Item>
+            <Descriptions.Item label="项目">{selected.campaign_name || '-'}</Descriptions.Item>
+            <Descriptions.Item label="收件人">{selected.sent_to_address || selected.recipient_email || '-'}</Descriptions.Item>
+            <Descriptions.Item label="邮件类型">{DRAFT_KIND_LABELS[selected.kind] || selected.kind || '-'}</Descriptions.Item>
+            <Descriptions.Item label="审批状态">{DRAFT_STATUS_LABELS[selected.status]?.text || selected.status}</Descriptions.Item>
+            <Descriptions.Item label="处理时间">{selected.sent_at || selected.reviewed_at || selected.updated_at
+              ? new Date(selected.sent_at || selected.reviewed_at || selected.updated_at).toLocaleString('zh-CN') : '-'}</Descriptions.Item>
+          </Descriptions>
+          {selected.status === 'rejected' && <Alert type="warning" showIcon message="驳回备注" description={selected.reviewer_note || '未填写驳回备注'} />}
+          {['send_failed', 'send_unknown'].includes(selected.status) && <Alert type="error" showIcon message="发送异常" description={selected.delivery_error || '暂无错误详情'} />}
+          <div><strong>主题</strong><Input value={selected.subject || ''} readOnly style={{ marginTop: 8 }} /></div>
+          <div><strong>邮件正文</strong><TextArea rows={8} value={selected.body_text || ''} readOnly style={{ marginTop: 8 }} /></div>
+        </Space>}
+      </Modal>
     </>
   );
 }
@@ -557,6 +590,7 @@ function RepliesTab() {
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(null);
   const [editedSummary, setEditedSummary] = useState('');
+  const [editedIntent, setEditedIntent] = useState('unclear');
   const [viewMode, setViewMode] = useState('pending'); // pending=待确认；unmatched=未识别回复
   const [binding, setBinding] = useState(null);
   const [bindCustomerId, setBindCustomerId] = useState(null);
@@ -597,12 +631,13 @@ function RepliesTab() {
   const openConfirm = (record) => {
     setConfirming(record);
     setEditedSummary(record.ai_summary || '');
+    setEditedIntent(record.ai_intent === 'other' ? 'unclear' : (record.ai_intent || 'unclear'));
   };
 
   const handleConfirm = async () => {
     try {
-      await confirmReply(confirming.id, editedSummary);
-      message.success('已确认，状态将同步到飞书');
+      await confirmReply(confirming.id, editedSummary, editedIntent);
+      message.success('已更新项目状态');
       setConfirming(null);
       fetchReplies();
     } catch (error) {
@@ -786,8 +821,15 @@ function RepliesTab() {
         open={Boolean(confirming)} onOk={handleConfirm} onCancel={() => setConfirming(null)}
         okText="确认并更新状态" width={640}
       >
-        <p>确认后将按意向更新外联状态，并把摘要写入跟进记录、同步飞书。可修改摘要：</p>
-        <TextArea rows={4} value={editedSummary} onChange={(e) => setEditedSummary(e.target.value)} />
+        <p>AI 结果仅供参考。请确认实际意向；操作会更新本地项目和跟进时间线，不会立即同步飞书。</p>
+        <Form layout="vertical">
+          <Form.Item label="人工确认意向" required>
+            <Select value={editedIntent} onChange={setEditedIntent} options={CONFIRMED_INTENT_OPTIONS} />
+          </Form.Item>
+          <Form.Item label="跟进摘要">
+            <TextArea rows={4} value={editedSummary} onChange={(e) => setEditedSummary(e.target.value)} />
+          </Form.Item>
+        </Form>
       </Modal>
       <Modal
         title={`绑定 KOL - ${binding?.from_address || ''}`}
@@ -1127,8 +1169,8 @@ function Emails() {
         defaultActiveKey="approval"
         items={[
           { key: 'approval', label: '审批台', children: <ApprovalTab /> },
-          { key: 'records', label: '发送记录', children: <RecordsTab /> },
           { key: 'replies', label: '邮件待办', children: <RepliesTab /> },
+          { key: 'records', label: '审批记录', children: <ApprovalHistoryTab /> },
           { key: 'templates', label: '模板与口径', children: <TemplatesTab /> },
           { key: 'settings', label: '邮箱配置', children: <SettingsTab /> }
         ]}

@@ -302,7 +302,11 @@ router.get('/drafts', async (req, res) => {
     if (campaign_id) { conditions.push('d.campaign_id = ?'); params.push(campaign_id); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const drafts = (await dbOperations.query(
-      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name
+      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name,
+        (SELECT er.to_address FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS sent_to_address,
+        (SELECT er.status FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS delivery_status,
+        (SELECT er.error FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS delivery_error,
+        (SELECT er.created_at FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS sent_at
        FROM email_drafts d
        LEFT JOIN customers k ON k.id = d.customer_id
        LEFT JOIN campaigns c ON c.id = d.campaign_id
@@ -506,7 +510,9 @@ router.get('/replies', async (req, res) => {
 
 router.post('/replies/:id/confirm', async (req, res) => {
   try {
-    const result = await emailReviewActions.confirmReply(req.params.id, req.body?.summary);
+    const result = await emailReviewActions.confirmReply(
+      req.params.id, req.body?.summary, req.body?.intent, req.body?.actor || 'boss'
+    );
     res.json({ success: true, message: '已确认', data: result });
   } catch (error) {
     sendActionError(res, error);

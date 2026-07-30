@@ -21,7 +21,7 @@ function Section({ title, children }) {
 // 决策抽屉：点击卡片后在右侧打开，展示完整 事实/观点/风险 三面板。
 // 阶段 C：抽屉底部直接做决定（批准/驳回/要求修改/暂缓，异常卡为重试/跳过/停止），
 // 提交统一走后端 POST /api/approvals/:id/decision；"去处理"保留为跳转二级入口。
-function DecisionDrawer({ item, open, onClose, onRefresh }) {
+function DecisionDrawer({ item, open, onClose, onRefresh, readOnly = false }) {
   const navigate = useNavigate();
   // submitting 记录正在提交的决定 key，用于按钮 loading 与防重复提交。
   const [submitting, setSubmitting] = useState(null);
@@ -35,7 +35,7 @@ function DecisionDrawer({ item, open, onClose, onRefresh }) {
   const risk = getRiskLevel(item.risk_level);
   const actions = item.actions || [];
   const primaryAction = actions.find((a) => a.key === 'open') || actions[0];
-  const decisions = item.approval_item_id ? getDecisionGroup(item.type) : [];
+  const decisions = !readOnly && item.approval_item_id ? getDecisionGroup(item.type) : [];
 
   const closeNoteModal = () => {
     setNoteDecision(null);

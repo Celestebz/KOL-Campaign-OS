@@ -1,6 +1,7 @@
 const express = require('express');
 const { dbOperations } = require('../database');
 const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
+const timeline = require('../services/campaignKolTimeline');
 const {
   PROJECT_STATUSES,
   PRIORITY_LEVELS,
@@ -629,6 +630,51 @@ router.post('/:id/sync-from-master', async (req, res) => {
     );
     const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
     res.json({ success: true, data: updated, message: 'Synced from KOL Master' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/:id/events', async (req, res) => {
+  try {
+    const id = parsePathId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, error: 'Invalid campaign KOL id' });
+    const rows = await dbOperations.query(
+      `SELECT id, campaign_kol_id, event_type, occurred_at, summary, source_type, source_id,
+              ai_intent, confirmed_intent, outreach_status, previous_outreach_status, actor, created_at
+       FROM campaign_kol_events WHERE campaign_kol_id = ?
+       ORDER BY occurred_at DESC, id DESC LIMIT 200`,
+      [id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/events/intent-correction', async (req, res) => {
+  try {
+    const id = parsePathId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, error: 'Invalid campaign KOL id' });
+    const requestedIntent = String(req.body?.intent || '').trim().toLowerCase();
+    if (!timeline.CONFIRMED_INTENTS.has(requestedIntent)) {
+      return res.status(400).json({ success: false, error: 'Invalid intent' });
+    }
+    const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+    if (!row) return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
+    const outreachStatus = timeline.outreachForIntent(requestedIntent);
+    await timeline.appendEvent({
+      campaignKol: row,
+      eventType: 'intent_corrected',
+      occurredAt: new Date(),
+      summary: clean(req.body?.summary) || row.last_reply_summary || null,
+      sourceType: 'manual',
+      confirmedIntent: requestedIntent,
+      outreachStatus,
+      actor: clean(req.body?.actor) || 'boss'
+    });
+    await timeline.applyLatestStatus(id);
+    res.json({ success: true, data: { outreach_status: outreachStatus, confirmed_intent: requestedIntent } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

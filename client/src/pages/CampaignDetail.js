@@ -7,28 +7,7 @@ import { getMainStatus } from './campaignKolStatus';
 import { getEmailRecords } from './emailApi';
 import { subscribeCampaignProgressChanged } from './campaignProgressSync';
 import { deriveCampaignStage, deriveProgressText } from './campaignProgress';
-
-// 后端并行开发，契约固定但字段命名以 snake_case 为准；这里对个别字段做兜底取值。
-const pick = (obj, keys) => {
-  for (const key of keys) {
-    const value = obj?.[key];
-    if (value !== undefined && value !== null && value !== '') return value;
-  }
-  return null;
-};
-
-// 卖点/场景可能是数组、JSON 字符串或纯文本，统一转成可读文本。
-const toText = (value) => {
-  if (value === undefined || value === null || value === '') return '';
-  if (Array.isArray(value)) return value.filter(Boolean).join('、');
-  if (typeof value === 'string' && value.trim().startsWith('[')) {
-    try {
-      const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed.filter(Boolean).join('、');
-    } catch (error) { /* 非 JSON 时按原文展示 */ }
-  }
-  return String(value);
-};
+import { normalizeCampaignProductMaterial } from './campaignProductMaterial';
 
 const STRATEGY_STATUS = {
   draft: { label: '草稿', color: 'orange' },
@@ -73,15 +52,10 @@ const formatFee = (value, currency) => {
 
 const formatTime = (value) => (value ? new Date(value).toLocaleString('zh-CN') : '-');
 
-const normalizeProduct = (product) => ({
-  id: pick(product, ['id', 'product_id']),
-  name: pick(product, ['product_name', 'productName', 'name']),
-  sku: pick(product, ['product_sku', 'productSku', 'sku']),
-  category: pick(product, ['product_category', 'productCategory', 'category']),
-  price: pick(product, ['product_price', 'price']),
-  sellingPoints: toText(pick(product, ['product_selling_points', 'productSellingPoints', 'selling_points'])),
-  scenarios: toText(pick(product, ['product_scenarios', 'scenarios', 'usage_scenarios']))
-});
+const formatProductPrice = (product) => {
+  if (product.price === undefined || product.price === null || product.price === '') return '-';
+  return `${product.currency ? `${product.currency} ` : ''}${product.price}`;
+};
 
 const CampaignDetail = () => {
   const { id } = useParams();
@@ -176,7 +150,7 @@ const CampaignDetail = () => {
   const progressDetail = detail || {};
   const progressStage = deriveCampaignStage(progressDetail);
   const progressText = deriveProgressText(progressDetail, progressStage);
-  const products = (Array.isArray(detail?.products) ? detail.products : []).map(normalizeProduct);
+  const products = (Array.isArray(detail?.products) ? detail.products : []).map(normalizeCampaignProductMaterial);
   const strategyStatus = STRATEGY_STATUS[strategy?.status] || { label: strategy?.status || '暂无策略', color: 'default' };
 
   const overviewProductColumns = [
@@ -380,9 +354,14 @@ const CampaignDetail = () => {
               <Card key={product.id || product.name} type="inner" title={product.name || '未命名产品'} size="small">
                 <Descriptions column={2} size="small">
                   <Descriptions.Item label="SKU">{product.sku || '-'}</Descriptions.Item>
-                  <Descriptions.Item label="价格">{product.price || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="品类">{product.category || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="价格">{formatProductPrice(product)}</Descriptions.Item>
                   <Descriptions.Item label="卖点">{product.sellingPoints || '-'}</Descriptions.Item>
-                  <Descriptions.Item label="场景">{product.scenarios || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="产品描述" span={2}>{product.description || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="项目产品简报" span={2}>{product.campaignBrief || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="产品链接" span={2}>
+                    {product.productUrl ? <a href={product.productUrl} target="_blank" rel="noreferrer">查看产品页面</a> : '-'}
+                  </Descriptions.Item>
                 </Descriptions>
               </Card>
             ))}

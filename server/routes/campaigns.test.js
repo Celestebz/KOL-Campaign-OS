@@ -40,6 +40,8 @@ function makeDetailDb(overrides = {}) {
     products: [],
     strategy: null,
     kolAgg: { kols_total: 0, contacted: 0, replied: 0, candidates: 0 },
+    contactedTotal: 0,
+    repliedKols: 0,
     statusRows: [],
     draftsPending: 0,
     highRiskDrafts: 0,
@@ -53,6 +55,8 @@ function makeDetailDb(overrides = {}) {
     get: async (sql) => {
       if (/FROM campaigns WHERE id/.test(sql)) return state.campaign;
       if (/FROM kol_strategies/.test(sql)) return state.strategy;
+      if (/COUNT\(DISTINCT touched\.customer_id\)/.test(sql)) return { count: state.contactedTotal };
+      if (/COUNT\(DISTINCT customer_id\)/.test(sql) && /FROM email_replies/.test(sql)) return { count: state.repliedKols };
       if (/FROM campaign_kols/.test(sql)) return state.kolAgg;
       if (/automation_runs/.test(sql)) {
         return { finder_failed: state.finderFailed, runs_failed: state.runsFailed };
@@ -126,10 +130,13 @@ test('GET /:id/detail summary 各计数口径正确', async () => {
       campaign_brief: '主推', status: 'active',
       product_brand: 'Lobster', product_name: '麻辣小龙虾', product_sku: 'SKU-1',
       product_category: '食品', product_url: 'https://x.com/p',
+      product_price: '88.00', product_currency: 'USD',
       product_description: 'desc', product_selling_points: '辣', product_status: 'active'
     }],
     strategy: { id: 1, status: 'ready', target_market: 'US', campaign_goal: 'g', product_context: 'c' },
-    kolAgg: { kols_total: 25, contacted: 3, replied: 1, candidates: 0, kols_candidate: 20, kols_confirmed: 5 },
+    kolAgg: { kols_total: 25, candidates: 0, kols_candidate: 20, kols_confirmed: 5 },
+    contactedTotal: 3,
+    repliedKols: 1,
     statusRows: [
       { project_status: 'pending_confirmation', count: 24 },
       { project_status: 'published', count: 1 }
@@ -144,6 +151,8 @@ test('GET /:id/detail summary 各计数口径正确', async () => {
   assert.equal(data.products.length, 1);
   assert.equal(data.products[0].product.name, '麻辣小龙虾');
   assert.equal(data.products[0].product.sku, 'SKU-1');
+  assert.equal(data.products[0].product.price, '88.00');
+  assert.equal(data.products[0].product.currency, 'USD');
   assert.equal(data.strategy.status, 'ready');
   assert.equal(data.summary.kols_total, 25);
   assert.equal(data.summary.kols_candidate, 20);
@@ -158,6 +167,26 @@ test('GET /:id/detail summary 各计数口径正确', async () => {
   assert.equal(data.summary.replies_pending, 1);
   assert.equal(data.summary.finder_tasks_running, 0);
   assert.equal(data.summary.exceptions, 1);
+});
+
+test('GET /:id/detail 已联系和已回复使用累计达人去重事实口径', async () => {
+  const captured = [];
+  const db = makeDetailDb({
+    strategy: { id: 1, status: 'ready' },
+    kolAgg: { kols_total: 237, candidates: 0, kols_candidate: 237, kols_confirmed: 0 },
+    contactedTotal: 188,
+    repliedKols: 11,
+    repliesPending: 14
+  });
+  const originalGet = db.get;
+  db.get = async (sql) => { captured.push(String(sql)); return originalGet(sql); };
+  const response = await callDetail(db);
+  const { summary } = response.payload.data;
+  assert.equal(summary.contacted, 188);
+  assert.equal(summary.replied, 11, '同一达人多封回复只按一位累计');
+  assert.equal(summary.replies_pending, 14, '待确认继续按邮件条数统计');
+  assert.ok(captured.some((sql) => /COUNT\(DISTINCT customer_id\)/.test(sql) && /classification/.test(sql)));
+  assert.ok(captured.some((sql) => /email_records/.test(sql) && /status = 'success'/.test(sql)));
 });
 
 test('GET /:id/detail exceptions = finder 失败 + automation_runs 失败', async () => {

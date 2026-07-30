@@ -38,6 +38,7 @@ function createFakeDb({ customer = igCustomer, campaignKol = null, finderVideos 
     if (/FROM kol_strategies WHERE campaign_id = \?/.test(sql)) return { target_market: 'US', product_context: 'tree collar' };
     if (/FROM email_templates/.test(sql)) return { id: 3, body_html: 'be brief' };
     if (/FROM email_settings/.test(sql)) return { sender_name: 'Celeste' };
+    if (/FROM email_drafts/.test(sql)) return null;
     throw new Error(`Unexpected get: ${sql}`);
   };
   const query = async (sql) => {
@@ -88,6 +89,23 @@ test('first-touch prompt uses configured sender and asks interest before commerc
   assert.match(prompt, /Never output placeholders such as \[Name\]/);
   assert.match(prompt, /one blank line between every paragraph/);
   assert.match(prompt, /override any conflicting general style-guide instruction/);
+});
+
+test('existing first-touch draft is reused without calling AI or inserting another draft', async () => {
+  const fake = createFakeDb({
+    campaignKol: { target_platform: 'instagram', instagram_followers_snapshot: '90000' }
+  });
+  const originalGet = fake.get;
+  fake.get = async (sql, params) => {
+    if (/FROM email_drafts/.test(sql)) return { id: 88, status: 'pending_review' };
+    return originalGet(sql, params);
+  };
+  fake.ai = async () => { throw new Error('AI should not be called'); };
+  const result = await runDraft(fake);
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, true);
+  assert.equal(result.draftId, 88);
+  assert.equal(draftInsert(fake.statements), undefined);
 });
 
 test('detectPlatform：target_platform 优先，其次平台 url，再次 platform+profile_url', () => {

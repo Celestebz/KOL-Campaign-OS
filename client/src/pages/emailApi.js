@@ -167,8 +167,8 @@ export async function bindReply(id, customerId) {
   return res.data.data;
 }
 
-export async function confirmReply(id, summary) {
-  await axios.post(`/api/emails/replies/${id}/confirm`, { summary });
+export async function confirmReply(id, summary, intent) {
+  await axios.post(`/api/emails/replies/${id}/confirm`, { summary, intent });
 }
 
 export async function ignoreReply(id) {

@@ -5,6 +5,7 @@ const { dbOperations } = require('../database');
 const aiClient = require('./aiClient');
 const { evaluateDraft } = require('./emailRiskRules');
 const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
+const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
 
 const PROMPT_VERSION = 'p1.1';
 const SNAPSHOT_STALE_DAYS = 7;
@@ -176,6 +177,12 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       'SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ? ORDER BY id DESC LIMIT 1',
       [campaignId, customerId]
     );
+    if (!draftId) {
+      const blocking = await findBlockingDraft({ campaignId, customerId, kind, sourceReplyId });
+      if (blocking) {
+        return { ok: true, skipped: true, customer_id: customerId, draftId: blocking.id, reason: `已有 ${blocking.status} 草稿，未重复生成` };
+      }
+    }
     const platform = detectPlatform(baseCustomer, campaignKol);
     if (!platform) {
       return { ok: false, customer_id: customerId, error: '达人缺少 YouTube/Instagram/TikTok 主页信息，无法识别平台' };
@@ -264,14 +271,25 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
         [subject, bodyText, riskLevel, JSON.stringify(riskReasons), evidence, PROMPT_VERSION, model || null, draftId]
       );
     } else {
-      const result = await dbOperations.run(
+      const dedupeKey = draftDedupeKey({
+        campaignId, customerId, kind, sourceReplyId,
+        followUpCount: campaignKol?.follow_up_count
+      });
+      let result;
+      try {
+        result = await dbOperations.run(
         `INSERT INTO email_drafts
          (campaign_id, customer_id, kind, subject, body_text, status, risk_level, risk_reasons, evidence,
-          source_reply_id, template_id, prompt_version, ai_model, generated_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+          source_reply_id, template_id, prompt_version, ai_model, dedupe_key, generated_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
         [campaignId, customerId, kind, subject, bodyText, riskLevel, JSON.stringify(riskReasons), evidence,
-         sourceReplyId, styleGuide?.id || null, PROMPT_VERSION, model || null]
-      );
+         sourceReplyId, styleGuide?.id || null, PROMPT_VERSION, model || null, dedupeKey]
+        );
+      } catch (error) {
+        if (!isDuplicateError(error)) throw error;
+        const blocking = await findBlockingDraft({ campaignId, customerId, kind, sourceReplyId });
+        return { ok: true, skipped: true, customer_id: customerId, draftId: blocking?.id || null, reason: '并发请求已生成草稿，本次未重复写入' };
+      }
       id = result.id;
       await dbOperations.run(
         `INSERT INTO email_draft_versions (draft_id, subject, body_text, source, feedback, created_at)

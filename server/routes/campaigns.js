@@ -51,6 +51,8 @@ function toCampaignProduct(row) {
       sku: row.product_sku,
       category: row.product_category,
       product_url: row.product_url,
+      price: row.product_price,
+      currency: row.product_currency,
       description: row.product_description,
       selling_points: row.product_selling_points,
       status: row.product_status
@@ -66,7 +68,8 @@ async function getCampaignProduct(campaignId, campaignProductId) {
   return dbOperations.get(
     `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
        p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
-       p.category AS product_category, p.product_url, p.description AS product_description,
+       p.category AS product_category, p.product_url, p.price AS product_price, p.currency AS product_currency,
+       p.description AS product_description,
        p.selling_points AS product_selling_points, p.status AS product_status
      FROM campaign_products cp
      JOIN products p ON p.id = cp.product_id
@@ -177,7 +180,8 @@ router.get('/:id/detail', async (req, res) => {
     const productRows = await dbOperations.query(
       `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
          p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
-         p.category AS product_category, p.product_url, p.description AS product_description,
+         p.category AS product_category, p.product_url, p.price AS product_price, p.currency AS product_currency,
+         p.description AS product_description,
          p.selling_points AS product_selling_points, p.status AS product_status
        FROM campaign_products cp
        JOIN products p ON p.id = cp.product_id
@@ -194,12 +198,37 @@ router.get('/:id/detail', async (req, res) => {
 
     const kolAgg = await dbOperations.get(
       `SELECT COUNT(*) AS kols_total,
-         COALESCE(SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END), 0) AS contacted,
-         COALESCE(SUM(CASE WHEN outreach_status = 'replied' THEN 1 ELSE 0 END), 0) AS replied,
          COALESCE(SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END), 0) AS candidates,
          COALESCE(SUM(CASE WHEN pipeline_stage = 'candidate' THEN 1 ELSE 0 END), 0) AS kols_candidate,
          COALESCE(SUM(CASE WHEN pipeline_stage = 'confirmed' THEN 1 ELSE 0 END), 0) AS kols_confirmed
        FROM campaign_kols WHERE campaign_id = ?`,
+      [campaignId]
+    );
+    // 漏斗使用累计事实口径，而不是互斥的当前状态：状态继续推进后，已联系/已回复不能减少。
+    const contactedRow = await dbOperations.get(
+      `SELECT COUNT(DISTINCT touched.customer_id) AS count FROM (
+         SELECT customer_id FROM campaign_kols
+         WHERE campaign_id = ? AND customer_id IS NOT NULL AND (
+           last_outreach_at IS NOT NULL
+           OR outreach_status IN ('contacted', 'waiting_reply', 'replied', 'negotiating', 'interested', 'confirmed', 'rejected', 'terminated')
+         )
+         UNION ALL
+         SELECT customer_id FROM email_records
+         WHERE campaign_id = ? AND customer_id IS NOT NULL AND status = 'success'
+         UNION ALL
+         SELECT customer_id FROM email_replies
+         WHERE campaign_id = ? AND customer_id IS NOT NULL
+           AND COALESCE(classification, 'kol_reply') <> 'spam'
+           AND confirm_status <> 'ignored'
+       ) touched`,
+      [campaignId, campaignId, campaignId]
+    );
+    const repliedKolsRow = await dbOperations.get(
+      `SELECT COUNT(DISTINCT customer_id) AS count
+       FROM email_replies
+       WHERE campaign_id = ? AND customer_id IS NOT NULL
+         AND COALESCE(classification, 'kol_reply') <> 'spam'
+         AND confirm_status <> 'ignored'`,
       [campaignId]
     );
     const statusRows = await dbOperations.query(
@@ -245,8 +274,8 @@ router.get('/:id/detail', async (req, res) => {
       kols_confirmed: toCount(kolAgg?.kols_confirmed),
       candidates_pending_review: candidates,
       by_project_status: byProjectStatus,
-      contacted: toCount(kolAgg?.contacted),
-      replied: toCount(kolAgg?.replied),
+      contacted: toCount(contactedRow?.count),
+      replied: toCount(repliedKolsRow?.count),
       drafts_pending: toCount(draftsPendingRow?.count),
       replies_pending: toCount(repliesPendingRow?.count),
       finder_tasks_running: toCount(finderRunningRow?.count),
@@ -283,7 +312,8 @@ router.get('/:id/products', async (req, res) => {
     const rows = await dbOperations.query(
       `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
          p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
-         p.category AS product_category, p.product_url, p.description AS product_description,
+         p.category AS product_category, p.product_url, p.price AS product_price, p.currency AS product_currency,
+         p.description AS product_description,
          p.selling_points AS product_selling_points, p.status AS product_status
        FROM campaign_products cp
        JOIN products p ON p.id = cp.product_id

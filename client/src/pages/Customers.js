@@ -400,6 +400,33 @@ const Customers = () => {
     ))}</Space>
   ) : '-';
 
+  const platformLink = (url, followers) => {
+    if (!url && !followers) return '-';
+    return (
+      <Space direction="vertical" size={2} align="start" style={{ width: '100%' }}>
+        {url ? <a style={{ display: 'block' }} href={url} target="_blank" rel="noreferrer">主页</a> : <span>-</span>}
+        {followers ? <span style={{ color: '#666', display: 'block', overflowWrap: 'anywhere' }}>{followers}</span> : null}
+      </Space>
+    );
+  };
+
+  const youtubeRecentMetrics = (record) => {
+    const hasSnapshot = [record.avg_views_30d, record.median_views_30d, record.posts_30d]
+      .some((value) => value !== null && value !== undefined);
+    return (
+      <Space direction="vertical" size={2} align="start" style={{ width: '100%' }}>
+        {hasSnapshot ? (
+          <>
+            <span>均曝：{record.avg_views_30d ?? '-'}</span>
+            <span>中位：{record.median_views_30d ?? '-'}</span>
+            <span>作品：{record.posts_30d ?? '-'}</span>
+          </>
+        ) : <span style={{ color: '#999' }}>暂无 YouTube 快照</span>}
+        <Button type="link" size="small" style={{ padding: 0, height: 'auto' }} onClick={() => openDrawer(record)}>查看详情</Button>
+      </Space>
+    );
+  };
+
   const poolCampaign = campaigns.find((campaign) => campaign.id === targetCampaignId) || null;
   const poolHero = poolCampaignProducts.find((item) => item.role === 'hero') || poolCampaignProducts[0] || null;
 
@@ -463,12 +490,10 @@ const Customers = () => {
     { title: '邮箱', dataIndex: 'email', key: 'email', width: 210, render: (value) => value || '-' },
     { title: '国家/地区', dataIndex: 'country_region', key: 'country_region', width: 110, render: (value) => value || '-' },
     { title: '内容类目', dataIndex: 'content_category', key: 'content_category', width: 150, render: (value) => value || '-' },
-    { title: '平台', dataIndex: 'primary_platform', key: 'primary_platform', width: 105, render: (value) => value || '-' },
-    { title: '粉丝数', dataIndex: 'primary_followers', key: 'primary_followers', width: 125, align: 'right', render: (value) => value ?? '-' },
-    { title: '近30天平均曝光', dataIndex: 'avg_views_30d', key: 'avg_views_30d', width: 155, align: 'right', render: (value) => value ?? '-' },
-    { title: '近30天中位曝光', dataIndex: 'median_views_30d', key: 'median_views_30d', width: 155, align: 'right', render: (value) => value ?? '-' },
-    { title: '近30天作品数', dataIndex: 'posts_30d', key: 'posts_30d', width: 140, align: 'right', render: (value) => value ?? '-' },
-    { title: '互动率', dataIndex: 'engagement_rate_30d', key: 'engagement_rate_30d', width: 105, align: 'right', render: (value) => value ?? '-' },
+    { title: 'YouTube', key: 'youtube', width: 130, render: (_, record) => platformLink(record.youtube_url, record.youtube_followers) },
+    { title: 'Instagram', key: 'instagram', width: 130, render: (_, record) => platformLink(record.instagram_url, record.instagram_followers) },
+    { title: 'TikTok', key: 'tiktok', width: 130, render: (_, record) => platformLink(record.tiktok_url, record.tiktok_followers) },
+    { title: 'YouTube近30天数据', key: 'youtube_recent_metrics', width: 180, render: (_, record) => youtubeRecentMetrics(record) },
     { title: '合作状态', key: 'cooperation_status', width: 125, render: (_, record) => record.cooperation_status === 'do_not_contact' ? <Tag color="red">不建议合作</Tag> : <Tag color="green">可合作</Tag> },
     { title: '匹配SKU', dataIndex: 'current_target_sku', key: 'current_target_sku', width: 125, render: (value) => value || '-' },
     { title: 'SKU匹配分', dataIndex: 'current_fit_score', key: 'current_fit_score', width: 105, align: 'right', render: (value) => value ?? '-' },
@@ -481,9 +506,6 @@ const Customers = () => {
     { title: '历史合作 SKU', dataIndex: 'historical_cooperation_skus', key: 'historical_cooperation_skus', width: 190, render: (values = []) => values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-' },
     { title: '最近合作项目', dataIndex: 'latest_cooperation_project', key: 'latest_cooperation_project', width: 170, render: (value) => value || '-' },
     { title: '开发人', dataIndex: 'developer', key: 'developer', width: 110, render: (value) => value || '-' },
-    { title: '合作平台', dataIndex: 'covered_platforms', key: 'covered_platforms', width: 190, render: (values = []) => values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-' },
-    { title: '平台账号名', dataIndex: 'primary_account_name', key: 'primary_account_name', width: 150, render: (value) => value || '-' },
-    { title: '平台主页链接', dataIndex: 'primary_profile_url', key: 'primary_profile_url', width: 130, render: (value) => value ? <a href={value} target="_blank" rel="noreferrer">打开主页</a> : '-' },
     { title: '飞书同步', dataIndex: 'sync_status', key: 'sync_status', width: 110, render: (value) => <Tag color={syncColor(value)}>{syncLabel(value)}</Tag> },
     columns[columns.length - 1]
   ];

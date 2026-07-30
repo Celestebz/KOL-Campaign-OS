@@ -340,9 +340,6 @@ function resolveFollowUp(item, decision) {
   if (item.type === 'strategy' && decision === 'approve') {
     return { action: 'create_finder_task', run: runCreateFinderTask };
   }
-  if (item.type === 'candidate' && decision === 'approve') {
-    return { action: 'draft_first_touch', run: runDraftFirstTouch };
-  }
   if (item.type === 'reply' && decision === 'approve') {
     return { action: 'draft_reply', run: runDraftReply };
   }

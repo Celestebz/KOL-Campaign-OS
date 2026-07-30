@@ -2,13 +2,9 @@
 // emails 路由（/drafts/:id/approve 等）与 approval_items 决定副作用（decisionDispatcher）
 // 共用这里的实现，避免两处复制 SQL 导致行为分叉。
 const { dbOperations } = require('../database');
+const timeline = require('./campaignKolTimeline');
 
-const INTENT_TO_OUTREACH = {
-  interested: 'interested',
-  question: 'negotiating',
-  rejected: 'terminated',
-  other: 'negotiating'
-};
+const INTENT_TO_OUTREACH = timeline.INTENT_TO_OUTREACH;
 
 function actionError(message, statusCode) {
   const error = new Error(message);
@@ -46,29 +42,33 @@ async function rejectDraft(draftId, reason) {
   );
 }
 
-async function confirmReply(replyId, summaryOverride) {
+async function confirmReply(replyId, summaryOverride, intentOverride, actor = 'boss') {
   const reply = await getReplyOrThrow(replyId);
   const summary = (summaryOverride || reply.ai_summary || '').trim();
-  const outreachStatus = INTENT_TO_OUTREACH[reply.ai_intent] || 'negotiating';
+  const confirmedIntent = timeline.normalizeConfirmedIntent(intentOverride || reply.ai_intent);
+  const outreachStatus = timeline.outreachForIntent(confirmedIntent);
 
   const kol = await dbOperations.get(
-    'SELECT id, internal_notes FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?',
+    `SELECT id, campaign_id, customer_id, outreach_status
+     FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?`,
     [reply.campaign_id, reply.customer_id]
   );
+  let appliedOutreachStatus = outreachStatus;
   if (kol) {
-    const noteLine = `[邮件回复 ${new Date().toISOString().slice(0, 10)}] ${summary}`;
-    const internalNotes = kol.internal_notes ? `${kol.internal_notes}\n${noteLine}` : noteLine;
-    await dbOperations.run(
-      `UPDATE campaign_kols SET outreach_status = ?, last_reply_summary = ?, internal_notes = ?,
-       sync_status = 'sync_pending', updated_at = NOW() WHERE id = ?`,
-      [outreachStatus, summary, internalNotes, kol.id]
-    );
+    await timeline.appendEvent({
+      campaignKol: kol, eventType: 'email_reply_confirmed',
+      occurredAt: reply.received_at || new Date(), summary,
+      sourceType: 'email_reply', sourceId: reply.id,
+      aiIntent: reply.ai_intent, confirmedIntent, outreachStatus, actor
+    });
+    appliedOutreachStatus = (await timeline.applyLatestStatus(kol.id)) || outreachStatus;
   }
   await dbOperations.run(
-    `UPDATE email_replies SET confirm_status = 'confirmed', confirmed_summary = ?, updated_at = NOW() WHERE id = ?`,
-    [summary, reply.id]
+    `UPDATE email_replies SET confirm_status = 'confirmed', confirmed_summary = ?,
+       confirmed_intent = ?, updated_at = NOW() WHERE id = ?`,
+    [summary, confirmedIntent, reply.id]
   );
-  return { outreach_status: outreachStatus };
+  return { outreach_status: appliedOutreachStatus, confirmed_intent: confirmedIntent };
 }
 
 async function ignoreReply(replyId) {

@@ -34,6 +34,12 @@ async function scanOnce() {
          WHERE d.campaign_id = ck.campaign_id AND d.customer_id = ck.customer_id
            AND d.kind = 'follow_up' AND d.status IN ('pending_review', 'approved')
        )
+       AND NOT EXISTS (
+         SELECT 1 FROM email_drafts d
+         WHERE d.campaign_id = ck.campaign_id AND d.customer_id = ck.customer_id
+           AND d.kind = 'follow_up' AND d.status = 'rejected'
+           AND d.updated_at >= ck.last_outreach_at
+       )
      GROUP BY ck.campaign_id, ck.customer_id`,
     [FOLLOW_UP_AFTER_HOURS, GIVE_UP_AFTER_DAYS, MAX_FOLLOW_UPS]
   );
@@ -45,7 +51,7 @@ async function scanOnce() {
       customerId: item.customer_id,
       kind: 'follow_up'
     });
-    if (result.ok) {
+    if (result.ok && !result.skipped) {
       drafted += 1;
       await dbOperations.run(
         'UPDATE campaign_kols SET follow_up_count = COALESCE(follow_up_count, 0) + 1, updated_at = NOW() WHERE campaign_id = ? AND customer_id = ?',

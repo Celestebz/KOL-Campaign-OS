@@ -850,6 +850,61 @@ test('YouTube identity helpers normalize channel and handle URL variants', () =>
   assert.equal(finderTaskRoutes.normalizeCreatorLabel(' Vice Grip Lodge '), 'vicegriplodge');
 });
 
+test('YouTube preflight rejects market, activity and median failures before AI analysis', () => {
+  const parsedConfig = finderTaskRoutes.youtubePreflightConfig({
+    campaign: { target_market: 'United States' },
+    strategy: { finder_handoff: {
+      minimum_avg_views: 'At least 20,000 median views across the latest 10 relevant long-form videos',
+      required_evidence: ['At least 3 recent relevant long-form videos of 8 minutes or longer']
+    } }
+  });
+  assert.equal(parsedConfig.minimumMedianViews, 20000);
+  assert.equal(parsedConfig.minimumLongVideos, 3);
+  assert.equal(finderTaskRoutes.finderScanLimit({
+    campaign: { target_market: 'United States' },
+    strategy: { finder_handoff: { minimum_avg_views: '15,353 median views' } }
+  }, 20), 100);
+  assert.equal(finderTaskRoutes.finderScanLimit({ campaign: {}, strategy: { finder_handoff: {} } }, 20), 20);
+  const config = {
+    enabled: true,
+    targetMarket: 'united states',
+    activityDays: 90,
+    minimumLongVideos: 3,
+    minimumLongSeconds: 480,
+    minimumMedianViews: 15353
+  };
+  const now = new Date('2026-07-30T00:00:00Z');
+  const video = (id, daysAgo, views, duration = 'PT10M') => ({
+    id,
+    snippet: { title: `Field test ${id}`, publishedAt: new Date(now.getTime() - daysAgo * 86400000).toISOString() },
+    statistics: { viewCount: String(views) },
+    contentDetails: { duration }
+  });
+  const creator = { kol_name: 'Independent Farm Creator', country_region: 'US', raw_data: { channel: { snippet: {} } } };
+  const passing = finderTaskRoutes.evaluateYoutubePreflight(creator, [
+    video('a', 10, 20000), video('b', 20, 18000), video('c', 30, 16000)
+  ], config, now);
+  assert.equal(passing.passed, true);
+  assert.equal(passing.medianViews, 18000);
+
+  assert.equal(finderTaskRoutes.evaluateYoutubePreflight(
+    { ...creator, country_region: 'CA' }, [video('a', 10, 20000)], config, now
+  ).reason, 'market_mismatch');
+  assert.equal(finderTaskRoutes.evaluateYoutubePreflight(
+    { ...creator, country_region: '' }, [video('a', 10, 20000)], config, now
+  ).reason, 'market_unverified');
+  assert.equal(finderTaskRoutes.evaluateYoutubePreflight(creator, [
+    video('a', 120, 20000), video('b', 130, 20000), video('c', 140, 20000)
+  ], config, now).reason, 'inactive_90d');
+  assert.equal(finderTaskRoutes.evaluateYoutubePreflight(creator, [], config, now).reason, 'preflight_unavailable');
+  assert.equal(finderTaskRoutes.evaluateYoutubePreflight(creator, [
+    video('a', 10, 1000), video('b', 20, 2000), video('c', 30, 3000)
+  ], config, now).reason, 'median_views_below_threshold');
+  assert.equal(finderTaskRoutes.evaluateYoutubePreflight(
+    { ...creator, kol_name: 'Example Tractor Ltd' }, [video('a', 10, 20000), video('b', 20, 20000), video('c', 30, 20000)], config, now
+  ).reason, 'brand_or_dealer_account');
+});
+
 test('Finder reuses a successful analysis for the same video and Strategy across tasks', async () => {
   await resetTestDatabase();
   await initDatabase();
@@ -1214,6 +1269,37 @@ test('Maton discovery paginates past KOL Master duplicates and keeps one video p
     const evidence = await models.FinderVideoEvidence.findOne({ where: { finder_task_id: task.id } });
     const source = await models.VideoSource.findByPk(evidence.video_source_id);
     assert.equal(source.author_name, 'New Creator');
+
+    const repeated = await request.post('/api/finder-tasks').send({ strategy_id: strategy.id, target_platform: 'youtube', limit: 1 });
+    let repeatedTask = null;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      repeatedTask = await models.FinderTask.findByPk(repeated.body.data.id);
+      if (repeatedTask?.status !== 'draft' && repeatedTask?.status !== 'running') break;
+      await sleep(20);
+    }
+    assert.equal(repeatedTask.status, 'success');
+    assert.equal(searchUrls.length, 2, 'the repeated Finder should reuse both cached search pages');
+    const cacheStats = await dbOperations.get('SELECT COUNT(*) AS rows_count, SUM(hit_count) AS hit_count FROM finder_search_cache');
+    assert.equal(Number(cacheStats.rows_count), 2);
+    assert.ok(Number(cacheStats.hit_count) >= 2);
+    const ledgerStats = await dbOperations.get('SELECT SUM(cache_hit) AS cache_hits, SUM(request_cost) AS request_cost FROM finder_query_ledger WHERE finder_task_id = ?', [repeatedTask.id]);
+    assert.equal(Number(ledgerStats.cache_hits), 2);
+    assert.equal(Number(ledgerStats.request_cost), 1, 'only the new-channel details call should consume Maton quota');
+
+    for (const [query, returned, newChannels] of [['low yield', 10, 1], ['high yield', 10, 8]]) {
+      await dbOperations.run(
+        `INSERT INTO finder_query_ledger
+         (provider, platform, query_text, query_hash, page_token, cache_hit, returned_count,
+          excluded_count, new_channel_count, request_cost, status, created_at)
+         VALUES ('maton_youtube_gateway', 'youtube', ?, ?, '', 0, ?, 0, ?, 1, 'success', CURRENT_TIMESTAMP)`,
+        [query, crypto.createHash('sha256').update(query).digest('hex'), returned, newChannels]
+      );
+    }
+    const ranked = await finderTaskRoutes.rankedKeywordQueries({
+      discovery: { keywords: 'low yield, high yield, unseen query' },
+      campaign: {}
+    });
+    assert.deepEqual(ranked, ['unseen query', 'high yield', 'low yield']);
   } finally {
     process.env.NODE_ENV = originalNodeEnv;
     await new Promise((resolve) => mockGateway.server.close(resolve));

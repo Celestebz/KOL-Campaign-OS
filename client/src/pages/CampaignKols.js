@@ -140,6 +140,14 @@ export const OUTREACH_STATUS_COLORS = {
   terminated: 'red'
 };
 
+const INTENT_OPTIONS = [
+  { value: 'interested', label: '有意向' },
+  { value: 'question', label: '需要沟通' },
+  { value: 'unclear', label: '暂不明确' },
+  { value: 'rejected', label: '已拒绝' }
+];
+const INTENT_LABELS = Object.fromEntries(INTENT_OPTIONS.map((item) => [item.value, item.label]));
+
 export const PROJECT_STATUS_OPTIONS = [
   { value: 'pending_shipping', label: '待发货' },
   { value: 'shipped', label: '已发货' },
@@ -191,6 +199,11 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   const [detailRow, setDetailRow] = useState(null);
   const [masterDetail, setMasterDetail] = useState(null);
   const [history, setHistory] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [correctingIntent, setCorrectingIntent] = useState(false);
+  const [correctedIntent, setCorrectedIntent] = useState('unclear');
+  const [correctionSummary, setCorrectionSummary] = useState('');
+  const [savingCorrection, setSavingCorrection] = useState(false);
   const [productAssignments, setProductAssignments] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
@@ -301,22 +314,52 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     setDetailRow(record);
     setMasterDetail(null);
     setHistory([]);
+    setEvents([]);
     setProductAssignments([]);
     setDetailError('');
     setDetailLoading(true);
     try {
-      const [master, projectHistory, assignments] = await Promise.all([
+      const [master, projectHistory, assignments, timelineResponse] = await Promise.all([
         axios.get(`/api/customers/${record.customer_id}`),
         axios.get(`/api/customers/${record.customer_id}/project-history`),
-        axios.get(`/api/campaign-kols/${record.id}/products`)
+        axios.get(`/api/campaign-kols/${record.id}/products`),
+        axios.get(`/api/campaign-kols/${record.id}/events`)
       ]);
       setMasterDetail(master.data.data);
       setHistory(projectHistory.data.data || []);
       setProductAssignments(assignments.data.data || []);
+      setEvents(timelineResponse.data.data || []);
     } catch (error) {
       setDetailError('KOL 详情加载失败，请稍后重试');
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const openIntentCorrection = () => {
+    setCorrectedIntent('unclear');
+    setCorrectionSummary(detailRow?.last_reply_summary || '');
+    setCorrectingIntent(true);
+  };
+
+  const saveIntentCorrection = async () => {
+    if (!detailRow) return;
+    setSavingCorrection(true);
+    try {
+      const response = await axios.post(`/api/campaign-kols/${detailRow.id}/events/intent-correction`, {
+        intent: correctedIntent, summary: correctionSummary
+      });
+      const status = response.data.data.outreach_status;
+      setDetailRow((row) => ({ ...row, outreach_status: status, last_reply_summary: correctionSummary, sync_status: 'sync_pending' }));
+      const timelineResponse = await axios.get(`/api/campaign-kols/${detailRow.id}/events`);
+      setEvents(timelineResponse.data.data || []);
+      setCorrectingIntent(false);
+      message.success('意向已更正');
+      fetchRows();
+    } catch (error) {
+      message.error(error.response?.data?.error || '更正意向失败');
+    } finally {
+      setSavingCorrection(false);
     }
   };
 
@@ -771,6 +814,25 @@ const CampaignKols = ({ view = 'cooperation' }) => {
                 ]} />
               ) : <Empty description="暂无产品分配" />}
             </div>
+            <div>
+              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                <h3 style={{ margin: 0 }}>跟进时间线</h3>
+                {isCandidatePool && <Button size="small" onClick={openIntentCorrection}>更正意向</Button>}
+              </Space>
+              {events.length ? <List size="small" dataSource={events} renderItem={(event) => (
+                <List.Item>
+                  <List.Item.Meta
+                    title={<Space wrap>
+                      <span>{new Date(event.occurred_at).toLocaleString('zh-CN')}</span>
+                      <Tag>{event.event_type === 'intent_corrected' ? '人工更正意向' : '邮件回复确认'}</Tag>
+                      {event.confirmed_intent && <Tag color="blue">{INTENT_LABELS[event.confirmed_intent] || event.confirmed_intent}</Tag>}
+                      {event.ai_intent && event.ai_intent !== event.confirmed_intent && <span style={{ color: '#999' }}>AI：{INTENT_LABELS[event.ai_intent] || event.ai_intent}</span>}
+                    </Space>}
+                    description={event.summary || '无摘要'}
+                  />
+                </List.Item>
+              )} /> : <Empty description="暂无跟进记录" />}
+            </div>
             <div><h3>全部项目历史</h3>
               {history.length ? <Table size="small" rowKey="id" pagination={false} dataSource={history}
                 columns={[
@@ -783,6 +845,19 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           </Space>
         )}
       </Drawer>
+
+      <Modal title="更正合作意向" open={correctingIntent}
+        onCancel={() => setCorrectingIntent(false)} onOk={saveIntentCorrection}
+        confirmLoading={savingCorrection} okText="确认更正">
+        <Form layout="vertical">
+          <Form.Item label="人工确认意向" required>
+            <Select value={correctedIntent} onChange={setCorrectedIntent} options={INTENT_OPTIONS} />
+          </Form.Item>
+          <Form.Item label="更正说明/跟进摘要">
+            <Input.TextArea rows={4} value={correctionSummary} onChange={(event) => setCorrectionSummary(event.target.value)} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal title={`编辑产品合作 - ${editingAssignment?.product_name || ''}`} open={Boolean(editingAssignment)} onCancel={() => setEditingAssignment(null)} onOk={saveAssignment} width={560}>
         <Form form={assignmentForm} layout="vertical">

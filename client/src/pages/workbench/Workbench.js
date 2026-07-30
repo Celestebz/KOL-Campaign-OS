@@ -55,7 +55,7 @@ function Workbench() {
   }, [fetchWorkbench]);
 
   const approvals = useMemo(() => sortItemsByRisk(data.items).filter((item) =>
-    item.type !== 'exception' && (campaignId === 'all' || String(item.campaign_id) === campaignId)
+    item.type !== 'exception' && item.type !== 'candidate' && (campaignId === 'all' || String(item.campaign_id) === campaignId)
   ), [data.items, campaignId]);
   const exceptions = data.items.filter((item) => item.type === 'exception' && (campaignId === 'all' || String(item.campaign_id) === campaignId));
   const exceptionGroups = useMemo(() => data.exception_groups.map((group) => ({
@@ -181,7 +181,7 @@ function Workbench() {
         { key: 'recent', label: '最近已处理', children: <Card><RecentDecisions items={data.recent_decisions} /></Card> }
       ]} />
 
-      <DecisionDrawer item={selected} open={Boolean(selectedId)} onClose={() => setSelectedId(null)} onRefresh={fetchWorkbench} />
+      <DecisionDrawer item={selected} open={Boolean(selectedId)} onClose={() => setSelectedId(null)} onRefresh={fetchWorkbench} readOnly />
     </div>
   );
 }

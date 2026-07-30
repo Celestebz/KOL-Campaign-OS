@@ -41,6 +41,56 @@ beforeEach(() => {
   mockListRequests();
 });
 
+test('shows platform home links and follower counts in the KOL management table', async () => {
+  axios.get.mockImplementation((url) => {
+    if (url === '/api/customers') return Promise.resolve({
+      data: {
+        data: [{
+          id: 11,
+          name: 'Alice',
+          youtube_url: 'https://youtube.com/@alice',
+          youtube_followers: '780000',
+          instagram_url: 'https://instagram.com/alice',
+          instagram_followers: '120000',
+          tiktok_url: 'https://tiktok.com/@alice',
+          tiktok_followers: '350000',
+          avg_views_30d: 42000,
+          median_views_30d: 38000,
+          posts_30d: 6
+        }]
+      }
+    });
+    if (url === '/api/customers/filter-options') return Promise.resolve({ data: { data: { countries: [], platforms: [] } } });
+    return Promise.resolve({ data: { data: [] } });
+  });
+
+  render(<Customers />);
+
+  expect(await screen.findByText('Alice')).toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'YouTube' })).toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'Instagram' })).toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'TikTok' })).toBeInTheDocument();
+  expect(screen.queryByRole('columnheader', { name: '合作平台' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('columnheader', { name: '平台账号名' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('columnheader', { name: '平台主页链接' })).not.toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'YouTube近30天数据' })).toBeInTheDocument();
+  expect(screen.queryByRole('columnheader', { name: '近30天平均曝光' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('columnheader', { name: '近30天中位曝光' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('columnheader', { name: '近30天作品数' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('columnheader', { name: '互动率' })).not.toBeInTheDocument();
+  const homeLinks = screen.getAllByRole('link', { name: '主页' });
+  expect(homeLinks).toHaveLength(3);
+  expect(homeLinks[0]).toHaveAttribute('href', 'https://youtube.com/@alice');
+  expect(homeLinks[0]).toHaveAttribute('target', '_blank');
+  expect(screen.getByText('780000')).toBeInTheDocument();
+  expect(screen.getByText('120000')).toBeInTheDocument();
+  expect(screen.getByText('350000')).toBeInTheDocument();
+  expect(screen.getByText('均曝：42000')).toBeInTheDocument();
+  expect(screen.getByText('中位：38000')).toBeInTheDocument();
+  expect(screen.getByText('作品：6')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '查看详情' })).toBeInTheDocument();
+});
+
 async function renderAndClickPull() {
   render(<Customers />);
   expect(await screen.findByText('Alice')).toBeInTheDocument();
