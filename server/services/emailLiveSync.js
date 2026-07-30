@@ -7,10 +7,11 @@ const imapflow = require('imapflow');
 const { dbOperations } = require('../database');
 const emailReplyPoller = require('./emailReplyPoller');
 const emailFilterService = require('./emailFilterService');
+const emailBounceService = require('./emailBounceService');
+const { parseInboundBody } = require('./emailBodyParser');
 
 const { normalizeAddress, findOwnerByAddress } = emailReplyPoller;
 
-const BODY_TEXT_LIMIT = 8000;
 const RECONNECT_DELAYS_MS = [5000, 15000, 30000, 60000];
 const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 const SYNC_MODES = new Set(['idle', 'poll', 'off']);
@@ -59,9 +60,16 @@ async function processFetchedMessage(message) {
   const fromAddress = normalizeAddress(message.envelope?.from?.[0]?.address || '');
   const owner = fromAddress ? await findOwnerByAddress(fromAddress) : null;
   const filterRule = fromAddress ? await emailFilterService.matchingRule(fromAddress) : null;
-  const bodyText = String(message.bodyParts?.get('text')?.toString() || '').slice(0, BODY_TEXT_LIMIT);
-  const classification = filterRule ? 'spam' : (owner?.customer_id ? 'kol_reply' : 'needs_review');
-  const confirmStatus = filterRule ? 'spam' : 'pending';
+  const bodyText = parseInboundBody(message.bodyParts?.get('text') || '');
+  const systemMail = emailBounceService.detectSystemMail({
+    fromAddress, subject: message.envelope?.subject || '', bodyText
+  });
+  const classification = systemMail.isSystem ? 'system' : (filterRule ? 'spam' : (owner?.customer_id ? 'kol_reply' : 'needs_review'));
+  const confirmStatus = systemMail.isSystem ? 'system' : (filterRule ? 'spam' : 'pending');
+  const classificationSource = systemMail.isSystem ? 'system' : (filterRule ? 'rule' : 'system');
+  const classificationReason = systemMail.isSystem
+    ? (systemMail.systemMailType === 'bounce' ? '识别为退信通知' : '识别为自动回复')
+    : (filterRule ? '命中内部屏蔽规则' : (owner?.customer_id ? '发件地址已匹配 KOL' : '等待 AI 或人工确认'));
 
   try {
     const result = await dbOperations.run(
@@ -72,13 +80,14 @@ async function processFetchedMessage(message) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW())`,
       [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
        message.envelope?.subject || '', bodyText, message.envelope?.date || new Date(), confirmStatus,
-       classification, filterRule ? 'rule' : 'system', filterRule ? '命中内部屏蔽规则' : (owner?.customer_id ? '发件地址已匹配 KOL' : '等待 AI 或人工确认')]
+       classification, classificationSource, classificationReason]
     );
-    if (owner?.customer_id && !filterRule) {
+    if (owner?.customer_id && !filterRule && !systemMail.isSystem) {
       await emailReplyPoller.markWaitingReply(owner.campaign_id, owner.customer_id);
     }
-    if (result.id && owner?.customer_id && !filterRule) emailReplyPoller.summarizeReply(result.id).catch(() => {});
-    if (result.id && !owner?.customer_id && !filterRule) emailFilterService.classifyStoredReply(result.id).catch(() => {});
+    if (result.id && systemMail.isSystem) emailBounceService.processSystemMail(result.id).catch(() => {});
+    if (result.id && owner?.customer_id && !filterRule && !systemMail.isSystem) emailReplyPoller.summarizeReply(result.id).catch(() => {});
+    if (result.id && !owner?.customer_id && !filterRule && !systemMail.isSystem) emailFilterService.classifyStoredReply(result.id).catch(() => {});
     return { matched: Boolean(owner?.customer_id), replyId: result.id || null };
   } catch (error) {
     // Message-ID 唯一索引兜底：并发重复按已处理对待
@@ -211,6 +220,11 @@ async function startEmailSync() {
   }
   await stopMachinery();
   stopping = false;
+  const backfilled = await emailBounceService.backfillSystemMails().catch((error) => {
+    console.error('[email] 历史系统邮件整理失败:', error.message);
+    return 0;
+  });
+  if (backfilled > 0) console.log(`[email] 已整理 ${backfilled} 封历史系统邮件/退信。`);
   const settings = await getSettings();
   const mode = SYNC_MODES.has(settings?.sync_mode) ? settings.sync_mode : 'idle';
   state.mode = mode;

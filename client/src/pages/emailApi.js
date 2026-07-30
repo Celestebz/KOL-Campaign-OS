@@ -133,6 +133,11 @@ export async function getApprovalDashboardSummary() {
     replyRate30d: data.replyRate30d ?? null,
     repliedKols30d: data.repliedKols30d ?? null,
     deliveredKols30d: data.deliveredKols30d ?? null,
+    bounceRate30d: data.bounceRate30d ?? null,
+    bouncedEmails30d: data.bouncedEmails30d ?? null,
+    hardBounces30d: data.hardBounces30d ?? null,
+    softBounces30d: data.softBounces30d ?? null,
+    sentEmails30d: data.sentEmails30d ?? null,
     denominatorType: data.denominatorType ?? 'sent_success',
     timezone: data.timezone ?? 'Asia/Shanghai'
   };
@@ -162,13 +167,58 @@ export async function getUnmatchedReplies() {
   return res.data.data || [];
 }
 
-export async function bindReply(id, customerId) {
-  const res = await axios.post(`/api/emails/replies/${id}/bind`, { customer_id: customerId });
+export async function getCampaignReplies(campaignId) {
+  const res = await axios.get('/api/emails/replies', { params: { campaign_id: campaignId } });
+  return res.data.data || [];
+}
+
+export async function bindReply(id, customerId, campaignId) {
+  const res = await axios.post(`/api/emails/replies/${id}/bind`, {
+    customer_id: customerId,
+    ...(campaignId ? { campaign_id: campaignId } : {})
+  });
   return res.data.data;
 }
 
 export async function confirmReply(id, summary, intent) {
   await axios.post(`/api/emails/replies/${id}/confirm`, { summary, intent });
+}
+
+export async function getBlockedReplies() {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'blocked' } });
+  return res.data.data || [];
+}
+
+export async function getSystemEmails() {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'system' } });
+  return res.data.data || [];
+}
+
+export async function blockReply(id, blockScope) {
+  const res = await axios.post(`/api/emails/replies/${id}/block`, { block_scope: blockScope, handled_by: 'boss' });
+  return res.data.data;
+}
+
+export async function restoreReply(id) {
+  await axios.post(`/api/emails/replies/${id}/restore`);
+}
+
+export async function getEmailFilterRules() {
+  const res = await axios.get('/api/emails/filter-rules');
+  return res.data.data || [];
+}
+
+export async function createEmailFilterRule(ruleType, ruleValue) {
+  const res = await axios.post('/api/emails/filter-rules', { rule_type: ruleType, rule_value: ruleValue });
+  return res.data.data;
+}
+
+export async function setEmailFilterRuleActive(id, active) {
+  await axios.put(`/api/emails/filter-rules/${id}`, { active });
+}
+
+export async function deleteEmailFilterRule(id) {
+  await axios.delete(`/api/emails/filter-rules/${id}`);
 }
 
 export async function ignoreReply(id) {

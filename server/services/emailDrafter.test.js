@@ -38,6 +38,7 @@ function createFakeDb({ customer = igCustomer, campaignKol = null, finderVideos 
     if (/FROM kol_strategies WHERE campaign_id = \?/.test(sql)) return { target_market: 'US', product_context: 'tree collar' };
     if (/FROM email_templates/.test(sql)) return { id: 3, body_html: 'be brief' };
     if (/FROM email_settings/.test(sql)) return { sender_name: 'Celeste' };
+    if (/FROM email_bounces/.test(sql)) return null;
     if (/FROM email_drafts/.test(sql)) return null;
     throw new Error(`Unexpected get: ${sql}`);
   };
@@ -87,8 +88,36 @@ test('first-touch prompt uses configured sender and asks interest before commerc
   assert.match(prompt, /only goal is to ask whether the creator is interested/);
   assert.match(prompt, /Do not state or promise shipping/);
   assert.match(prompt, /Never output placeholders such as \[Name\]/);
+  assert.match(prompt, /greeting such as "Hi Creator Name," on its own line/);
+  assert.match(prompt, /never continue the first sentence on the greeting line/);
   assert.match(prompt, /one blank line between every paragraph/);
   assert.match(prompt, /override any conflicting general style-guide instruction/);
+});
+
+test('normalizeGreetingLine puts a blank line after a greeting without changing formatted bodies', () => {
+  assert.equal(
+    emailDrafter.normalizeGreetingLine('Hi Walker Farm Fam, this is Celeste with BILT HARD.\n\nSecond paragraph.'),
+    'Hi Walker Farm Fam,\n\nthis is Celeste with BILT HARD.\n\nSecond paragraph.'
+  );
+  assert.equal(
+    emailDrafter.normalizeGreetingLine('Dear Walker Farm Fam,\r\n\r\nThis is Celeste.\r\n\r\nSecond paragraph.'),
+    'Dear Walker Farm Fam,\n\nThis is Celeste.\n\nSecond paragraph.'
+  );
+});
+
+test('generated draft stores the greeting on its own line', async () => {
+  const fake = createFakeDb({
+    finderVideos: [{ video_id: 'DQkl3XSDlyV', title: 'Reel A', play_count: 300000, published_at: daysAgo(3) }],
+    aiParsed: {
+      subject: 'Following up',
+      body_text: 'Hello Walker Farm Fam, this is Celeste. I enjoyed "Reel A".',
+      cited_video_ids: ['DQkl3XSDlyV'],
+      personalization_note: ''
+    }
+  });
+  const result = await runDraft(fake);
+  assert.equal(result.ok, true);
+  assert.equal(draftInsert(fake.statements).params[4], 'Hello Walker Farm Fam,\n\nthis is Celeste. I enjoyed "Reel A".');
 });
 
 test('existing first-touch draft is reused without calling AI or inserting another draft', async () => {

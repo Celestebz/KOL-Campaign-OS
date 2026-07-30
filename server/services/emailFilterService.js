@@ -1,5 +1,6 @@
 const { dbOperations } = require('../database');
 const aiClient = require('./aiClient');
+const emailBounceService = require('./emailBounceService');
 
 function normalizeAddress(value) {
   return String(value || '').trim().toLowerCase();
@@ -23,13 +24,18 @@ async function matchingRule(fromAddress) {
 }
 
 async function classifyIncoming({ fromAddress, subject, bodyText, matched }) {
+  const systemMail = emailBounceService.detectSystemMail({ fromAddress, subject, bodyText });
+  if (systemMail.isSystem) {
+    return {
+      classification: 'system', source: 'system',
+      reason: systemMail.systemMailType === 'bounce' ? '识别为退信通知' : '识别为自动回复',
+      systemMailType: systemMail.systemMailType
+    };
+  }
   const rule = await matchingRule(fromAddress);
   if (rule) return { classification: 'spam', source: 'rule', reason: `命中${rule.rule_type === 'sender' ? '发件人' : '域名'}屏蔽规则` };
   if (matched) return { classification: 'kol_reply', source: 'system', reason: '发件地址已匹配 KOL' };
   const text = `${subject || ''}\n${bodyText || ''}`.slice(0, 4000);
-  if (/mailer-daemon|delivery status notification|undeliverable|out of office|automatic reply/i.test(`${fromAddress} ${text}`)) {
-    return { classification: 'system', source: 'system', reason: '识别为退信或自动回复' };
-  }
   try {
     const { parsed } = await aiClient.callActiveAi(
       'Classify inbound business email. Return JSON only.',
@@ -50,6 +56,12 @@ async function addRule(ruleType, value, createdBy = 'boss') {
   if (!['sender', 'domain'].includes(ruleType)) throw Object.assign(new Error('不支持的屏蔽规则'), { statusCode: 400 });
   const normalized = ruleType === 'sender' ? normalizeAddress(value) : addressDomain(value) || normalizeAddress(value).replace(/^@/, '');
   if (!normalized) throw Object.assign(new Error('屏蔽规则不能为空'), { statusCode: 400 });
+  if (ruleType === 'sender' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw Object.assign(new Error('请输入有效的邮箱地址'), { statusCode: 400 });
+  }
+  if (ruleType === 'domain' && (!normalized.includes('.') || /[\s/@]/.test(normalized))) {
+    throw Object.assign(new Error('请输入有效的邮箱域名'), { statusCode: 400 });
+  }
   await dbOperations.run(
     `INSERT INTO email_filter_rules (rule_type, rule_value, active, created_by, created_at, updated_at)
      VALUES (?, ?, 1, ?, NOW(), NOW())
@@ -57,6 +69,29 @@ async function addRule(ruleType, value, createdBy = 'boss') {
     [ruleType, normalized, createdBy]
   );
   return { rule_type: ruleType, rule_value: normalized };
+}
+
+async function listRules() {
+  return dbOperations.query(
+    `SELECT id, rule_type, rule_value, active, created_by, created_at, updated_at
+     FROM email_filter_rules ORDER BY active DESC, updated_at DESC, id DESC`
+  );
+}
+
+async function setRuleActive(ruleId, active) {
+  const rule = await dbOperations.get('SELECT id FROM email_filter_rules WHERE id = ?', [ruleId]);
+  if (!rule) throw Object.assign(new Error('屏蔽规则不存在'), { statusCode: 404 });
+  await dbOperations.run(
+    'UPDATE email_filter_rules SET active = ?, updated_at = NOW() WHERE id = ?',
+    [active ? 1 : 0, ruleId]
+  );
+  return { id: Number(ruleId), active: Boolean(active) };
+}
+
+async function deleteRule(ruleId) {
+  const rule = await dbOperations.get('SELECT id FROM email_filter_rules WHERE id = ?', [ruleId]);
+  if (!rule) throw Object.assign(new Error('屏蔽规则不存在'), { statusCode: 404 });
+  await dbOperations.run('DELETE FROM email_filter_rules WHERE id = ?', [ruleId]);
 }
 
 async function markSpam(replyId, { blockScope = 'none', handledBy = 'boss' } = {}) {
@@ -99,4 +134,7 @@ async function classifyStoredReply(replyId) {
   return result;
 }
 
-module.exports = { normalizeAddress, addressDomain, matchingRule, classifyIncoming, classifyStoredReply, addRule, markSpam, restoreReply };
+module.exports = {
+  normalizeAddress, addressDomain, matchingRule, classifyIncoming, classifyStoredReply,
+  addRule, listRules, setRuleActive, deleteRule, markSpam, restoreReply
+};

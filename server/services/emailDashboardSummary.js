@@ -106,6 +106,25 @@ async function countRepliedKols(db, windowStart) {
   return Number(row?.total || 0);
 }
 
+async function countBounceSummary(db, windowStart) {
+  const row = await db.get(
+    `SELECT COUNT(DISTINCT er.id) AS sent_total,
+       COUNT(DISTINCT eb.email_record_id) AS bounced_total,
+       COUNT(DISTINCT CASE WHEN eb.bounce_type = 'hard' THEN eb.email_record_id END) AS hard_total,
+       COUNT(DISTINCT CASE WHEN eb.bounce_type = 'soft' THEN eb.email_record_id END) AS soft_total
+     FROM email_records er
+     LEFT JOIN email_bounces eb ON eb.email_record_id = er.id
+     WHERE er.status = 'success' AND er.created_at >= ?`,
+    [toMysqlDatetime(windowStart)]
+  );
+  return {
+    sent: Number(row?.sent_total || 0),
+    bounced: Number(row?.bounced_total || 0),
+    hard: Number(row?.hard_total || 0),
+    soft: Number(row?.soft_total || 0)
+  };
+}
+
 // 组装最终返回体，附带时区标记与分母类型。
 // `db` 形参为 {get} 最小集合（生产 = dbOperations，测试可注入 mock）。
 async function buildSummary(db = dbOperations, now = new Date()) {
@@ -115,18 +134,22 @@ async function buildSummary(db = dbOperations, now = new Date()) {
   const replyWindowStart = rollingWindowStart(now, REPLY_WINDOW_DAYS);
 
   const [todayContactedKols, weekContactedKols, previousWeekContactedKols,
-    deliveredKols30d, repliedKols30d] = await Promise.all([
+    deliveredKols30d, repliedKols30d, bounceSummary30d] = await Promise.all([
     countFirstTouchKols(db, todayStart),
     countFirstTouchKols(db, weekStart),
     countFirstTouchKols(db, previousWeekStart, currentWeekStart),
     countDeliveredKols(db, replyWindowStart),
-    countRepliedKols(db, replyWindowStart)
+    countRepliedKols(db, replyWindowStart),
+    countBounceSummary(db, replyWindowStart)
   ]);
 
   const weekDifference = weekContactedKols - previousWeekContactedKols;
   // 分母为 0 时显示 — 而非 0%，符合验收标准
   const replyRate30d = deliveredKols30d > 0
     ? Math.round((repliedKols30d / deliveredKols30d) * 1000) / 10
+    : null;
+  const bounceRate30d = bounceSummary30d.sent > 0
+    ? Math.round((bounceSummary30d.bounced / bounceSummary30d.sent) * 1000) / 10
     : null;
 
   return {
@@ -137,6 +160,11 @@ async function buildSummary(db = dbOperations, now = new Date()) {
     replyRate30d,
     repliedKols30d,
     deliveredKols30d,
+    bounceRate30d,
+    bouncedEmails30d: bounceSummary30d.bounced,
+    hardBounces30d: bounceSummary30d.hard,
+    softBounces30d: bounceSummary30d.soft,
+    sentEmails30d: bounceSummary30d.sent,
     denominatorType: 'sent_success',
     timezone: TIMEZONE,
     replyWindowDays: REPLY_WINDOW_DAYS,
@@ -149,5 +177,6 @@ module.exports = {
   // 导出供单测覆盖边界 / 复用
   countFirstTouchKols,
   countDeliveredKols,
-  countRepliedKols
+  countRepliedKols,
+  countBounceSummary
 };

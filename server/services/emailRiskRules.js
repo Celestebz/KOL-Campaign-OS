@@ -1,6 +1,7 @@
 // 草稿风险规则引擎（纯函数）。规则先硬编码，后续可配置化。
 const RISK_CODES = {
   NO_EMAIL: 'high',
+  HARD_BOUNCE: 'high',
   FABRICATED_EVIDENCE: 'high',
   METRIC_MISMATCH: 'high',
   MARKET_MISMATCH: 'high',
@@ -59,11 +60,12 @@ function evidenceVideoId(v) {
   return v.video_id ?? v.youtube_video_id;
 }
 
-function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evidenceVideos = [], snapshotDate, hasEmail, staleDays = STALE_DAYS, kind = 'first_touch' }) {
+function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evidenceVideos = [], snapshotDate, hasEmail, previousHardBounce = null, staleDays = STALE_DAYS, kind = 'first_touch' }) {
   const reasons = [];
   const push = (code, message) => reasons.push({ code, message });
 
   if (!hasEmail) push('NO_EMAIL', '达人无邮箱地址');
+  if (previousHardBounce) push('HARD_BOUNCE', `该邮箱曾发生硬退信${previousHardBounce.reason ? `：${previousHardBounce.reason}` : ''}`);
 
   const knownIds = new Set(evidenceVideos.map((v) => String(evidenceVideoId(v))));
   const fabricated = citedVideoIds.filter((id) => !knownIds.has(String(id)));

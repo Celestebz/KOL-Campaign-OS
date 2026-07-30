@@ -182,3 +182,24 @@ test('buildSummary rounds replyRate30d to one decimal place', async () => {
   // 6 / 70 = 0.085714... → 8.6%
   assert.equal(summary.replyRate30d, 8.6);
 });
+
+test('buildSummary computes 30-day bounce rate and hard/soft counts by sent record', async () => {
+  let idx = 0;
+  const db = {
+    async get(sql) {
+      if (sql.includes('NOT EXISTS')) return { total: [1, 2, 1][idx++] };
+      if (sql.includes('COUNT(DISTINCT er.customer_id)')) return { total: 20 };
+      if (sql.includes('COUNT(DISTINCT r.customer_id)')) return { total: 4 };
+      if (sql.includes('COUNT(DISTINCT er.id) AS sent_total')) {
+        return { sent_total: 50, bounced_total: 3, hard_total: 2, soft_total: 1 };
+      }
+      return null;
+    }
+  };
+  const summary = await buildSummary(db, NOW);
+  assert.equal(summary.bounceRate30d, 6);
+  assert.equal(summary.bouncedEmails30d, 3);
+  assert.equal(summary.hardBounces30d, 2);
+  assert.equal(summary.softBounces30d, 1);
+  assert.equal(summary.sentEmails30d, 50);
+});

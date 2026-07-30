@@ -513,6 +513,19 @@ test('GET /replies scope=unmatched filters replies without a KOL', async () => {
   });
 });
 
+test('GET /replies supports project communication filtering', async () => {
+  let captured;
+  await withPatchedDb({
+    query: async (sql, params) => { captured = { sql: String(sql), params }; return []; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/replies');
+    const response = await callHandler(handler, { query: { campaign_id: '1404' } });
+    assert.equal(response.payload.success, true);
+  });
+  assert.match(captured.sql, /er\.campaign_id = \?/);
+  assert.deepEqual(captured.params, [1404]);
+});
+
 test('GET /replies scope=needs_reply returns the latest actionable inbound email', async () => {
   const queries = [];
   await withPatchedDb({
@@ -589,6 +602,25 @@ test('POST /replies/:id/bind validates reply and KOL existence', async () => {
     assert.match(missingKol.payload.error, /KOL 不存在/);
     const badBody = await callHandler(handler, { params: { id: '5' }, body: {} });
     assert.equal(badBody.statusCode, 400);
+  });
+});
+
+test('POST /replies/:id/bind only binds to a KOL in the selected project', async () => {
+  await withPatchedDb({
+    get: async (sql, params = []) => {
+      const text = String(sql);
+      if (text.includes('FROM email_replies WHERE id = ?')) return { id: 5, customer_id: null };
+      if (text.includes('FROM customers WHERE id = ?')) return { id: params[0] };
+      if (text.includes('FROM campaign_kols WHERE campaign_id = ?')) return null;
+      return null;
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/bind');
+    const response = await callHandler(handler, {
+      params: { id: '5' }, body: { customer_id: 7, campaign_id: 1404 }
+    });
+    assert.equal(response.statusCode, 409);
+    assert.match(response.payload.error, /不在当前项目/);
   });
 });
 

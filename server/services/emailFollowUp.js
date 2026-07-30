@@ -40,6 +40,11 @@ async function scanOnce() {
            AND d.kind = 'follow_up' AND d.status = 'rejected'
            AND d.updated_at >= ck.last_outreach_at
        )
+       AND NOT EXISTS (
+         SELECT 1 FROM email_bounces eb
+         WHERE eb.campaign_id = ck.campaign_id AND eb.customer_id = ck.customer_id
+           AND eb.bounce_type = 'hard'
+       )
      GROUP BY ck.campaign_id, ck.customer_id`,
     [FOLLOW_UP_AFTER_HOURS, GIVE_UP_AFTER_DAYS, MAX_FOLLOW_UPS]
   );
@@ -78,6 +83,11 @@ async function scanOnce() {
          SELECT 1 FROM email_replies r
          WHERE r.campaign_id = ck.campaign_id AND r.customer_id = ck.customer_id
            AND r.confirm_status = 'confirmed'
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM email_bounces eb
+         WHERE eb.campaign_id = ck.campaign_id AND eb.customer_id = ck.customer_id
+           AND eb.bounce_type = 'hard'
        )
      GROUP BY ck.campaign_id, ck.customer_id`,
     [GIVE_UP_AFTER_DAYS]

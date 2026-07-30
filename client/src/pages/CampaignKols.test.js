@@ -10,6 +10,7 @@ import CampaignKols, {
   normalizeLegacyProjectStatus,
   OUTREACH_STATUS_OPTIONS,
   OUTREACH_PHASE_OPTIONS,
+  displayEmail,
   hasPendingEmail,
   outreachPhaseForDisplay
 } from './CampaignKols';
@@ -120,6 +121,12 @@ describe('KOL cooperation legacy enum normalization', () => {
     expect(defaultCooperationType('paid_product')).toBe('paid_product');
     expect(defaultCooperationType('other')).toBe('other');
   });
+
+  test('prefers the current KOL email and ignores legacy no-email placeholders', () => {
+    expect(displayEmail('al@example.com', '没邮箱')).toBe('al@example.com');
+    expect(displayEmail('', '暂无邮箱')).toBe('-');
+    expect(displayEmail('', 'snapshot@example.com')).toBe('snapshot@example.com');
+  });
 });
 
 describe('CampaignKols sync notifications', () => {
@@ -188,6 +195,21 @@ describe('CampaignKols business views', () => {
     expect(axios.get).toHaveBeenCalledWith('/api/campaign-kols', expect.objectContaining({
       params: expect.objectContaining({ pipeline_stage: 'candidate' })
     }));
+  });
+
+  test('candidate view shows an email added after the no-email snapshot was created', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/campaigns') return Promise.resolve({ data: { data: [{ id: 3, name: 'Lobster Co' }] } });
+      if (url === '/api/campaign-kols') return Promise.resolve({
+        data: { data: [{ ...kolRow, kol_name: 'Al Bladez', email: 'al@example.com', email_snapshot: '没邮箱' }] }
+      });
+      return Promise.resolve({ data: { data: [] } });
+    });
+
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Al Bladez')).toBeInTheDocument();
+    expect(screen.getByText('al@example.com')).toBeInTheDocument();
+    expect(screen.queryByText('没邮箱')).not.toBeInTheDocument();
   });
 
   test('cooperation view requests only confirmed relationships', async () => {

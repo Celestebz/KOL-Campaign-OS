@@ -6,7 +6,9 @@ const emailReviewActions = require('../services/emailReviewActions');
 const emailDraftSender = require('../services/emailDraftSender');
 const emailLiveSync = require('../services/emailLiveSync');
 const emailDashboardSummary = require('../services/emailDashboardSummary');
+const emailFilterService = require('../services/emailFilterService');
 const automationRuns = require('../services/automationRuns');
+const { parseInboundBody } = require('../services/emailBodyParser');
 
 const router = express.Router();
 
@@ -368,6 +370,11 @@ router.get('/approval-dashboard/summary', async (req, res) => {
         replyRate30d: null,
         repliedKols30d: null,
         deliveredKols30d: null,
+        bounceRate30d: null,
+        bouncedEmails30d: null,
+        hardBounces30d: null,
+        softBounces30d: null,
+        sentEmails30d: null,
         denominatorType: 'sent_success',
         timezone: 'Asia/Shanghai',
         replyWindowDays: 30,
@@ -476,10 +483,21 @@ router.post('/drafts/:id/confirm-not-sent', async (req, res) => {
 
 router.get('/replies', async (req, res) => {
   try {
-    const { confirm_status, scope } = req.query || {};
+    const { confirm_status, scope, campaign_id } = req.query || {};
     const conditions = [];
     const params = [];
+    if (scope === 'blocked') conditions.push("er.classification = 'spam'");
+    else if (scope === 'system') conditions.push("er.classification = 'system'");
+    else conditions.push("COALESCE(er.classification, 'needs_review') NOT IN ('spam', 'system')");
     if (scope === 'unmatched') conditions.push('er.customer_id IS NULL');
+    if (campaign_id) {
+      const campaignId = Number(campaign_id);
+      if (!Number.isSafeInteger(campaignId) || campaignId <= 0) {
+        return res.status(400).json({ success: false, error: 'campaign_id 必须是正整数' });
+      }
+      conditions.push('er.campaign_id = ?');
+      params.push(campaignId);
+    }
     if (scope === 'needs_reply') {
       conditions.push('ck.needs_reply = 1');
       conditions.push(`er.id = (
@@ -492,17 +510,25 @@ router.get('/replies', async (req, res) => {
     if (confirm_status) { conditions.push('er.confirm_status = ?'); params.push(confirm_status); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const replies = await dbOperations.query(
-      `SELECT er.*, k.name AS kol_name, c.name AS campaign_name
+      `SELECT er.*, k.name AS kol_name, c.name AS campaign_name,
+         eb.bounce_type, eb.recipient AS bounce_recipient, eb.status_code AS bounce_status_code,
+         eb.reason AS bounce_reason, eb.email_record_id AS bounce_email_record_id
        FROM email_replies er
        LEFT JOIN customers k ON k.id = er.customer_id
        LEFT JOIN campaigns c ON c.id = er.campaign_id
        LEFT JOIN campaign_kols ck ON ck.campaign_id = er.campaign_id AND ck.customer_id = er.customer_id
+       LEFT JOIN email_bounces eb ON eb.email_reply_id = er.id
        ${where}
        ORDER BY er.received_at DESC
        LIMIT 200`,
       params
     );
-    res.json({ success: true, data: replies });
+    // 兼容修复上线前已存入数据库的原始 MIME 正文。
+    const normalizedReplies = replies.map((reply) => ({
+      ...reply,
+      body_text: parseInboundBody(reply.body_text)
+    }));
+    res.json({ success: true, data: normalizedReplies });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -523,6 +549,66 @@ router.post('/replies/:id/ignore', async (req, res) => {
   try {
     await emailReviewActions.ignoreReply(req.params.id);
     res.json({ success: true, message: '已忽略' });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.post('/replies/:id/block', async (req, res) => {
+  try {
+    const blockScope = req.body?.block_scope;
+    if (!['sender', 'domain'].includes(blockScope)) {
+      return res.status(400).json({ success: false, error: '请选择屏蔽该邮箱或整个域名' });
+    }
+    const result = await emailFilterService.markSpam(req.params.id, {
+      blockScope,
+      handledBy: req.body?.handled_by || 'boss'
+    });
+    res.json({ success: true, message: '已标记为屏蔽', data: result });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.post('/replies/:id/restore', async (req, res) => {
+  try {
+    await emailFilterService.restoreReply(req.params.id);
+    res.json({ success: true, message: '邮件已恢复' });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.get('/filter-rules', async (req, res) => {
+  try {
+    res.json({ success: true, data: await emailFilterService.listRules() });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.post('/filter-rules', async (req, res) => {
+  try {
+    const data = await emailFilterService.addRule(req.body?.rule_type, req.body?.rule_value, req.body?.created_by || 'boss');
+    res.json({ success: true, message: '屏蔽规则已添加', data });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.put('/filter-rules/:id', async (req, res) => {
+  try {
+    const data = await emailFilterService.setRuleActive(req.params.id, Boolean(req.body?.active));
+    res.json({ success: true, data });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+router.delete('/filter-rules/:id', async (req, res) => {
+  try {
+    await emailFilterService.deleteRule(req.params.id);
+    res.json({ success: true, message: '屏蔽规则已删除' });
   } catch (error) {
     sendActionError(res, error);
   }
@@ -586,6 +672,15 @@ router.post('/replies/:id/bind', async (req, res) => {
 
     // 未显式指定项目时，归属到该 KOL 最近的项目关系
     let campaignId = Number(req.body?.campaign_id) || null;
+    if (campaignId) {
+      const campaignKol = await dbOperations.get(
+        'SELECT id FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?',
+        [campaignId, customerId]
+      );
+      if (!campaignKol) {
+        return res.status(409).json({ success: false, error: '该达人不在当前项目中，请先添加到项目' });
+      }
+    }
     if (!campaignId) {
       const kol = await dbOperations.get(
         'SELECT campaign_id FROM campaign_kols WHERE customer_id = ? ORDER BY updated_at DESC LIMIT 1',

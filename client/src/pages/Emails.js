@@ -12,7 +12,9 @@ import {
   getEmailSettings, saveEmailSettings, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
-  getReplyTodos, getUnmatchedReplies, bindReply, confirmReply, ignoreReply, markReplyManuallyHandled, retryReplySummary, draftReply,
+  getReplyTodos, getUnmatchedReplies, getBlockedReplies, getSystemEmails, bindReply, confirmReply, ignoreReply,
+  markReplyManuallyHandled, retryReplySummary, draftReply, blockReply, restoreReply,
+  getEmailFilterRules, createEmailFilterRule, setEmailFilterRuleActive, deleteEmailFilterRule,
   getApprovalDashboardSummary
 } from './emailApi';
 
@@ -71,6 +73,11 @@ const EMPTY_DASHBOARD_SUMMARY = {
   replyRate30d: null,
   repliedKols30d: null,
   deliveredKols30d: null,
+  bounceRate30d: null,
+  bouncedEmails30d: null,
+  hardBounces30d: null,
+  softBounces30d: null,
+  sentEmails30d: null,
   denominatorType: 'sent_success'
 };
 
@@ -98,7 +105,7 @@ function formatWeekDifference(difference) {
 
 function ApprovalTab() {
   const [drafts, setDrafts] = useState([]);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState({ status: 'pending_review' });
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(null);
   const [editSubject, setEditSubject] = useState('');
@@ -269,7 +276,7 @@ function ApprovalTab() {
   return (
     <>
       <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={8}>
+        <Col span={6}>
           <Card>
             <Statistic
               title="今日联络 KOL"
@@ -278,7 +285,7 @@ function ApprovalTab() {
             />
           </Card>
         </Col>
-        <Col span={8}>
+        <Col span={6}>
           <Card>
             <Statistic
               title="本周联络 KOL"
@@ -292,7 +299,7 @@ function ApprovalTab() {
             )}
           </Card>
         </Col>
-        <Col span={8}>
+        <Col span={6}>
           <Card>
             <Statistic
               title="30天回复率"
@@ -306,6 +313,21 @@ function ApprovalTab() {
             )}
           </Card>
         </Col>
+        <Col span={6}>
+          <Card>
+            <Statistic
+              title="30天退信率"
+              value={dashboardLoading ? '—' : formatMetric(dashboard.bounceRate30d, { percent: true })}
+              loading={dashboardLoading}
+            />
+            {!dashboardLoading && (
+              <div style={{ color: '#8c8c8c', marginTop: 4, fontSize: 12 }}>
+                {dashboard.bouncedEmails30d ?? '—'} 封退信 / {dashboard.sentEmails30d || '—'} 封发送
+                {dashboard.bouncedEmails30d > 0 && `（硬 ${dashboard.hardBounces30d || 0} / 软 ${dashboard.softBounces30d || 0}）`}
+              </div>
+            )}
+          </Card>
+        </Col>
       </Row>
 
       <Space style={{ marginBottom: 12 }} wrap>
@@ -315,9 +337,6 @@ function ApprovalTab() {
         <Select allowClear placeholder="风险" style={{ width: 120 }}
           value={filters.risk_level} onChange={(v) => setFilters({ ...filters, risk_level: v })}
           options={[{ value: 'high', label: '高风险' }, { value: 'low', label: '低风险' }, { value: 'none', label: '无风险' }]} />
-        <Select allowClear placeholder="状态" style={{ width: 130 }}
-          value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })}
-          options={Object.entries(DRAFT_STATUS_LABELS).map(([value, o]) => ({ value, label: o.text }))} />
         <Button icon={<ReloadOutlined />} onClick={fetchDrafts}>刷新</Button>
       </Space>
 
@@ -597,12 +616,19 @@ function RepliesTab() {
   const [bindOptions, setBindOptions] = useState([]);
   const [bindSearching, setBindSearching] = useState(false);
   const [bindSaving, setBindSaving] = useState(false);
+  const [blocking, setBlocking] = useState(null);
+  const [blockScope, setBlockScope] = useState('sender');
+  const [blockSaving, setBlockSaving] = useState(false);
   const prevCountRef = useRef(null);
 
   const fetchReplies = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
-      const rows = viewMode === 'unmatched' ? await getUnmatchedReplies() : await getReplyTodos();
+      const rows = viewMode === 'unmatched'
+        ? await getUnmatchedReplies()
+        : (viewMode === 'blocked'
+          ? await getBlockedReplies()
+          : (viewMode === 'system' ? await getSystemEmails() : await getReplyTodos()));
       if (viewMode === 'pending' && prevCountRef.current !== null && rows.length > prevCountRef.current) {
         message.info(`收到 ${rows.length - prevCountRef.current} 条新回复`);
       }
@@ -684,6 +710,35 @@ function RepliesTab() {
     }
   };
 
+  const openBlock = (record) => {
+    setBlocking(record);
+    setBlockScope('sender');
+  };
+
+  const handleBlock = async () => {
+    setBlockSaving(true);
+    try {
+      await blockReply(blocking.id, blockScope);
+      message.success('已标记为屏蔽');
+      setBlocking(null);
+      fetchReplies();
+    } catch (error) {
+      message.error(error.response?.data?.error || '标记为屏蔽失败');
+    } finally {
+      setBlockSaving(false);
+    }
+  };
+
+  const handleRestore = async (record) => {
+    try {
+      await restoreReply(record.id);
+      message.success('邮件已恢复；如需接收该发件人后续邮件，请同时解除对应屏蔽规则');
+      fetchReplies();
+    } catch (error) {
+      message.error(error.response?.data?.error || '恢复失败');
+    }
+  };
+
   const searchKols = useCallback(async (keyword) => {
     setBindSearching(true);
     try {
@@ -747,11 +802,11 @@ function RepliesTab() {
       }
     },
     {
-      title: '操作', width: 360, render: (_, record) => (
-        <Space size={0}>
+      title: '操作', width: 420, render: (_, record) => (
+        <Space size={[0, 4]} wrap>
           {record.confirm_status === 'pending'
             ? <Button type="link" size="small" onClick={() => openConfirm(record)}>确认意向</Button>
-            : <Tag color="green">意向已确认</Tag>}
+            : <Tag color="green">已确认</Tag>}
           <Button type="link" size="small" icon={<MailOutlined />} onClick={() => handleDraftReply(record)}>回复草稿</Button>
           <Popconfirm
             title="确认已经通过外部邮箱回复该达人？"
@@ -765,6 +820,7 @@ function RepliesTab() {
           <Popconfirm title="忽略这条回复？" onConfirm={() => handleIgnore(record)}>
             <Button type="link" size="small" danger>忽略</Button>
           </Popconfirm>
+          <Button type="link" size="small" danger onClick={() => openBlock(record)}>标记为屏蔽</Button>
         </Space>
       )
     }
@@ -776,15 +832,52 @@ function RepliesTab() {
       render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
     { title: '主题', dataIndex: 'subject', width: 220, ellipsis: true },
     {
-      title: '操作', width: 180, render: (_, record) => (
-        <Space size={0}>
+      title: '操作', width: 240, render: (_, record) => (
+        <Space size={[0, 4]} wrap>
           <Button type="link" size="small" onClick={() => openBind(record)}>绑定 KOL</Button>
           <Popconfirm title="忽略这条回复？" onConfirm={() => handleIgnore(record)}>
             <Button type="link" size="small" danger>忽略</Button>
           </Popconfirm>
+          <Button type="link" size="small" danger onClick={() => openBlock(record)}>标记为屏蔽</Button>
         </Space>
       )
     }
+  ];
+
+  const blockedColumns = [
+    { title: '发件人', dataIndex: 'from_address', width: 220, render: (v) => v || '-' },
+    { title: '收到时间', dataIndex: 'received_at', width: 170,
+      render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
+    { title: '主题', dataIndex: 'subject', ellipsis: true },
+    { title: '屏蔽原因', dataIndex: 'classification_reason', width: 220, ellipsis: true },
+    { title: '操作', width: 100, render: (_, record) => (
+      <Button type="link" size="small" onClick={() => handleRestore(record)}>恢复</Button>
+    ) }
+  ];
+
+  const systemColumns = [
+    { title: '类型', dataIndex: 'system_mail_type', width: 110, render: (value, record) => {
+      if (value === 'bounce') {
+        const labels = {
+          hard: { text: '硬退信', color: 'red' },
+          soft: { text: '软退信', color: 'orange' },
+          unknown: { text: '未知退信', color: 'gold' }
+        };
+        const item = labels[record.bounce_type] || labels.unknown;
+        return <Tag color={item.color}>{item.text}</Tag>;
+      }
+      if (value === 'auto_reply') return <Tag color="blue">自动回复</Tag>;
+      return <Tag>系统邮件</Tag>;
+    } },
+    { title: '发件人', dataIndex: 'from_address', width: 220, ellipsis: true },
+    { title: '原收件人', dataIndex: 'bounce_recipient', width: 220, render: (value) => value || '-' },
+    { title: '项目', dataIndex: 'campaign_name', width: 160, render: (value) => value || '-' },
+    { title: '收到时间', dataIndex: 'received_at', width: 170,
+      render: (value) => (value ? new Date(value).toLocaleString('zh-CN') : '-') },
+    { title: '主题', dataIndex: 'subject', width: 220, ellipsis: true },
+    { title: '状态码', dataIndex: 'bounce_status_code', width: 100, render: (value) => value || '-' },
+    { title: '原因', dataIndex: 'bounce_reason', ellipsis: true,
+      render: (value, record) => value || record.classification_reason || '-' }
   ];
 
   return (
@@ -802,20 +895,44 @@ function RepliesTab() {
           onChange={changeView}
           options={[
             { value: 'pending', label: '待回复' },
-            { value: 'unmatched', label: '未识别回复' }
+            { value: 'unmatched', label: '未识别回复' },
+            { value: 'system', label: '系统邮件/退信' },
+            { value: 'blocked', label: '已屏蔽邮件' }
           ]}
           optionType="button"
         />
         <Button icon={<ReloadOutlined />} onClick={() => fetchReplies()}>刷新</Button>
       </Space>
       <Table
-        rowKey="id" loading={loading} columns={viewMode === 'unmatched' ? unmatchedColumns : pendingColumns} dataSource={replies}
+        rowKey="id" loading={loading}
+        columns={viewMode === 'unmatched'
+          ? unmatchedColumns
+          : (viewMode === 'blocked' ? blockedColumns : (viewMode === 'system' ? systemColumns : pendingColumns))}
+        dataSource={replies}
+        scroll={viewMode === 'pending' ? { x: 1350 } : undefined}
         expandable={{
           expandedRowRender: (record) => (
             <div style={{ whiteSpace: 'pre-wrap' }}>{record.body_text || '（无正文）'}</div>
           )
         }}
       />
+      <Modal
+        title="标记为屏蔽"
+        open={Boolean(blocking)}
+        onOk={handleBlock}
+        onCancel={() => setBlocking(null)}
+        okText="确认屏蔽"
+        cancelText="取消"
+        confirmLoading={blockSaving}
+      >
+        <p>当前发件人：{blocking?.from_address || '-'}</p>
+        <Radio.Group value={blockScope} onChange={(event) => setBlockScope(event.target.value)}>
+          <Space direction="vertical">
+            <Radio value="sender">仅屏蔽该邮箱</Radio>
+            <Radio value="domain">屏蔽整个域名（可能影响同域名下的其他联系人）</Radio>
+          </Space>
+        </Radio.Group>
+      </Modal>
       <Modal
         title={`确认回复 - ${confirming?.kol_name || ''}`}
         open={Boolean(confirming)} onOk={handleConfirm} onCancel={() => setConfirming(null)}
@@ -1004,6 +1121,10 @@ function SettingsTab() {
   const [testingImap, setTestingImap] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState(null);
+  const [filterRules, setFilterRules] = useState([]);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [newRuleType, setNewRuleType] = useState('sender');
+  const [newRuleValue, setNewRuleValue] = useState('');
   const syncMode = Form.useWatch('sync_mode', form);
 
   const fetchSettings = useCallback(async () => {
@@ -1023,7 +1144,18 @@ function SettingsTab() {
     }
   }, []);
 
-  useEffect(() => { fetchSettings(); fetchSyncStatus(); }, [fetchSettings, fetchSyncStatus]);
+  const fetchFilterRules = useCallback(async () => {
+    setRulesLoading(true);
+    try {
+      setFilterRules(await getEmailFilterRules());
+    } catch (error) {
+      message.error('获取屏蔽规则失败');
+    } finally {
+      setRulesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchSettings(); fetchSyncStatus(); fetchFilterRules(); }, [fetchSettings, fetchSyncStatus, fetchFilterRules]);
 
   // 收信状态每 15 秒刷新一次
   useEffect(() => {
@@ -1079,6 +1211,40 @@ function SettingsTab() {
       message.error(error.response?.data?.error || '同步失败');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleAddRule = async () => {
+    if (!newRuleValue.trim()) {
+      message.warning(newRuleType === 'sender' ? '请输入要屏蔽的邮箱' : '请输入要屏蔽的域名');
+      return;
+    }
+    try {
+      await createEmailFilterRule(newRuleType, newRuleValue.trim());
+      message.success('屏蔽规则已添加');
+      setNewRuleValue('');
+      fetchFilterRules();
+    } catch (error) {
+      message.error(error.response?.data?.error || '添加屏蔽规则失败');
+    }
+  };
+
+  const handleToggleRule = async (record, active) => {
+    try {
+      await setEmailFilterRuleActive(record.id, active);
+      fetchFilterRules();
+    } catch (error) {
+      message.error(error.response?.data?.error || '更新屏蔽规则失败');
+    }
+  };
+
+  const handleDeleteRule = async (record) => {
+    try {
+      await deleteEmailFilterRule(record.id);
+      message.success('屏蔽规则已删除');
+      fetchFilterRules();
+    } catch (error) {
+      message.error(error.response?.data?.error || '删除屏蔽规则失败');
     }
   };
 
@@ -1157,6 +1323,52 @@ function SettingsTab() {
             </Descriptions.Item>
           )}
         </Descriptions>
+      </Card>
+      <Card title="屏蔽规则" size="small" style={{ marginTop: 16 }}>
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="命中启用规则的新邮件会自动进入「邮件待办 → 已屏蔽邮件」，不会进入业务待办。"
+        />
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Select
+            value={newRuleType}
+            onChange={setNewRuleType}
+            style={{ width: 130 }}
+            options={[
+              { value: 'sender', label: '邮箱地址' },
+              { value: 'domain', label: '整个域名' }
+            ]}
+          />
+          <Input
+            value={newRuleValue}
+            onChange={(event) => setNewRuleValue(event.target.value)}
+            onPressEnter={handleAddRule}
+            placeholder={newRuleType === 'sender' ? '例如 ads@example.com' : '例如 example.com'}
+            style={{ width: 320 }}
+          />
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleAddRule}>添加屏蔽规则</Button>
+        </Space>
+        <Table
+          size="small"
+          rowKey="id"
+          loading={rulesLoading}
+          pagination={false}
+          dataSource={filterRules}
+          columns={[
+            { title: '类型', dataIndex: 'rule_type', width: 110,
+              render: (value) => (value === 'sender' ? '邮箱地址' : '整个域名') },
+            { title: '规则', dataIndex: 'rule_value' },
+            { title: '启用', dataIndex: 'active', width: 80,
+              render: (value, record) => <Switch size="small" checked={Boolean(value)} onChange={(checked) => handleToggleRule(record, checked)} /> },
+            { title: '操作', width: 80, render: (_, record) => (
+              <Popconfirm title="删除这条屏蔽规则？" onConfirm={() => handleDeleteRule(record)}>
+                <Button type="link" size="small" danger>删除</Button>
+              </Popconfirm>
+            ) }
+          ]}
+        />
       </Card>
     </div>
   );

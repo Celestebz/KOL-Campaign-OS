@@ -4,8 +4,9 @@ const imapflow = require('imapflow');
 const { dbOperations } = require('../database');
 const aiClient = require('./aiClient');
 const emailFilterService = require('./emailFilterService');
+const emailBounceService = require('./emailBounceService');
+const { parseInboundBody } = require('./emailBodyParser');
 
-const BODY_TEXT_LIMIT = 8000;
 const VALID_INTENTS = new Set(['interested', 'question', 'rejected', 'other']);
 
 const SUMMARY_SYSTEM = 'You are an assistant that summarizes creator business email replies for a marketing team. Return valid JSON only. No Markdown, no explanations.';
@@ -112,10 +113,18 @@ async function pollOnce() {
         const fromAddress = normalizeAddress(message.envelope.from?.[0]?.address || '');
         const owner = await findOwnerByAddress(fromAddress);
         const filterRule = await emailFilterService.matchingRule(fromAddress);
-        if (!owner && !filterRule) continue; // 旧轮询模式只处理匹配或已屏蔽发件人
-
         const bodyPart = message.bodyParts?.get('text');
-        const bodyText = String(bodyPart?.toString() || '').slice(0, BODY_TEXT_LIMIT);
+        const bodyText = parseInboundBody(bodyPart || '');
+        const systemMail = emailBounceService.detectSystemMail({
+          fromAddress, subject: message.envelope.subject || '', bodyText
+        });
+        if (!owner && !filterRule && !systemMail.isSystem) continue; // 旧轮询模式只处理匹配、系统或已屏蔽发件人
+        const classification = systemMail.isSystem ? 'system' : (filterRule ? 'spam' : 'kol_reply');
+        const confirmStatus = systemMail.isSystem ? 'system' : (filterRule ? 'spam' : 'pending');
+        const classificationSource = systemMail.isSystem ? 'system' : (filterRule ? 'rule' : 'system');
+        const classificationReason = systemMail.isSystem
+          ? (systemMail.systemMailType === 'bounce' ? '识别为退信通知' : '识别为自动回复')
+          : (filterRule ? '命中内部屏蔽规则' : '发件地址已匹配 KOL');
         const result = await dbOperations.run(
           `INSERT INTO email_replies
            (email_record_id, campaign_id, customer_id, from_address, message_id, subject, body_text, received_at,
@@ -124,12 +133,12 @@ async function pollOnce() {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW())`,
           [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
            message.envelope.subject || '', bodyText, message.envelope.date || new Date(),
-           filterRule ? 'spam' : 'pending', filterRule ? 'spam' : 'kol_reply',
-           filterRule ? 'rule' : 'system', filterRule ? '命中内部屏蔽规则' : '发件地址已匹配 KOL']
+           confirmStatus, classification, classificationSource, classificationReason]
         );
-        if (!filterRule) await markWaitingReply(owner.campaign_id, owner.customer_id);
+        if (!filterRule && !systemMail.isSystem) await markWaitingReply(owner.campaign_id, owner.customer_id);
         await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
-        if (result.id && !filterRule) summarizeReply(result.id).catch(() => {});
+        if (result.id && systemMail.isSystem) emailBounceService.processSystemMail(result.id).catch(() => {});
+        if (result.id && !filterRule && !systemMail.isSystem) summarizeReply(result.id).catch(() => {});
       }
       await dbOperations.run('UPDATE email_settings SET last_poll_at = NOW() WHERE id = ?', [settings.id]);
     } finally {

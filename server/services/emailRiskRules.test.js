@@ -52,6 +52,15 @@ test('missing required terms is low risk', () => {
   assert.ok(missing.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
 
+test('previous hard bounce is high risk', () => {
+  const result = evaluateDraft({
+    customer: {}, strategy: {}, bodyText: 'Hello', hasEmail: true,
+    citedVideoIds: [], evidenceVideos: [], previousHardBounce: { reason: '550 user unknown' }
+  });
+  assert.equal(result.riskLevel, 'high');
+  assert.ok(result.riskReasons.some((reason) => reason.code === 'HARD_BOUNCE'));
+});
+
 test('first touch does not require commission or fee terms', () => {
   const result = evaluateDraft({ ...base, kind: 'first_touch', bodyText: 'Hi, your content is great. Would you be interested in learning more?' });
   assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));

@@ -7,7 +7,7 @@ const { evaluateDraft } = require('./emailRiskRules');
 const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
 
-const PROMPT_VERSION = 'p1.1';
+const PROMPT_VERSION = 'p1.2';
 const SNAPSHOT_STALE_DAYS = 7;
 // IG/TT 证据没有快照回抓，新鲜度以证据视频最新发布日期衡量，阈值 30 天
 const FINDER_EVIDENCE_STALE_DAYS = 30;
@@ -52,8 +52,16 @@ Requirements:
 - Do not infer property conditions, cleanup needs, equipment, or use cases that the cited titles do not explicitly support.
 - Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
 - Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", and "get one shipped your way".
-- Format body_text as exactly three short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
+- Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
+- After the greeting, write exactly three short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
 - Keep body under 140 English words and write in English.`;
+}
+
+function normalizeGreetingLine(input) {
+  return String(input || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/^((?:Hi|Hello|Dear)\s+[^,\n]{1,100},)[ \t]+(?=\S)/i, '$1\n\n')
+    .trim();
 }
 
 // 平台判定：campaign_kols.target_platform 优先，其次 customers 的平台主页 url，再次 customers.platform + profile_url
@@ -216,6 +224,12 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
     }
 
     const toAddress = customer.email;
+    const previousHardBounce = toAddress ? await dbOperations.get(
+      `SELECT id, reason FROM email_bounces
+       WHERE bounce_type = 'hard' AND (customer_id = ? OR LOWER(recipient) = LOWER(?))
+       ORDER BY received_at DESC, id DESC LIMIT 1`,
+      [customerId, toAddress]
+    ) : null;
     const strategy = await dbOperations.get(
       'SELECT * FROM kol_strategies WHERE campaign_id = ? ORDER BY updated_at DESC LIMIT 1',
       [campaignId]
@@ -234,7 +248,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
     const { parsed, model } = await aiClient.callActiveAi(SYSTEM_PROMPT, userPrompt);
 
     const subject = String(parsed?.subject || '').trim();
-    const bodyText = String(parsed?.body_text || '').trim();
+    const bodyText = normalizeGreetingLine(parsed?.body_text);
     if (!subject || !bodyText) return { ok: false, customer_id: customerId, error: 'AI 未返回有效主题或正文' };
 
     const citedVideoIds = Array.isArray(parsed?.cited_video_ids) ? parsed.cited_video_ids.map(String) : [];
@@ -243,6 +257,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       evidenceVideos: videos,
       snapshotDate,
       hasEmail: Boolean(toAddress),
+      previousHardBounce,
       staleDays,
       kind
     });
@@ -315,7 +330,7 @@ async function draftBatch(items) {
 }
 
 module.exports = {
-  draftForCustomer, draftBatch, buildUserPrompt, detectPlatform,
+  draftForCustomer, draftBatch, buildUserPrompt, normalizeGreetingLine, detectPlatform,
   loadFinderEvidenceVideos, computeFinderMetrics, PROMPT_VERSION,
   FINDER_EVIDENCE_STALE_DAYS
 };

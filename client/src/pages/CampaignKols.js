@@ -96,6 +96,15 @@ export const normalizeLegacyPriority = (value) => ({
   normal: 't2'
 }[String(value || '').toLowerCase()] || String(value || '').toLowerCase() || undefined);
 
+const EMAIL_PLACEHOLDERS = new Set(['没邮箱', '没有邮箱', '无邮箱', '暂无邮箱', '无', '-', 'n/a', 'none']);
+
+export const displayEmail = (currentEmail, snapshotEmail) => (
+  [currentEmail, snapshotEmail]
+    .map((value) => String(value || '').trim())
+    .find((value) => value && !EMAIL_PLACEHOLDERS.has(value.toLowerCase()))
+  || '-'
+);
+
 // 外联阶段不包含邮件待办；waiting_reply/replied 仅用于旧数据兼容展示。
 export const OUTREACH_STATUS_OPTIONS = [
   { value: 'not_contacted', label: '待联系' },
@@ -644,7 +653,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     { title: 'YouTube', key: 'youtube', width: 130, render: (_, r) => platformLink(r.youtube_url || r.youtube_url_snapshot, r.youtube_followers || r.youtube_followers_snapshot) },
     { title: 'Instagram', key: 'instagram', width: 130, render: (_, r) => platformLink(r.instagram_url || r.instagram_url_snapshot, r.instagram_followers || r.instagram_followers_snapshot) },
     { title: 'TikTok', key: 'tiktok', width: 130, render: (_, r) => platformLink(r.tiktok_url || r.tiktok_url_snapshot, r.tiktok_followers || r.tiktok_followers_snapshot) },
-    { title: 'Email', dataIndex: 'email_snapshot', key: 'email_snapshot', width: 200, render: (v, r) => v || r.email || '-' },
+    { title: 'Email', dataIndex: 'email_snapshot', key: 'email_snapshot', width: 200, render: (v, r) => displayEmail(r.email, v) },
     { title: '国家地区', dataIndex: 'country_region_snapshot', key: 'country_region_snapshot', width: 120, render: (v, r) => v || r.country_region || '-' },
     { title: '平台账号', key: 'platform_account', width: 150, render: (_, r) => (
       r.platform_account_url
