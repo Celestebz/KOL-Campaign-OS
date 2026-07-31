@@ -18,12 +18,18 @@ const campaignKols = require('../routes/campaignKols');
 async function dispatchDecisionSideEffects(item, { decision, note } = {}) {
   switch (item.type) {
     case 'outreach':
-      if (decision === 'approve') await emailReviewActions.approveDraft(item.subject_id);
-      else if (decision === 'reject') await emailReviewActions.rejectDraft(item.subject_id, note);
+      if (decision === 'approve') {
+        await emailReviewActions.approveDraft(item.subject_id, { closeApproval: false });
+      } else if (decision === 'reject') {
+        await emailReviewActions.rejectDraft(item.subject_id, note, { closeApproval: false });
+      }
       break;
     case 'reply':
-      if (decision === 'approve') await emailReviewActions.confirmReply(item.subject_id);
-      else if (decision === 'reject') await emailReviewActions.ignoreReply(item.subject_id);
+      if (decision === 'approve') {
+        await emailReviewActions.confirmReply(item.subject_id);
+      } else if (decision === 'reject') {
+        await emailReviewActions.ignoreReply(item.subject_id, { closeApproval: false });
+      }
       break;
     case 'candidate':
       if (decision === 'approve') await campaignKols.setCampaignKolStatus(item.subject_id, 'approved');

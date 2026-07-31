@@ -6,6 +6,15 @@ const timeline = require('./campaignKolTimeline');
 
 const INTENT_TO_OUTREACH = timeline.INTENT_TO_OUTREACH;
 
+async function closePendingApproval(type, subjectType, subjectId) {
+  await dbOperations.run(
+    `UPDATE approval_items
+     SET status = 'cancelled', decision = 'source_gone', decided_at = NOW(), updated_at = NOW()
+     WHERE type = ? AND subject_type = ? AND subject_id = ? AND status = 'pending'`,
+    [type, subjectType, subjectId]
+  );
+}
+
 function actionError(message, statusCode) {
   const error = new Error(message);
   error.statusCode = statusCode;
@@ -24,25 +33,32 @@ async function getReplyOrThrow(replyId) {
   return reply;
 }
 
-async function approveDraft(draftId) {
+async function approveDraft(draftId, { closeApproval = true } = {}) {
   const draft = await getDraftOrThrow(draftId);
   if (draft.status !== 'pending_review') throw actionError('仅待审阅状态可批准', 409);
   await dbOperations.run(
     `UPDATE email_drafts SET status = 'approved', reviewed_at = NOW(), updated_at = NOW() WHERE id = ?`,
     [draft.id]
   );
+  if (closeApproval) await closePendingApproval('outreach', 'email_draft', draft.id);
 }
 
-async function rejectDraft(draftId, reason) {
+async function rejectDraft(draftId, reason, { closeApproval = true } = {}) {
   const draft = await getDraftOrThrow(draftId);
   if (draft.status !== 'pending_review') throw actionError('仅待审阅状态可驳回', 409);
   await dbOperations.run(
     `UPDATE email_drafts SET status = 'rejected', reviewer_note = ?, reviewed_at = NOW(), updated_at = NOW() WHERE id = ?`,
     [reason || null, draft.id]
   );
+  if (closeApproval) await closePendingApproval('outreach', 'email_draft', draft.id);
 }
 
-async function confirmReply(replyId, summaryOverride, intentOverride, actor = 'boss') {
+async function confirmReply(
+  replyId,
+  summaryOverride,
+  intentOverride,
+  actor = 'boss'
+) {
   const reply = await getReplyOrThrow(replyId);
   const summary = (summaryOverride || reply.ai_summary || '').trim();
   const confirmedIntent = timeline.normalizeConfirmedIntent(intentOverride || reply.ai_intent);
@@ -71,7 +87,7 @@ async function confirmReply(replyId, summaryOverride, intentOverride, actor = 'b
   return { outreach_status: appliedOutreachStatus, confirmed_intent: confirmedIntent };
 }
 
-async function ignoreReply(replyId) {
+async function ignoreReply(replyId, { closeApproval = true } = {}) {
   const reply = await getReplyOrThrow(replyId);
   await dbOperations.run(
     `UPDATE email_replies SET confirm_status = 'ignored', updated_at = NOW() WHERE id = ?`,
@@ -91,6 +107,7 @@ async function ignoreReply(replyId) {
        reply.received_at, reply.received_at, reply.id]
     );
   }
+  if (closeApproval) await closePendingApproval('reply', 'email_reply', reply.id);
 }
 
 async function markReplyManuallyHandled(replyId, handledBy = 'boss') {
@@ -119,6 +136,7 @@ async function markReplyManuallyHandled(replyId, handledBy = 'boss') {
        reply.received_at, reply.received_at, reply.id]
     );
   }
+  await closePendingApproval('reply', 'email_reply', reply.id);
   return { confirm_status: 'manually_replied', handled_by: handledBy || 'boss' };
 }
 

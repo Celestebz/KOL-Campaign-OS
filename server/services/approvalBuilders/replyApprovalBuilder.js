@@ -5,12 +5,26 @@ const { INTENT_LABELS, clean, truncate, iso, openAction } = require('./shared');
 async function buildReplyItems() {
   const rows = await dbOperations.query(
     `SELECT er.id, er.campaign_id, er.customer_id, er.subject, er.body_text, er.received_at,
-            er.ai_summary, er.ai_intent, er.updated_at,
+            er.ai_summary, er.ai_intent, er.confirm_status, er.updated_at,
             k.name AS kol_name, c.name AS campaign_name
      FROM email_replies er
      LEFT JOIN customers k ON k.id = er.customer_id
      LEFT JOIN campaigns c ON c.id = er.campaign_id
-     WHERE er.confirm_status = 'pending' AND c.status = 'active'
+     INNER JOIN campaign_kols ck
+       ON ck.campaign_id = er.campaign_id AND ck.customer_id = er.customer_id
+     WHERE c.status = 'active'
+       AND ck.needs_reply = 1
+       AND COALESCE(er.classification, 'needs_review') NOT IN ('spam', 'system')
+       AND er.confirm_status NOT IN ('ignored', 'manually_replied', 'spam', 'system')
+       AND er.id = (
+         SELECT er2.id
+         FROM email_replies er2
+         WHERE er2.campaign_id = er.campaign_id
+           AND er2.customer_id = er.customer_id
+           AND er2.confirm_status <> 'ignored'
+         ORDER BY er2.received_at DESC, er2.id DESC
+         LIMIT 1
+       )
      ORDER BY er.received_at DESC`
   );
   return rows.map((row) => {
@@ -28,7 +42,9 @@ async function buildReplyItems() {
       subject_id: row.id,
       campaign_id: row.campaign_id,
       campaign_name: clean(row.campaign_name),
-      title: `${kolName} · 回复待确认`,
+      title: row.confirm_status === 'confirmed'
+        ? `${kolName} · 等待我方回复`
+        : `${kolName} · 回复待确认`,
       dedupe_key: `reply:email_reply:${row.id}`,
       risk_level: 'none',
       facts,

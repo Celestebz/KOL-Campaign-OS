@@ -1006,6 +1006,8 @@ const CampaignKols = ({ view = 'cooperation' }) => {
             <Form.Item label="合作方式" name="cooperation_type" initialValue="product_exchange">
               <Select options={cooperationTypeOptions} style={{ width: 190 }} />
             </Form.Item>
+          </Space>
+          <Space align="start" style={{ width: '100%' }}>
             <Form.Item label="KOL合作费" name="final_fee">
               <InputNumber min={0} precision={2} disabled={cooperationType === 'product_exchange'} style={{ width: 200 }} placeholder="0.00" />
             </Form.Item>

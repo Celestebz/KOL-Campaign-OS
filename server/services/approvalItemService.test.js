@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { dbOperations } = require('../database');
 const approvalItemService = require('./approvalItemService');
+const { buildReplyItems } = require('./approvalBuilders/replyApprovalBuilder');
 
 function withPatchedDb(patch, fn) {
   const originals = {};
@@ -153,6 +154,25 @@ const fullSources = {
     updated_at: '2026-07-25 03:00:00'
   }]
 };
+
+test('reply builder includes the latest actionable reply even after intent confirmation', async () => {
+  let capturedSql = '';
+  await withPatchedDb({
+    query: async (sql) => {
+      capturedSql = String(sql);
+      return [];
+    }
+  }, async () => {
+    assert.deepEqual(await buildReplyItems(), []);
+  });
+  assert.match(capturedSql, /ck\.needs_reply = 1/);
+  assert.doesNotMatch(capturedSql, /er\.confirm_status = 'pending'/);
+  assert.match(capturedSql, /er\.confirm_status NOT IN \('ignored', 'manually_replied', 'spam', 'system'\)/);
+  assert.match(capturedSql, /classification.*NOT IN \('spam', 'system'\)/s);
+  assert.match(capturedSql, /er\.id = \(/);
+  assert.match(capturedSql, /ORDER BY er2\.received_at DESC, er2\.id DESC/);
+  assert.match(capturedSql, /er2\.confirm_status <> 'ignored'/);
+});
 
 function seededPendingItem(overrides = {}) {
   return {

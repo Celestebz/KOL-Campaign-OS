@@ -51,7 +51,12 @@ function Workbench() {
   useEffect(() => {
     fetchWorkbench();
     const timer = setInterval(fetchWorkbench, POLL_INTERVAL);
-    return () => clearInterval(timer);
+    const refreshOnFocus = () => fetchWorkbench();
+    window.addEventListener('focus', refreshOnFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', refreshOnFocus);
+    };
   }, [fetchWorkbench]);
 
   const approvals = useMemo(() => sortItemsByRisk(data.items).filter((item) =>
