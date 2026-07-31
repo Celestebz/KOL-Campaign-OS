@@ -16,11 +16,13 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "imapflow": "^1.5.0",
+    "mailparser": "^3.9.14",
     "mammoth": "^1.12.0",
     "multer": "^1.4.5-lts.1",
     "mysql2": "^3.11.5",
     "nodemailer": "^6.9.7",
     "pdf-parse": "^2.4.5",
+    "sanitize-html": "^2.17.6",
     "sequelize": "^6.37.8",
     "umzug": "^3.8.3",
     "xlsx": "^0.18.5"

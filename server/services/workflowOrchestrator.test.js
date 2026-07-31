@@ -249,7 +249,7 @@ test('reply approve → 复用 draft-reply 逻辑生成 kind=reply 回复草稿'
       assert.equal(calls[0].sourceReplyId, 5);
       assert.equal(calls[0].campaignId, 10);
       assert.equal(calls[0].customerId, 23);
-      assert.match(calls[0].feedback, /我对合作很感兴趣/);
+      assert.equal(calls[0].feedback, undefined, '邮件原文不再塞进 feedback，由 drafter 内部走会话上下文');
     }));
 });
 

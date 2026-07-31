@@ -3,16 +3,19 @@ const assert = require('node:assert/strict');
 
 const { dbOperations } = require('../database');
 const mailer = require('./mailer');
+const emailThreader = require('./emailThreader');
 const emailDraftSender = require('./emailDraftSender');
 
 const originalRun = dbOperations.run;
 const originalGet = dbOperations.get;
 const originalSendMail = mailer.sendMail;
+const originalAssignRecordThread = emailThreader.assignRecordThread;
 
 test.afterEach(() => {
   dbOperations.run = originalRun;
   dbOperations.get = originalGet;
   mailer.sendMail = originalSendMail;
+  emailThreader.assignRecordThread = originalAssignRecordThread;
 });
 
 test('sendApprovedDraft claims, sends, records, and completes an approved draft', async () => {
@@ -71,6 +74,9 @@ test('sendApprovedDraft marks a reply as negotiating', async () => {
   assert.equal(outreachUpdate.params[1], 'reply');
   assert.equal(outreachUpdate.params[2], 55);
   assert.match(outreachUpdate.sql, /WHEN outreach_status IN \('interested', 'confirmed', 'terminated', 'rejected'\) THEN outreach_status/);
+  assert.ok(writes.some(({ sql, params }) =>
+    sql.includes('UPDATE approval_items') && params.includes(55)
+  ));
 });
 
 test('outreachStatusAfterSend keeps non-reply mail as contacted', () => {
@@ -254,4 +260,133 @@ test('markFailed and markUnknown only write while status is sending', async () =
   const failureUpdate = writes.find(({ sql }) => sql.includes("status = 'send_failed'"));
   assert.ok(failureUpdate, 'expected a markFailed write');
   assert.ok(failureUpdate.sql.includes("AND status = 'sending'"), 'markFailed must be guarded by current status');
+});
+
+// ---- 阶段 3：reply 草稿作为真正的线程回复发送 ----
+
+test('buildReplySendContext prefers clean_body_text, dedupes references, returns null without reply', () => {
+  assert.equal(emailDraftSender.buildReplySendContext({ subject: 'x' }, null), null);
+  const ctx = emailDraftSender.buildReplySendContext(
+    { subject: '', body_text: 'hi' },
+    {
+      message_id: '<m@x>',
+      references_json: '["<m@x>"]',
+      subject: 'hello',
+      from_address: 'a@b',
+      received_at: new Date(2026, 0, 1, 8, 0),
+      body_text: 'raw body',
+      clean_body_text: '   '
+    }
+  );
+  // clean_body_text 为空白时回退 body_text
+  assert.ok(ctx.text.includes('> raw body'));
+  assert.equal(ctx.subject, 'Re: hello');
+  assert.deepEqual(ctx.references, ['<m@x>']);
+  assert.equal(ctx.inReplyTo, '<m@x>');
+  assert.equal(ctx.threadingMissing, false);
+});
+
+test('sendApprovedDraft sends a reply draft as a threaded reply with quote', async () => {
+  const writes = [];
+  const assigned = [];
+  dbOperations.run = async (sql, params) => {
+    writes.push({ sql, params });
+    if (sql.includes('INSERT INTO email_records')) return { changes: 1, id: 99 };
+    return { changes: 1 };
+  };
+  dbOperations.get = async (sql) => {
+    if (sql.includes('FROM email_drafts')) {
+      return {
+        id: 20, status: 'sending', kind: 'reply', source_reply_id: 55,
+        campaign_id: 2, customer_id: 3, subject: 'Re: Re: 合作', body_text: '好的，我们期待合作'
+      };
+    }
+    if (sql.includes('FROM email_replies')) {
+      return {
+        id: 55, message_id: '<abc@x>', references_json: JSON.stringify(['<root@x>']),
+        subject: '合作', from_address: 'creator@example.com',
+        received_at: new Date(2026, 6, 29, 18, 32),
+        body_text: '原始正文', clean_body_text: '干净正文\n第二行'
+      };
+    }
+    if (sql.includes('FROM email_settings')) return { username: 'sender@example.com', default_cc: '' };
+    if (sql.includes('FROM customers')) return { id: 3, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  let mailOptions = null;
+  mailer.sendMail = async (opts) => {
+    mailOptions = opts;
+    return { messageId: 'message-20' };
+  };
+  emailThreader.assignRecordThread = async (id) => {
+    assigned.push(id);
+    return { threadId: 1 };
+  };
+
+  const result = await emailDraftSender.sendApprovedDraft(20);
+
+  assert.equal(mailOptions.inReplyTo, '<abc@x>');
+  assert.deepEqual(mailOptions.references, ['<root@x>', '<abc@x>']);
+  assert.equal(mailOptions.subject, 'Re: 合作');
+  assert.ok(mailOptions.text.startsWith(
+    '好的，我们期待合作\n\nOn 2026/7/29 18:32, creator@example.com wrote:\n\n> 干净正文\n> 第二行'
+  ));
+  assert.ok(mailOptions.html.includes('<blockquote'));
+  assert.ok(mailOptions.html.includes('干净正文<br>第二行'));
+  assert.equal(result.threading_missing, undefined);
+
+  const recordInsert = writes.find(({ sql }) => sql.includes('INSERT INTO email_records'));
+  assert.ok(recordInsert.sql.includes('in_reply_to'));
+  assert.equal(recordInsert.params[9], '<abc@x>');
+  assert.equal(recordInsert.params[10], JSON.stringify(['<root@x>', '<abc@x>']));
+  assert.deepEqual(assigned, [99]);
+});
+
+test('sendApprovedDraft degrades gracefully when the source reply has no message_id', async () => {
+  const writes = [];
+  dbOperations.run = async (sql, params) => {
+    writes.push({ sql, params });
+    if (sql.includes('INSERT INTO email_records')) return { changes: 1, id: 100 };
+    return { changes: 1 };
+  };
+  dbOperations.get = async (sql) => {
+    if (sql.includes('FROM email_drafts')) {
+      return {
+        id: 21, status: 'sending', kind: 'reply', source_reply_id: 56,
+        campaign_id: 2, customer_id: 3, subject: '合作事宜', body_text: '回复正文'
+      };
+    }
+    if (sql.includes('FROM email_replies')) {
+      return {
+        id: 56, message_id: null, references_json: null,
+        subject: '合作事宜', from_address: 'creator@example.com',
+        received_at: new Date(2026, 6, 29, 18, 32),
+        body_text: '来信正文', clean_body_text: null
+      };
+    }
+    if (sql.includes('FROM email_settings')) return { username: 'sender@example.com', default_cc: '' };
+    if (sql.includes('FROM customers')) return { id: 3, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  let mailOptions = null;
+  mailer.sendMail = async (opts) => {
+    mailOptions = opts;
+    return { messageId: 'message-21' };
+  };
+  // 会话归属出错不得影响发送结果
+  emailThreader.assignRecordThread = async () => {
+    throw new Error('thread boom');
+  };
+
+  const result = await emailDraftSender.sendApprovedDraft(21);
+
+  assert.equal(mailOptions.inReplyTo, undefined);
+  assert.equal(mailOptions.references, undefined);
+  assert.equal(mailOptions.subject, 'Re: 合作事宜');
+  assert.ok(mailOptions.text.includes('> 来信正文'));
+  assert.equal(result.threading_missing, true);
+
+  const recordInsert = writes.find(({ sql }) => sql.includes('INSERT INTO email_records'));
+  assert.equal(recordInsert.params[9], null);
+  assert.equal(recordInsert.params[10], null);
 });

@@ -1,5 +1,7 @@
 const { dbOperations } = require('../database');
 const mailer = require('./mailer');
+const emailThreader = require('./emailThreader');
+const { normalizeReplySubject, buildTextQuote, buildHtmlQuote } = require('./emailReplyQuote');
 
 function actionError(message, statusCode) {
   const error = new Error(message);
@@ -63,6 +65,38 @@ async function markOutreachAfterSend(draft) {
      WHERE campaign_id = ? AND customer_id = ?`,
     [nextStatus, draft.kind || '', draft.source_reply_id || null, draft.campaign_id, draft.customer_id]
   );
+  if (draft.kind === 'reply' && draft.source_reply_id) {
+    await dbOperations.run(
+      `UPDATE approval_items
+       SET status = 'cancelled', decision = 'source_gone', decided_at = NOW(), updated_at = NOW()
+       WHERE type = 'reply' AND subject_type = 'email_reply'
+         AND subject_id = ? AND status = 'pending'`,
+      [draft.source_reply_id]
+    );
+  }
+}
+
+// 组装线程回复的发送内容：主题规范为恰好一个 "Re: "，正文附"最近一封来信"的引用块
+//（不嵌套整条历史）。来信缺失 message_id 时降级：不加 In-Reply-To/References 头，
+// 仍保留可读引用块，并标记 threadingMissing 交由前端提示。
+function buildReplySendContext(draft, reply) {
+  if (!reply) return null;
+  const quoteBody = (reply.clean_body_text && String(reply.clean_body_text).trim())
+    ? reply.clean_body_text
+    : reply.body_text;
+  const quote = { fromAddress: reply.from_address, receivedAt: reply.received_at, bodyText: quoteBody };
+  const threadingMissing = !reply.message_id;
+  const references = threadingMissing
+    ? []
+    : [...new Set([...emailThreader.extractMessageIds(reply.references_json), reply.message_id])];
+  return {
+    subject: normalizeReplySubject(draft.subject || reply.subject),
+    text: `${draft.body_text || ''}${buildTextQuote(quote)}`,
+    html: `${mailer.textToHtml(draft.body_text || '')}${buildHtmlQuote(quote)}`,
+    inReplyTo: threadingMissing ? null : reply.message_id,
+    references,
+    threadingMissing
+  };
 }
 
 async function sendApprovedDraft(draftId) {
@@ -98,15 +132,25 @@ async function sendApprovedDraft(draftId) {
   }
 
   const cc = mailer.parseCc(settings.default_cc);
+  // kind='reply' 且来信可查时，按线程回复构造主题/引用正文/回复头；否则完全走原有逻辑
+  let replyCtx = null;
+  if (draft.kind === 'reply' && draft.source_reply_id) {
+    const reply = await dbOperations.get(
+      `SELECT id, message_id, references_json, subject, from_address, received_at, body_text, clean_body_text
+       FROM email_replies WHERE id = ?`,
+      [draft.source_reply_id]
+    );
+    replyCtx = buildReplySendContext(draft, reply);
+  }
+  const subject = replyCtx ? replyCtx.subject : draft.subject;
+  const text = replyCtx ? replyCtx.text : draft.body_text;
   let messageId;
   try {
-    ({ messageId } = await mailer.sendMail({
-      settings,
-      to: customer.email,
-      cc,
-      subject: draft.subject,
-      text: draft.body_text
-    }));
+    const mailOptions = { settings, to: customer.email, cc, subject, text };
+    if (replyCtx && replyCtx.inReplyTo) mailOptions.inReplyTo = replyCtx.inReplyTo;
+    if (replyCtx && replyCtx.references.length) mailOptions.references = replyCtx.references;
+    if (replyCtx) mailOptions.html = replyCtx.html;
+    ({ messageId } = await mailer.sendMail(mailOptions));
   } catch (sendError) {
     const ambiguous = isAmbiguousSendError(sendError);
     await dbOperations.run(
@@ -125,20 +169,32 @@ async function sendApprovedDraft(draftId) {
   }
 
   // SMTP 已接受邮件后不再把草稿标成可重试，避免数据库回写异常导致重复外发。
-  await dbOperations.run(
+  const recordInsert = await dbOperations.run(
       `INSERT INTO email_records
-       (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, NOW())`,
+       (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, in_reply_to, references_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, NOW())`,
     [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
-     cc.join(',') || null, draft.subject, draft.body_text, messageId]
+     cc.join(',') || null, subject, text, messageId,
+     replyCtx ? replyCtx.inReplyTo : null,
+     replyCtx && replyCtx.references.length ? JSON.stringify(replyCtx.references) : null]
   );
+  // 发送记录挂会话：按 In-Reply-To/References 命中来信复用 thread，失败仅记日志不影响发送结果
+  if (recordInsert.id) {
+    try {
+      await emailThreader.assignRecordThread(recordInsert.id);
+    } catch (threadError) {
+      console.error(`[emailDraftSender] 发送记录 ${recordInsert.id} 会话归属失败:`, threadError.message);
+    }
+  }
   await dbOperations.run(
     `UPDATE email_drafts SET status = 'sent', updated_at = NOW()
      WHERE id = ? AND status = 'sending'`,
     [draft.id]
   );
   await markOutreachAfterSend(draft);
-  return { draft_id: draft.id, message_id: messageId, to: customer.email };
+  const result = { draft_id: draft.id, message_id: messageId, to: customer.email };
+  if (replyCtx && replyCtx.threadingMissing) result.threading_missing = true;
+  return result;
 }
 
 async function confirmManuallySent(draftId) {
@@ -160,13 +216,21 @@ async function confirmManuallySent(draftId) {
   );
   if (updated.changes !== 1) throw actionError('草稿状态已变化，请刷新后重试', 409);
 
-  await dbOperations.run(
+  const manualInsert = await dbOperations.run(
     `INSERT INTO email_records
      (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, NOW())`,
     [draft.id, draft.campaign_id, draft.customer_id, customer?.name || null, customer?.email || null,
      draft.subject, draft.body_text, note]
   );
+  // 人工确认的记录也尽量补会话归属（无回复头，按主题+窗口匹配），失败仅记日志
+  if (manualInsert.id) {
+    try {
+      await emailThreader.assignRecordThread(manualInsert.id);
+    } catch (threadError) {
+      console.error(`[emailDraftSender] 发送记录 ${manualInsert.id} 会话归属失败:`, threadError.message);
+    }
+  }
   await markOutreachAfterSend(draft);
   return { draft_id: draft.id, manually_confirmed: true, to: customer?.email || null };
 }
@@ -199,6 +263,7 @@ async function confirmNotSent(draftId) {
 
 module.exports = {
   sendApprovedDraft,
+  buildReplySendContext,
   isAmbiguousSendError,
   confirmManuallySent,
   confirmNotSent,

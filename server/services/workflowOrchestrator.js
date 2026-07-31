@@ -212,8 +212,7 @@ async function runDraftReply(item) {
     campaignId: reply.campaign_id,
     customerId: reply.customer_id,
     kind: 'reply',
-    sourceReplyId: reply.id,
-    feedback: `对方回复内容：${(reply.body_text || '').slice(0, 2000)}`
+    sourceReplyId: reply.id
   });
   if (!result.ok) {
     return followupEntry('draft_reply', false, `回复草稿生成失败：${result.error}`);

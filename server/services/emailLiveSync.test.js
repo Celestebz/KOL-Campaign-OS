@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const imapflow = require('imapflow');
 const { dbOperations } = require('../database');
 const emailReplyPoller = require('../services/emailReplyPoller');
+const emailThreader = require('../services/emailThreader');
 const liveSync = require('../services/emailLiveSync');
 
 function makeMail(uid, { messageId, from, subject } = {}) {
@@ -35,12 +36,22 @@ function fakeClient({ uidNext = 101, messages = [] } = {}) {
 }
 
 // 按 SQL 分发：设置表 / 回复去重 / 发件人匹配；捕获写入与 UID 游标推进
-function mockDb({ settings, existingMessageIds = new Set(), matchedEmails = {}, throwOnInsert = null } = {}) {
+// 会话归属走真实 dbOperations.query，这里统一 stub 掉并记录调用参数
+function mockDb({ settings, existingMessageIds = new Set(), matchedEmails = {}, throwOnInsert = null,
+  threadResult = { threadId: null, ambiguous: false, matchedBy: null } } = {}) {
   const inserts = [];
   const uidWrites = [];
   const outreachWrites = [];
+  const threadCalls = [];
   const originalGet = dbOperations.get;
   const originalRun = dbOperations.run;
+  const originalAssign = emailThreader.assignReplyThread;
+
+  emailThreader.assignReplyThread = async (params) => {
+    threadCalls.push(params);
+    if (threadResult instanceof Error) throw threadResult;
+    return threadResult;
+  };
 
   dbOperations.get = async (sql, params = []) => {
     const text = String(sql);
@@ -79,9 +90,11 @@ function mockDb({ settings, existingMessageIds = new Set(), matchedEmails = {}, 
     inserts,
     uidWrites,
     outreachWrites,
+    threadCalls,
     restore() {
       dbOperations.get = originalGet;
       dbOperations.run = originalRun;
+      emailThreader.assignReplyThread = originalAssign;
     }
   };
 }
@@ -180,5 +193,142 @@ test('sync status exposes mode, connection state and timestamps', () => {
   const status = liveSync.getEmailSyncStatus();
   for (const key of ['mode', 'status', 'last_mail_at', 'last_full_sync_at', 'last_error', 'reconnect_attempts', 'connected_since']) {
     assert.ok(key in status, `status missing ${key}`);
+  }
+});
+
+// ---- 标准 MIME 解析接入 ----
+
+const RAW_REPLY = [
+  'From: Kol Name <kol@example.com>',
+  'To: u@test.com',
+  'Subject: Re: 合作咨询',
+  'Date: Mon, 27 Jul 2026 06:00:00 +0000',
+  'Message-ID: <reply-1@test>',
+  'In-Reply-To: <sent-1@test>',
+  'References: <sent-1@test> <root-1@test>',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  '好的，我们愿意合作，请发报价单。',
+  '',
+  'On 2026-07-26, Someone wrote:',
+  '> 旧的沟通内容'
+].join('\r\n');
+
+// INSERT params 下标：0 email_record_id, 1 campaign_id, 2 customer_id, 3 from_address,
+// 4 message_id, 5 subject, 6 body_text, 7 received_at, 8 confirm_status, 9 classification,
+// 10 classification_source, 11 classification_reason, 12 in_reply_to, 13 references_json,
+// 14 clean_body_text, 15 body_html, 16 quoted_body_text, 17 signature_text,
+// 18 raw_source, 19 parse_status, 20 parse_error
+test('parse-ok message stores MIME columns and is assigned to a thread', async () => {
+  const db = mockDb({ settings: baseSettings, matchedEmails: { 'kol@example.com': 7 } });
+  try {
+    const mail = makeMail(101, { from: 'kol@example.com' });
+    mail.source = Buffer.from(RAW_REPLY, 'utf8');
+    const client = fakeClient({ messages: [mail] });
+    const result = await liveSync.fetchNew(client);
+    assert.equal(result.matched, 1);
+
+    const params = db.inserts[0];
+    assert.equal(params[3], 'kol@example.com');
+    assert.match(params[6], /愿意合作/, 'body_text 用解析出的完整可读纯文本');
+    assert.equal(params[12], '<sent-1@test>', 'in_reply_to 对齐库存尖括号格式');
+    assert.equal(params[13], '["<sent-1@test>","<root-1@test>"]');
+    assert.match(params[14], /愿意合作/, 'clean_body_text 为本次新写内容');
+    assert.ok(!params[14].includes('旧的沟通内容'), 'clean_body_text 不含引用');
+    assert.match(params[16], /旧的沟通内容/, 'quoted_body_text 保留引用');
+    assert.match(params[18], /In-Reply-To/, 'raw_source 存原始 RFC822');
+    assert.equal(params[19], 'ok');
+    assert.equal(params[20], null);
+
+    assert.equal(db.threadCalls.length, 1, '入库后调用会话归属');
+    const call = db.threadCalls[0];
+    assert.equal(call.replyId, 901);
+    assert.equal(call.messageId, '<m101@test>');
+    assert.equal(call.inReplyTo, '<sent-1@test>');
+    assert.deepEqual(call.references, ['<sent-1@test>', '<root-1@test>']);
+    assert.equal(call.campaignId, 2);
+    assert.equal(call.customerId, 7);
+  } finally {
+    db.restore();
+  }
+});
+
+test('raw_source larger than 2MB is parsed but not stored', async () => {
+  const db = mockDb({ settings: baseSettings, matchedEmails: { 'kol@example.com': 7 } });
+  try {
+    const bigBody = `长线正文${'x'.repeat(2 * 1024 * 1024)}`;
+    const mail = makeMail(101, { from: 'kol@example.com' });
+    mail.source = Buffer.from(RAW_REPLY.replace('好的，我们愿意合作，请发报价单。', bigBody), 'utf8');
+    const client = fakeClient({ messages: [mail] });
+    const result = await liveSync.fetchNew(client);
+    assert.equal(result.matched, 1);
+    assert.equal(db.inserts[0][19], 'ok');
+    assert.equal(db.inserts[0][18], null, 'raw_source 超过 2MB 置 NULL');
+    assert.match(db.inserts[0][6], /^长线正文/, 'body_text 不截断');
+  } finally {
+    db.restore();
+  }
+});
+
+test('missing source falls back to the legacy parser with parse_status failed', async () => {
+  const db = mockDb({ settings: baseSettings, matchedEmails: { 'kol@example.com': 7 } });
+  try {
+    const client = fakeClient({ messages: [makeMail(101, { from: 'kol@example.com' })] });
+    const result = await liveSync.fetchNew(client);
+    assert.equal(result.matched, 1, '回退路径仍正常入库');
+    const params = db.inserts[0];
+    assert.equal(params[6], '你好，我对合作感兴趣', 'body_text 由旧解析器兜底');
+    assert.equal(params[19], 'failed');
+    assert.ok(params[20], 'parse_error 记录原因');
+    for (const index of [12, 13, 14, 15, 16, 17, 18]) {
+      assert.equal(params[index], null, `新列 params[${index}] 置 NULL`);
+    }
+    assert.equal(db.threadCalls.length, 1, '回退路径也尝试会话归属');
+    assert.equal(db.threadCalls[0].inReplyTo, null);
+    assert.deepEqual(db.threadCalls[0].references, []);
+  } finally {
+    db.restore();
+  }
+});
+
+test('ambiguous thread assignment logs a warning without breaking ingestion', async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  const db = mockDb({
+    settings: baseSettings,
+    matchedEmails: { 'kol@example.com': 7 },
+    threadResult: { threadId: null, ambiguous: true, matchedBy: null }
+  });
+  try {
+    const client = fakeClient({ messages: [makeMail(101, { from: 'kol@example.com' })] });
+    const result = await liveSync.fetchNew(client);
+    assert.equal(result.matched, 1);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /歧义/);
+  } finally {
+    console.warn = originalWarn;
+    db.restore();
+  }
+});
+
+test('threading failure is logged and does not break ingestion', async () => {
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.join(' '));
+  const db = mockDb({
+    settings: baseSettings,
+    matchedEmails: { 'kol@example.com': 7 },
+    threadResult: new Error('thread db down')
+  });
+  try {
+    const client = fakeClient({ messages: [makeMail(101, { from: 'kol@example.com' })] });
+    const result = await liveSync.fetchNew(client);
+    assert.equal(result.matched, 1, '会话归属失败不影响入库');
+    assert.equal(db.inserts.length, 1);
+    assert.ok(errors.some((line) => line.includes('会话归属失败')), '失败记日志');
+  } finally {
+    console.error = originalError;
+    db.restore();
   }
 });

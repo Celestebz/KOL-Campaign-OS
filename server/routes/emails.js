@@ -9,6 +9,9 @@ const emailDashboardSummary = require('../services/emailDashboardSummary');
 const emailFilterService = require('../services/emailFilterService');
 const automationRuns = require('../services/automationRuns');
 const { parseInboundBody } = require('../services/emailBodyParser');
+const emailThreader = require('../services/emailThreader');
+const emailThreadBackfill = require('../services/emailThreadBackfill');
+const emailContextBuilder = require('../services/emailContextBuilder');
 
 const router = express.Router();
 
@@ -523,11 +526,14 @@ router.get('/replies', async (req, res) => {
        LIMIT 200`,
       params
     );
-    // 兼容修复上线前已存入数据库的原始 MIME 正文。
-    const normalizedReplies = replies.map((reply) => ({
-      ...reply,
-      body_text: parseInboundBody(reply.body_text)
-    }));
+    // 兼容修复上线前已存入数据库的原始 MIME 正文：仅 legacy/未标记的旧数据且尚未拆出
+    // clean_body_text 时才重跑旧解析器补 body_text；新标准解析过的行直接返回。
+    const normalizedReplies = replies.map((reply) => {
+      const hasParsedBody = reply.clean_body_text !== null && reply.clean_body_text !== undefined;
+      const isLegacy = !reply.parse_status || reply.parse_status === 'legacy';
+      if (hasParsedBody || !isLegacy) return reply;
+      return { ...reply, body_text: parseInboundBody(reply.body_text) };
+    });
     res.json({ success: true, data: normalizedReplies });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -648,8 +654,7 @@ router.post('/replies/:id/draft-reply', async (req, res) => {
     if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
     const result = await emailDrafter.draftForCustomer({
       campaignId: reply.campaign_id, customerId: reply.customer_id,
-      kind: 'reply', sourceReplyId: reply.id,
-      feedback: `对方回复内容：${(reply.body_text || '').slice(0, 2000)}`
+      kind: 'reply', sourceReplyId: reply.id
     });
     if (!result.ok) return res.status(500).json({ success: false, error: result.error });
     res.json({ success: true, message: '回复草稿已生成，请到审批台审阅', data: { draftId: result.draftId } });
@@ -702,6 +707,193 @@ router.post('/replies/:id/bind', async (req, res) => {
     res.json({ success: true, message: '已绑定 KOL', data: updated });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---- 邮件会话（thread） ----
+
+// 管理员触发历史回填：同步执行，默认每类最多扫 500 条；dry_run=true 只预演不落库
+router.post('/reparse', async (req, res) => {
+  try {
+    const limit = Number(req.body?.limit) || 500;
+    const dryRun = Boolean(req.body?.dry_run);
+    const stats = await emailThreadBackfill.runBackfill({ limit, dryRun });
+    res.json({ success: true, message: dryRun ? '回填预演完成（未写入）' : '历史回填完成', data: stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 人工归属：把回复绑到指定项目/KOL/会话
+router.post('/replies/:id/reassign', async (req, res) => {
+  try {
+    const result = await emailThreader.reassignReply(req.params.id, {
+      campaignId: Number(req.body?.campaign_id) || null,
+      customerId: Number(req.body?.customer_id) || null,
+      threadId: Number(req.body?.thread_id) || null
+    });
+    res.json({ success: true, message: '已重新归属', data: { thread_id: result.threadId } });
+  } catch (error) {
+    sendActionError(res, error);
+  }
+});
+
+// 会话列表：按项目/KOL 过滤；needs_reply=1 只列有待回复来信的会话（复用 campaign_kols.needs_reply 待办标记）
+router.get('/threads', async (req, res) => {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
+    const conditions = [];
+    const params = [];
+    if (req.query.campaign_id) {
+      conditions.push('t.campaign_id = ?');
+      params.push(Number(req.query.campaign_id));
+    }
+    if (req.query.customer_id) {
+      conditions.push('t.customer_id = ?');
+      params.push(Number(req.query.customer_id));
+    }
+    if (req.query.needs_reply === '1' || req.query.needs_reply === 'true') {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM campaign_kols ck
+        WHERE ck.campaign_id = t.campaign_id AND ck.customer_id = t.customer_id AND ck.needs_reply = 1
+      )`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const totalRow = await dbOperations.get(`SELECT COUNT(*) AS total FROM email_threads t ${where}`, params);
+    const threads = await dbOperations.query(
+      `SELECT t.*, c.name AS campaign_name, cu.name AS customer_name, cu.email AS customer_email
+       FROM email_threads t
+       LEFT JOIN campaigns c ON c.id = t.campaign_id
+       LEFT JOIN customers cu ON cu.id = t.customer_id
+       ${where}
+       ORDER BY t.last_message_at DESC, t.id DESC
+       LIMIT ? OFFSET ?`,
+      [...params, pageSize, (page - 1) * pageSize]
+    );
+    // 每页会话补充最后一封消息（收发两侧取较新者），供列表展示双方标识与摘要
+    const items = [];
+    for (const thread of threads) {
+      const lastReply = await dbOperations.get(
+        `SELECT id, subject, from_address, received_at, ai_summary, clean_body_text, body_text, confirm_status
+         FROM email_replies WHERE thread_id = ? ORDER BY received_at DESC, id DESC LIMIT 1`,
+        [thread.id]
+      );
+      const lastRecord = await dbOperations.get(
+        `SELECT id, subject, to_address, created_at, body_text
+         FROM email_records WHERE thread_id = ? AND status = 'success' ORDER BY created_at DESC, id DESC LIMIT 1`,
+        [thread.id]
+      );
+      let lastMessage = null;
+      if (lastReply && (!lastRecord || new Date(lastReply.received_at) >= new Date(lastRecord.created_at))) {
+        lastMessage = {
+          direction: 'inbound',
+          at: lastReply.received_at,
+          subject: lastReply.subject,
+          from: lastReply.from_address,
+          confirm_status: lastReply.confirm_status,
+          summary: lastReply.ai_summary || String(lastReply.clean_body_text || lastReply.body_text || '').slice(0, 120)
+        };
+      } else if (lastRecord) {
+        lastMessage = {
+          direction: 'outbound',
+          at: lastRecord.created_at,
+          subject: lastRecord.subject,
+          to: lastRecord.to_address,
+          summary: String(lastRecord.body_text || '').slice(0, 120)
+        };
+      }
+      items.push({ ...thread, last_message: lastMessage });
+    }
+    res.json({ success: true, data: { total: totalRow?.total || 0, page, pageSize, items } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 会话详情：thread 信息 + 合并时间线 + 当前待审草稿 + 项目/KOL 基本信息
+router.get('/threads/:id', async (req, res) => {
+  try {
+    const thread = await dbOperations.get('SELECT * FROM email_threads WHERE id = ?', [req.params.id]);
+    if (!thread) return res.status(404).json({ success: false, error: '会话不存在' });
+    const timeline = await emailContextBuilder.loadThreadTimeline(thread.id);
+    const campaign = thread.campaign_id
+      ? await dbOperations.get('SELECT id, name, brand, product, status, period FROM campaigns WHERE id = ?', [thread.campaign_id])
+      : null;
+    const customer = thread.customer_id
+      ? await dbOperations.get('SELECT id, name, email, platform, country_region FROM customers WHERE id = ?', [thread.customer_id])
+      : null;
+    const pendingDraft = await dbOperations.get(
+      `SELECT id, kind, subject, body_text, status, risk_level, source_reply_id,
+              reply_to_message_id, context_message_ids, context_summary_snapshot, generated_at, updated_at
+       FROM email_drafts WHERE thread_id = ? AND status = 'pending_review' ORDER BY id DESC LIMIT 1`,
+      [thread.id]
+    );
+    res.json({ success: true, data: { thread, campaign, customer, timeline, pending_draft: pendingDraft || null } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 会话内起草回复：默认针对最新来信，可指定 reply_id；已有待审草稿时复用（dedupe 在 drafter 内）
+router.post('/threads/:id/draft-reply', async (req, res) => {
+  try {
+    const thread = await dbOperations.get('SELECT * FROM email_threads WHERE id = ?', [req.params.id]);
+    if (!thread) return res.status(404).json({ success: false, error: '会话不存在' });
+    let reply;
+    if (req.body?.reply_id) {
+      reply = await dbOperations.get(
+        'SELECT * FROM email_replies WHERE id = ? AND thread_id = ?',
+        [Number(req.body.reply_id), thread.id]
+      );
+      if (!reply) return res.status(404).json({ success: false, error: '该来信不在此会话中' });
+    } else {
+      reply = await dbOperations.get(
+        'SELECT * FROM email_replies WHERE thread_id = ? ORDER BY received_at DESC, id DESC LIMIT 1',
+        [thread.id]
+      );
+      if (!reply) return res.status(400).json({ success: false, error: '该会话暂无来信，无法起草回复' });
+    }
+    const result = await emailDrafter.draftForCustomer({
+      campaignId: thread.campaign_id,
+      customerId: thread.customer_id,
+      kind: 'reply',
+      sourceReplyId: reply.id,
+      feedback: req.body?.feedback || null
+    });
+    if (!result.ok) return res.status(500).json({ success: false, error: result.error });
+    res.json({
+      success: true,
+      message: result.skipped ? '已有草稿，复用现有' : '回复草稿已生成，请到审批台审阅',
+      data: { draftId: result.draftId }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 手动刷新会话滚动摘要；AI 失败时返回当前已存摘要，不报错
+router.post('/threads/:id/context/refresh', async (req, res) => {
+  try {
+    const result = await emailContextBuilder.generateThreadSummary(Number(req.params.id));
+    if (result) {
+      return res.json({
+        success: true,
+        message: result.updated ? '会话摘要已更新' : '会话摘要已是最新',
+        data: { context_summary: result.summary, summary_through_message_id: result.throughMessageId }
+      });
+    }
+    const thread = await dbOperations.get(
+      'SELECT context_summary, summary_through_message_id FROM email_threads WHERE id = ?',
+      [req.params.id]
+    );
+    res.json({
+      success: true,
+      message: 'AI 摘要生成失败，返回现有摘要',
+      data: { context_summary: thread?.context_summary || null, summary_through_message_id: thread?.summary_through_message_id || null }
+    });
+  } catch (error) {
+    sendActionError(res, error);
   }
 });
 

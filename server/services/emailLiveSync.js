@@ -9,8 +9,14 @@ const emailReplyPoller = require('./emailReplyPoller');
 const emailFilterService = require('./emailFilterService');
 const emailBounceService = require('./emailBounceService');
 const { parseInboundBody } = require('./emailBodyParser');
+const emailMimeParser = require('./emailMimeParser');
+const emailThreader = require('./emailThreader');
 
 const { normalizeAddress, findOwnerByAddress } = emailReplyPoller;
+const { toStoredMessageId } = emailMimeParser;
+
+// raw_source 超过 2MB 不落库（置 NULL），避免超大附件邮件撑爆行存储
+const RAW_SOURCE_MAX_BYTES = 2 * 1024 * 1024;
 
 const RECONNECT_DELAYS_MS = [5000, 15000, 30000, 60000];
 const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
@@ -50,19 +56,38 @@ function makeClient(settings) {
   });
 }
 
-// 处理一封已抓取的邮件：幂等去重 → 匹配 → 入库 → AI 摘要（仅已匹配）
+// 会话归属：失败只记日志，不影响入库与 UID 推进
+async function assignThreadSafely(params) {
+  try {
+    const result = await emailThreader.assignReplyThread(params);
+    if (result?.ambiguous) {
+      console.warn(`[email] 回复 ${params.replyId} 会话归属歧义（同邮箱多项目），待人工处理。`);
+    }
+  } catch (error) {
+    console.error(`[email] 回复 ${params.replyId} 会话归属失败:`, error.message);
+  }
+}
+
+// 处理一封已抓取的邮件：幂等去重 → MIME 解析（失败回退旧解析器）→ 匹配 → 入库 → 会话归属 → AI 摘要（仅已匹配）
 async function processFetchedMessage(message) {
   const uid = message.uid;
   const messageId = message.envelope?.messageId || `uid-${uid}`;
   const existing = await dbOperations.get('SELECT id FROM email_replies WHERE message_id = ? LIMIT 1', [messageId]);
   if (existing) return { duplicate: true };
 
-  const fromAddress = normalizeAddress(message.envelope?.from?.[0]?.address || '');
+  // 标准 MIME 解析（优先用 RFC822 原始源）；失败回退旧自写解析器，入库与 UID 推进不中断
+  const parsed = message.source ? await emailMimeParser.parseRawEmail(message.source) : null;
+  const parseOk = parsed?.parseStatus === 'ok';
+  const fromAddress = normalizeAddress((parseOk && parsed.fromAddress) || message.envelope?.from?.[0]?.address || '');
+  const subject = (parseOk && parsed.subject) || message.envelope?.subject || '';
+  const receivedAt = (parseOk && parsed.date) || message.envelope?.date || new Date();
+  const bodyText = parseOk ? (parsed.bodyText || '') : parseInboundBody(message.bodyParts?.get('text') || '');
+  const rawSource = parseOk && message.source && message.source.length <= RAW_SOURCE_MAX_BYTES
+    ? message.source.toString('utf8') : null;
   const owner = fromAddress ? await findOwnerByAddress(fromAddress) : null;
   const filterRule = fromAddress ? await emailFilterService.matchingRule(fromAddress) : null;
-  const bodyText = parseInboundBody(message.bodyParts?.get('text') || '');
   const systemMail = emailBounceService.detectSystemMail({
-    fromAddress, subject: message.envelope?.subject || '', bodyText
+    fromAddress, subject, bodyText
   });
   const classification = systemMail.isSystem ? 'system' : (filterRule ? 'spam' : (owner?.customer_id ? 'kol_reply' : 'needs_review'));
   const confirmStatus = systemMail.isSystem ? 'system' : (filterRule ? 'spam' : 'pending');
@@ -76,12 +101,37 @@ async function processFetchedMessage(message) {
       `INSERT INTO email_replies
        (email_record_id, campaign_id, customer_id, from_address, message_id, subject, body_text, received_at,
         ai_status, confirm_status, classification, classification_source, classification_reason, classified_at,
-        created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+        created_at, updated_at,
+        in_reply_to, references_json, clean_body_text, body_html, quoted_body_text, signature_text,
+        raw_source, parse_status, parse_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
-       message.envelope?.subject || '', bodyText, message.envelope?.date || new Date(), confirmStatus,
-       classification, classificationSource, classificationReason]
+       subject, bodyText, receivedAt, confirmStatus,
+       classification, classificationSource, classificationReason,
+       parseOk ? toStoredMessageId(parsed.inReplyTo) : null,
+       parseOk ? JSON.stringify((parsed.references || []).map(toStoredMessageId)) : null,
+       parseOk ? parsed.cleanBodyText : null,
+       parseOk ? parsed.bodyHtml : null,
+       parseOk ? parsed.quotedBodyText : null,
+       parseOk ? parsed.signatureText : null,
+       rawSource,
+       parseOk ? 'ok' : 'failed',
+       parseOk ? null : String(parsed?.parseError || 'IMAP 未返回邮件原始源').slice(0, 2000)]
     );
+    if (result.id) {
+      await assignThreadSafely({
+        replyId: result.id,
+        messageId,
+        inReplyTo: parseOk ? toStoredMessageId(parsed.inReplyTo) : null,
+        references: parseOk ? (parsed.references || []).map(toStoredMessageId) : [],
+        subject,
+        fromAddress,
+        receivedAt,
+        campaignId: owner?.campaign_id || null,
+        customerId: owner?.customer_id || null,
+        emailRecordId: owner?.id || null
+      });
+    }
     if (owner?.customer_id && !filterRule && !systemMail.isSystem) {
       await emailReplyPoller.markWaitingReply(owner.campaign_id, owner.customer_id);
     }
@@ -115,7 +165,7 @@ async function fetchNew(activeClient) {
     let matched = 0;
     let unmatched = 0;
     const range = `${lastUid + 1}:*`;
-    for await (const message of activeClient.fetch(range, { envelope: true, bodyParts: ['text'] }, { uid: true })) {
+    for await (const message of activeClient.fetch(range, { envelope: true, bodyParts: ['text'], source: true }, { uid: true })) {
       if (!message?.uid || message.uid <= lastUid) continue;
       const outcome = await processFetchedMessage(message);
       fetched += 1;

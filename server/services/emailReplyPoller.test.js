@@ -4,6 +4,7 @@ const { dbOperations } = require('../database');
 const imapflow = require('imapflow');
 const aiClient = require('../services/aiClient');
 const poller = require('../services/emailReplyPoller');
+const emailThreader = require('../services/emailThreader');
 
 function withPatchedDb(patch, fn) {
   const originals = {};
@@ -142,4 +143,80 @@ test('pollOnce does nothing when IMAP not configured', async () => {
   }, async () => {
     await poller.pollOnce(); // 不应抛错、不应连接
   });
+});
+
+test('pollOnce parses RFC822 source, stores MIME columns and assigns thread', async () => {
+  const raw = [
+    'From: Bob <bob@x.com>',
+    'To: u@x.com',
+    'Subject: Re: 合作',
+    'Date: Tue, 21 Jul 2026 06:00:00 +0000',
+    'Message-ID: <reply-9@x>',
+    'In-Reply-To: <sent-1@test>',
+    'References: <sent-1@test>',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    '我愿意合作'
+  ].join('\r\n');
+  const fakeClient = {
+    connect: async () => {},
+    logout: async () => {},
+    getMailboxLock: async () => ({ release: () => {} }),
+    search: async () => [1],
+    fetchOne: async () => ({
+      envelope: { messageId: 'm-new', from: [{ address: 'Bob <bob@x.com>' }], subject: 'Re: 合作', date: new Date('2026-07-21') },
+      bodyParts: new Map([['text', Buffer.from('fallback 不应被使用')]]),
+      source: Buffer.from(raw, 'utf8')
+    }),
+    messageFlagsAdd: async () => {}
+  };
+  const originalImapFlow = imapflow.ImapFlow;
+  imapflow.ImapFlow = function FakeImapFlow() { return fakeClient; };
+  const threadCalls = [];
+  const originalAssign = emailThreader.assignReplyThread;
+  emailThreader.assignReplyThread = async (params) => {
+    threadCalls.push(params);
+    return { threadId: 9, ambiguous: false, matchedBy: 'in_reply_to' };
+  };
+
+  const statements = [];
+  try {
+    await withPatchedDb({
+      get: async (sql, params) => {
+        if (/FROM email_settings/.test(sql)) {
+          return { id: 1, imap_host: 'imap.x.com', imap_port: 993, imap_secure: 1, username: 'u@x.com', password: 'p' };
+        }
+        if (/FROM email_replies/.test(sql)) return null;
+        if (/FROM email_records/.test(sql)) {
+          return params[0] === 'bob@x.com' ? { id: 20, campaign_id: 2, customer_id: 7 } : null;
+        }
+        return null;
+      },
+      run: async (sql, params) => {
+        statements.push({ sql, params });
+        return { id: 42, changes: 1 };
+      }
+    }, async () => {
+      await poller.pollOnce();
+    });
+  } finally {
+    imapflow.ImapFlow = originalImapFlow;
+    emailThreader.assignReplyThread = originalAssign;
+  }
+
+  const insert = statements.find((s) => /INSERT INTO email_replies/.test(s.sql));
+  assert.ok(insert, '应插入一条回复');
+  assert.equal(insert.params[3], 'bob@x.com');
+  assert.match(insert.params[6], /我愿意合作/, 'body_text 用标准解析结果');
+  assert.ok(!insert.params[6].includes('fallback'), '不使用 bodyParts 回退文本');
+  assert.equal(insert.params[12], '<sent-1@test>', 'in_reply_to 对齐库存尖括号格式');
+  assert.equal(insert.params[13], '["<sent-1@test>"]');
+  assert.match(insert.params[14], /我愿意合作/, 'clean_body_text 已拆分');
+  assert.match(insert.params[18], /Message-ID/, 'raw_source 存原始 RFC822');
+  assert.equal(insert.params[19], 'ok');
+  assert.equal(insert.params[20], null);
+  assert.equal(threadCalls.length, 1, '入库后调用会话归属');
+  assert.equal(threadCalls[0].replyId, 42);
+  assert.equal(threadCalls[0].emailRecordId, 20);
+  assert.equal(threadCalls[0].inReplyTo, '<sent-1@test>');
 });

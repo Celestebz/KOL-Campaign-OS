@@ -78,10 +78,11 @@ export async function regenerateDraft(id, feedback) {
   return res.data.data;
 }
 
+// 返回发送结果 data（含 threading_missing 标记），调用方可据此提示线程归属风险
 export async function approveDraft(id) {
-  await axios.post(`/api/emails/drafts/${id}/approve`, undefined, { timeout: 60000 });
+  const res = await axios.post(`/api/emails/drafts/${id}/approve`, undefined, { timeout: 60000 });
+  return res.data.data;
 }
-
 export async function rejectDraft(id, reason) {
   await axios.post(`/api/emails/drafts/${id}/reject`, { reason });
 }
@@ -234,8 +235,39 @@ export async function retryReplySummary(id) {
   await axios.post(`/api/emails/replies/${id}/retry-summary`);
 }
 
+// 返回完整响应（含 message 与 data.draftId），便于调用方直接加载草稿详情
 export async function draftReply(id) {
-  await axios.post(`/api/emails/replies/${id}/draft-reply`);
+  const res = await axios.post(`/api/emails/replies/${id}/draft-reply`);
+  return res.data;
+}
+
+// ---- 邮件会话（thread）工作台 ----
+
+// 会话详情：thread + campaign + customer + 合并时间线 + 当前待审草稿
+export async function getThread(id) {
+  const res = await axios.get(`/api/emails/threads/${id}`);
+  return res.data.data;
+}
+
+// 会话内起草回复：已有待审草稿时后端复用并返回 message='已有草稿，复用现有'
+export async function draftThreadReply(id, { feedback, reply_id } = {}) {
+  const res = await axios.post(`/api/emails/threads/${id}/draft-reply`, {
+    ...(feedback ? { feedback } : {}),
+    ...(reply_id ? { reply_id } : {})
+  });
+  return res.data;
+}
+
+// 手动刷新会话滚动摘要
+export async function refreshThreadContext(id) {
+  const res = await axios.post(`/api/emails/threads/${id}/context/refresh`);
+  return res.data;
+}
+
+// 人工归属：把回复绑到指定项目/KOL/会话
+export async function reassignReply(id, payload) {
+  const res = await axios.post(`/api/emails/replies/${id}/reassign`, payload);
+  return res.data.data;
 }
 
 // ---- 固定模板预览/发送（原发邮件入口，kind='fixed'） ----

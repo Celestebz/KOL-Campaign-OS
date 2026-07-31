@@ -222,6 +222,11 @@ test('POST /replies/:id/confirm maps intent and writes back campaign_kols', asyn
   assert.ok(statements.some((s) => /INSERT INTO campaign_kol_events/.test(s.sql)));
   const updateReply = statements.find((s) => /UPDATE email_replies/.test(s.sql));
   assert.match(updateReply.sql, /confirm_status = 'confirmed'/);
+  assert.equal(
+    statements.some((s) => /UPDATE approval_items/.test(s.sql)),
+    false,
+    'confirming intent must keep the reply todo open until we respond'
+  );
 });
 
 test('POST /replies/:id/confirm maps other to negotiating without changing the email todo', async () => {
@@ -308,6 +313,9 @@ test('POST /replies/:id/ignore sets confirm_status ignored', async () => {
   assert.match(statements[0].sql, /confirm_status = 'ignored'/);
   assert.match(statements[1].sql, /needs_reply = 0/);
   assert.deepEqual(statements[1].params, [2, 3, 2, 3, '2026-07-29 10:00:00', '2026-07-29 10:00:00', 7]);
+  assert.ok(statements.some((s) =>
+    /UPDATE approval_items/.test(s.sql) && s.params.includes(7)
+  ));
 });
 
 test('POST /replies/:id/manually-replied closes the todo without sending an email', async () => {
@@ -339,6 +347,9 @@ test('POST /replies/:id/manually-replied closes the todo without sending an emai
   assert.match(updateKol.sql, /needs_reply = 0/);
   assert.match(updateKol.sql, /NOT IN \('ignored', 'manually_replied'\)/);
   assert.equal(statements.some((statement) => /email_records|email_drafts/.test(statement.sql)), false);
+  assert.ok(statements.some((statement) =>
+    /UPDATE approval_items/.test(statement.sql) && statement.params.includes(17)
+  ));
 });
 
 test('POST /replies/:id/retry-summary re-runs summarizeReply and returns updated reply', async () => {
@@ -380,7 +391,7 @@ test('POST /replies/:id/draft-reply generates reply draft into review queue', as
   }
   assert.equal(seen[0].kind, 'reply');
   assert.equal(seen[0].sourceReplyId, 9);
-  assert.match(seen[0].feedback, /佣金细节/);
+  assert.equal(seen[0].feedback, undefined, '邮件原文不再塞进 feedback，由 drafter 内部走会话上下文');
 });
 
 test('POST /drafts/generate dedupes existing pending drafts and queues the rest as a background run', async () => {
@@ -672,5 +683,232 @@ test('GET /approval-dashboard/summary still returns 200 with nulls when the serv
     assert.equal(response.payload.data.error, 'boom');
   } finally {
     dashboardSummary.buildSummary = originalBuild;
+  }
+});
+
+test('GET /replies returns parsed fields as-is for newly parsed rows', async () => {
+  const parsedRow = {
+    id: 1,
+    confirm_status: 'pending',
+    body_text: '完整正文含引用',
+    clean_body_text: '本次新写内容',
+    body_html: '<p>本次新写内容</p>',
+    quoted_body_text: '> 引用',
+    signature_text: null,
+    thread_id: 9,
+    in_reply_to: '<sent-1@test>',
+    parse_status: 'ok'
+  };
+  await withPatchedDb({
+    query: async () => [parsedRow]
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/replies');
+    const response = await callHandler(handler, { query: {} });
+    const row = response.payload.data[0];
+    assert.equal(row.body_text, '完整正文含引用', '已解析行不重跑旧解析器');
+    assert.equal(row.clean_body_text, '本次新写内容');
+    assert.equal(row.body_html, '<p>本次新写内容</p>');
+    assert.equal(row.quoted_body_text, '> 引用');
+    assert.equal(row.thread_id, 9);
+    assert.equal(row.in_reply_to, '<sent-1@test>');
+    assert.equal(row.parse_status, 'ok');
+  });
+});
+
+test('GET /replies re-runs the legacy parser only for legacy rows without clean_body_text', async () => {
+  const legacyRow = {
+    id: 2,
+    confirm_status: 'pending',
+    body_text: 'Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n原始正文',
+    clean_body_text: null,
+    parse_status: 'legacy'
+  };
+  const failedRow = {
+    id: 3,
+    confirm_status: 'pending',
+    body_text: '回退时已清洗的正文',
+    clean_body_text: null,
+    parse_status: 'failed'
+  };
+  await withPatchedDb({
+    query: async () => [legacyRow, failedRow]
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/replies');
+    const response = await callHandler(handler, { query: {} });
+    const [legacy, failed] = response.payload.data;
+    assert.equal(legacy.body_text, '原始正文', 'legacy 行走旧兼容清洗');
+    assert.equal(failed.body_text, '回退时已清洗的正文', 'failed 行入库时已清洗，不再重跑');
+  });
+});
+
+// ---- 邮件会话（thread）API ----
+
+test('GET /threads applies campaign/customer filters and paginates', async () => {
+  const seen = [];
+  await withPatchedDb({
+    get: async (sql, params = []) => {
+      seen.push({ sql: String(sql), params });
+      if (/COUNT\(\*\)/.test(String(sql))) return { total: 1 };
+      // 每页的 lastReply/lastRecord 查询
+      if (/FROM email_replies WHERE thread_id/.test(String(sql))) {
+        return { id: 5, subject: 'Re: Hi', from_address: 'kol@x.com', received_at: '2026-07-29 10:00:00', ai_summary: '问报价', clean_body_text: null, body_text: '报价多少', confirm_status: 'pending' };
+      }
+      return null; // lastRecord 无
+    },
+    query: async (sql, params = []) => {
+      seen.push({ sql: String(sql), params });
+      return [{ id: 9, campaign_id: 2, customer_id: 7, message_count: 3, last_message_at: '2026-07-29 10:00:00', campaign_name: 'Everglow', customer_name: 'Casey' }];
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/threads');
+    const response = await callHandler(handler, { query: { campaign_id: '2', customer_id: '7', needs_reply: '1', page: '2', pageSize: '10' } });
+    assert.equal(response.payload.success, true);
+    assert.equal(response.payload.data.total, 1);
+    assert.equal(response.payload.data.page, 2);
+    assert.equal(response.payload.data.items[0].last_message.direction, 'inbound');
+    assert.equal(response.payload.data.items[0].last_message.summary, '问报价');
+  });
+  const listQuery = seen.find((s) => /FROM email_threads t/.test(s.sql) && /LIMIT \? OFFSET \?/.test(s.sql));
+  assert.match(listQuery.sql, /t\.campaign_id = \?/);
+  assert.match(listQuery.sql, /t\.customer_id = \?/);
+  assert.match(listQuery.sql, /ck\.needs_reply = 1/);
+  assert.deepEqual(listQuery.params, [2, 7, 10, 10]);
+});
+
+test('GET /threads/:id returns thread, timeline, pending draft and campaign/customer', async () => {
+  await withPatchedDb({
+    get: async (sql, params = []) => {
+      const text = String(sql);
+      if (/FROM email_threads WHERE id = \?/.test(text)) return { id: 9, campaign_id: 2, customer_id: 7, context_summary: '摘要' };
+      if (/FROM campaigns WHERE id = \?/.test(text)) return { id: 2, name: 'Everglow' };
+      if (/FROM customers WHERE id = \?/.test(text)) return { id: 7, name: 'Casey', email: 'kol@x.com' };
+      if (/FROM email_drafts WHERE thread_id = \?/.test(text)) {
+        return { id: 21, status: 'pending_review', context_message_ids: '["<r1@x>"]', context_summary_snapshot: '摘要' };
+      }
+      return null;
+    },
+    query: async (sql) => {
+      const text = String(sql);
+      if (/FROM email_replies WHERE thread_id = \?/.test(text)) {
+        return [{
+          id: 5, message_id: '<r1@x>', subject: 'Re: Hi', from_address: 'kol@x.com',
+          received_at: '2026-07-29 10:00:00', body_text: '正文', clean_body_text: '清洗正文',
+          body_html: '<p>清洗正文</p>', quoted_body_text: '> 引用', signature_text: 'Casey',
+          parse_status: 'ok', ai_summary: null, confirm_status: 'pending'
+        }];
+      }
+      if (/FROM email_records WHERE thread_id = \?/.test(text)) return [];
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/threads/:id');
+    const response = await callHandler(handler, { params: { id: 9 } });
+    const data = response.payload.data;
+    assert.equal(data.thread.id, 9);
+    assert.equal(data.campaign.name, 'Everglow');
+    assert.equal(data.customer.name, 'Casey');
+    assert.equal(data.timeline.length, 1);
+    assert.equal(data.timeline[0].direction, 'inbound');
+    assert.equal(data.timeline[0].parseStatus, 'ok');
+    assert.equal(data.timeline[0].reply.body_html, '<p>清洗正文</p>');
+    assert.equal(data.timeline[0].reply.quoted_body_text, '> 引用');
+    assert.equal(data.pending_draft.id, 21);
+    assert.equal(data.pending_draft.context_summary_snapshot, '摘要');
+  });
+});
+
+test('GET /threads/:id returns 404 for unknown thread', async () => {
+  await withPatchedDb({ get: async () => null }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/threads/:id');
+    const response = await callHandler(handler, { params: { id: 404 } });
+    assert.equal(response.statusCode, 404);
+  });
+});
+
+test('POST /threads/:id/draft-reply drafts against the latest inbound and passes feedback through', async () => {
+  const drafter = require('../services/emailDrafter');
+  const original = drafter.draftForCustomer;
+  const seen = [];
+  drafter.draftForCustomer = async (args) => { seen.push(args); return { ok: true, draftId: 77 }; };
+  try {
+    await withPatchedDb({
+      get: async (sql) => {
+        const text = String(sql);
+        if (/FROM email_threads WHERE id = \?/.test(text)) return { id: 9, campaign_id: 2, customer_id: 7 };
+        if (/FROM email_replies WHERE thread_id = \?/.test(text)) return { id: 5, thread_id: 9 };
+        return null;
+      }
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/threads/:id/draft-reply');
+      const response = await callHandler(handler, { params: { id: 9 }, body: { feedback: '语气再随和一点' } });
+      assert.equal(response.payload.success, true);
+      assert.equal(response.payload.data.draftId, 77);
+    });
+  } finally {
+    drafter.draftForCustomer = original;
+  }
+  assert.deepEqual(seen[0], {
+    campaignId: 2, customerId: 7, kind: 'reply', sourceReplyId: 5, feedback: '语气再随和一点'
+  });
+});
+
+test('POST /threads/:id/draft-reply reuses existing draft when drafter skips', async () => {
+  const drafter = require('../services/emailDrafter');
+  const original = drafter.draftForCustomer;
+  drafter.draftForCustomer = async () => ({ ok: true, skipped: true, draftId: 66, reason: '已有 pending_review 草稿' });
+  try {
+    await withPatchedDb({
+      get: async (sql) => {
+        const text = String(sql);
+        if (/FROM email_threads WHERE id = \?/.test(text)) return { id: 9, campaign_id: 2, customer_id: 7 };
+        if (/FROM email_replies WHERE thread_id = \?/.test(text)) return { id: 5, thread_id: 9 };
+        return null;
+      }
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/threads/:id/draft-reply');
+      const response = await callHandler(handler, { params: { id: 9 } });
+      assert.equal(response.payload.success, true);
+      assert.match(response.payload.message, /复用现有/);
+      assert.equal(response.payload.data.draftId, 66);
+    });
+  } finally {
+    drafter.draftForCustomer = original;
+  }
+});
+
+test('POST /threads/:id/context/refresh returns refreshed summary', async () => {
+  const builder = require('../services/emailContextBuilder');
+  const original = builder.generateThreadSummary;
+  builder.generateThreadSummary = async (threadId) => {
+    assert.equal(threadId, 9);
+    return { summary: '刷新后的摘要', throughMessageId: '<r2@x>', updated: true };
+  };
+  try {
+    const handler = findHandler(require('./emails'), 'post', '/threads/:id/context/refresh');
+    const response = await callHandler(handler, { params: { id: 9 } });
+    assert.equal(response.payload.success, true);
+    assert.equal(response.payload.data.context_summary, '刷新后的摘要');
+    assert.equal(response.payload.data.summary_through_message_id, '<r2@x>');
+  } finally {
+    builder.generateThreadSummary = original;
+  }
+});
+
+test('POST /threads/:id/context/refresh falls back to stored summary when AI fails', async () => {
+  const builder = require('../services/emailContextBuilder');
+  const original = builder.generateThreadSummary;
+  builder.generateThreadSummary = async () => null;
+  try {
+    await withPatchedDb({
+      get: async () => ({ context_summary: '已存摘要', summary_through_message_id: '<r1@x>' })
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/threads/:id/context/refresh');
+      const response = await callHandler(handler, { params: { id: 9 } });
+      assert.equal(response.payload.success, true);
+      assert.match(response.payload.message, /AI 摘要生成失败/);
+      assert.equal(response.payload.data.context_summary, '已存摘要');
+    });
+  } finally {
+    builder.generateThreadSummary = original;
   }
 });

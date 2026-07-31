@@ -13,10 +13,11 @@ import {
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
   getReplyTodos, getUnmatchedReplies, getBlockedReplies, getSystemEmails, bindReply, confirmReply, ignoreReply,
-  markReplyManuallyHandled, retryReplySummary, draftReply, blockReply, restoreReply,
+  markReplyManuallyHandled, retryReplySummary, blockReply, restoreReply,
   getEmailFilterRules, createEmailFilterRule, setEmailFilterRuleActive, deleteEmailFilterRule,
   getApprovalDashboardSummary
 } from './emailApi';
+import EmailThreadDrawer from './EmailThreadDrawer';
 
 const { TextArea } = Input;
 
@@ -701,13 +702,10 @@ function RepliesTab() {
     }
   };
 
-  const handleDraftReply = async (record) => {
-    try {
-      await draftReply(record.id);
-      message.success('已生成回复草稿，请到审批台审阅');
-    } catch (error) {
-      message.error('生成回复草稿失败');
-    }
+  // 会话工作台：点击主题/AI 摘要/回复草稿打开；thread_id 为 null 的旧数据走单封回退展示
+  const [threadDrawer, setThreadDrawer] = useState({ open: false, threadId: null, reply: null });
+  const openThreadDrawer = (record) => {
+    setThreadDrawer({ open: true, threadId: record.thread_id || null, reply: record });
   };
 
   const openBlock = (record) => {
@@ -783,7 +781,13 @@ function RepliesTab() {
     { title: '项目', dataIndex: 'campaign_name', width: 160 },
     { title: '回复时间', dataIndex: 'received_at', width: 160,
       render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
-    { title: '主题', dataIndex: 'subject', width: 180, ellipsis: true },
+    { title: '主题', dataIndex: 'subject', width: 180, ellipsis: true,
+      render: (v, record) => (
+        <Button type="link" size="small" style={{ padding: 0, height: 'auto', whiteSpace: 'normal', textAlign: 'left' }}
+          onClick={() => openThreadDrawer(record)}>
+          {v || '（无主题）'}
+        </Button>
+      ) },
     {
       title: 'AI 摘要', dataIndex: 'ai_summary', ellipsis: true,
       render: (v, record) => {
@@ -791,7 +795,11 @@ function RepliesTab() {
         if (record.ai_status === 'failed') {
           return <Space><Tooltip title={record.ai_error || '暂无详细错误'}><Tag color={ai.color}>{ai.text}</Tag></Tooltip><Button type="link" size="small" onClick={() => handleRetry(record)}>重试</Button></Space>;
         }
-        return v || <Tag color={ai.color}>{ai.text}</Tag>;
+        return (
+          <span style={{ cursor: 'pointer' }} onClick={() => openThreadDrawer(record)}>
+            {v || <Tag color={ai.color}>{ai.text}</Tag>}
+          </span>
+        );
       }
     },
     {
@@ -807,7 +815,7 @@ function RepliesTab() {
           {record.confirm_status === 'pending'
             ? <Button type="link" size="small" onClick={() => openConfirm(record)}>确认意向</Button>
             : <Tag color="green">已确认</Tag>}
-          <Button type="link" size="small" icon={<MailOutlined />} onClick={() => handleDraftReply(record)}>回复草稿</Button>
+          <Button type="link" size="small" icon={<MailOutlined />} onClick={() => openThreadDrawer(record)}>回复草稿</Button>
           <Popconfirm
             title="确认已经通过外部邮箱回复该达人？"
             description="系统只记录完成状态，不会发送邮件。"
@@ -912,7 +920,7 @@ function RepliesTab() {
         scroll={viewMode === 'pending' ? { x: 1350 } : undefined}
         expandable={{
           expandedRowRender: (record) => (
-            <div style={{ whiteSpace: 'pre-wrap' }}>{record.body_text || '（无正文）'}</div>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{record.clean_body_text || record.body_text || '（无正文）'}</div>
           )
         }}
       />
@@ -966,6 +974,13 @@ function RepliesTab() {
           style={{ width: '100%' }}
         />
       </Modal>
+      <EmailThreadDrawer
+        open={threadDrawer.open}
+        threadId={threadDrawer.threadId}
+        reply={threadDrawer.reply}
+        onClose={() => setThreadDrawer((prev) => ({ ...prev, open: false }))}
+        onChanged={() => fetchReplies()}
+      />
     </>
   );
 }

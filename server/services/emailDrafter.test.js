@@ -276,3 +276,95 @@ test('TikTok 达人走 finder 证据路径起草成功', async () => {
   assert.equal(evidence.videos[0].video_id, '7661681242777210126');
   assert.equal(evidence.metrics.followers, '402203');
 });
+
+// ---- kind='reply' 会话上下文（p2.0）----
+
+const emailContextBuilder = require('./emailContextBuilder');
+
+function withReplyFakeDb(fake, reply) {
+  const originalGet = fake.get;
+  fake.get = async (sql, params) => {
+    if (/FROM email_replies WHERE id = \?/.test(sql)) return reply;
+    return originalGet(sql, params);
+  };
+  return fake;
+}
+
+test('reply 起草：有 thread 时走会话上下文并落库新列', async () => {
+  const fake = withReplyFakeDb(createFakeDb({
+    campaignKol: { target_platform: 'instagram', instagram_followers_snapshot: '90000' },
+    finderVideos: [{ video_id: 'DQkl3XSDlyV', title: 'Reel A', play_count: 300000, published_at: daysAgo(3) }]
+  }), { id: 5, thread_id: 33, message_id: '<r2@x>', body_text: '来信原文', clean_body_text: '清洗后来信' });
+
+  const cannedContext = {
+    thread: { id: 33 },
+    projectBlock: '项目名称：Everglow',
+    kolBlock: 'KOL：Casey',
+    strategyBlock: '',
+    factsBlock: '合作方式：product_exchange',
+    messagesBlock: { messages: [], text: '较早邮件摘要：\n滚动摘要文本\n\n[KOL 来信] 2026-07-29 10:00\n佣金是多少？' },
+    contextMessageIds: ['<r1@x>', '<r2@x>'],
+    summaryUsed: '滚动摘要文本',
+    summaryThroughMessageId: '<r1@x>',
+    latestInboundMessageId: '<r2@x>',
+    latestInboundReplyId: 5
+  };
+  const originalBuild = emailContextBuilder.buildThreadContext;
+  emailContextBuilder.buildThreadContext = async (threadId) => {
+    assert.equal(threadId, 33);
+    return cannedContext;
+  };
+  let seenPrompt = '';
+  const originalAi = fake.ai;
+  fake.ai = async (system, user) => { seenPrompt = user; return originalAi(system, user); };
+  try {
+    const result = await runDraft(fake, { kind: 'reply', sourceReplyId: 5, feedback: '语气随和一点' });
+    assert.equal(result.ok, true);
+  } finally {
+    emailContextBuilder.buildThreadContext = originalBuild;
+  }
+
+  assert.ok(seenPrompt.includes('佣金是多少？'), 'prompt 含会话时间线');
+  assert.ok(seenPrompt.includes('滚动摘要文本'), 'prompt 含滚动摘要');
+  assert.ok(seenPrompt.includes('untrusted external content'), 'prompt 声明邮件内容不可信');
+  assert.ok(seenPrompt.includes('Do not re-ask questions'), '回复规则：不重复提问');
+  assert.ok(seenPrompt.includes('quoting is appended by the sending service'), '回复规则：不生成历史引用');
+  assert.ok(seenPrompt.includes('Human feedback on previous version (address it): 语气随和一点'), 'feedback 仅承载人工意见');
+  assert.ok(!seenPrompt.includes('Human feedback on previous version (address it): 语气随和一点\n来信原文'), '邮件原文不混入 feedback');
+
+  const insert = draftInsert(fake.statements);
+  assert.equal(insert.params[10], 'p2.0', 'prompt_version 升级');
+  assert.equal(insert.params[13], 33, 'thread_id');
+  assert.equal(insert.params[14], '<r2@x>', 'reply_to_message_id 为最新来信');
+  assert.deepEqual(JSON.parse(insert.params[15]), ['<r1@x>', '<r2@x>'], 'context_message_ids');
+  assert.equal(insert.params[16], '滚动摘要文本', 'context_summary_snapshot');
+});
+
+test('reply 起草：旧数据无 thread 回退单邮件上下文，不报错', async () => {
+  const fake = withReplyFakeDb(createFakeDb({
+    campaignKol: { target_platform: 'instagram', instagram_followers_snapshot: '90000' },
+    finderVideos: [{ video_id: 'DQkl3XSDlyV', title: 'Reel A', play_count: 300000, published_at: daysAgo(3) }]
+  }), { id: 5, thread_id: null, message_id: '<r9@x>', body_text: '无会话的旧来信', clean_body_text: null });
+
+  const originalBuild = emailContextBuilder.buildThreadContext;
+  let buildCalled = false;
+  emailContextBuilder.buildThreadContext = async () => { buildCalled = true; return null; };
+  let seenPrompt = '';
+  const originalAi = fake.ai;
+  fake.ai = async (system, user) => { seenPrompt = user; return originalAi(system, user); };
+  try {
+    const result = await runDraft(fake, { kind: 'reply', sourceReplyId: 5 });
+    assert.equal(result.ok, true);
+  } finally {
+    emailContextBuilder.buildThreadContext = originalBuild;
+  }
+  assert.equal(buildCalled, false, '无 thread_id 不调 buildThreadContext');
+  assert.ok(seenPrompt.includes('无会话的旧来信'), '回退到单邮件上下文');
+  assert.ok(seenPrompt.includes('<<<EMAIL>>>'), '回退内容同样按不可信内容包裹');
+
+  const insert = draftInsert(fake.statements);
+  assert.equal(insert.params[13], null, '无 thread 时 thread_id 为 NULL');
+  assert.equal(insert.params[14], '<r9@x>', 'reply_to_message_id 回退为该来信 message_id');
+  assert.equal(insert.params[15], null);
+  assert.equal(insert.params[16], null);
+});

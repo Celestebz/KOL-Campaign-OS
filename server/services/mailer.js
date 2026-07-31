@@ -38,7 +38,9 @@ function textToHtml(text) {
 }
 
 // 发送单封并返回 { messageId }
-async function sendMail({ settings, to, cc = [], subject, text }) {
+// inReplyTo/references 用于线程回复头（References 数组或空格分隔字符串均可）；
+// html 传入时替代 textToHtml 生成。不传时行为与原逻辑完全一致。
+async function sendMail({ settings, to, cc = [], subject, text, inReplyTo, references, html }) {
   const from = settings.sender_name
     ? `"${settings.sender_name}" <${settings.username}>`
     : settings.username;
@@ -48,7 +50,9 @@ async function sendMail({ settings, to, cc = [], subject, text }) {
     cc: cc.length ? cc.join(',') : undefined,
     subject,
     text,
-    html: textToHtml(text)
+    html: html || textToHtml(text),
+    inReplyTo: inReplyTo || undefined,
+    references: references && references.length ? references : undefined
   });
   return { messageId: info.messageId || null };
 }
