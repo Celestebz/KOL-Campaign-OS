@@ -70,7 +70,7 @@ function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evide
   const knownIds = new Set(evidenceVideos.map((v) => String(evidenceVideoId(v))));
   const fabricated = citedVideoIds.filter((id) => !knownIds.has(String(id)));
   if (fabricated.length) push('FABRICATED_EVIDENCE', `引用了快照中不存在的视频ID：${fabricated.join(', ')}`);
-  if (!citedVideoIds.length) push('MISSING_VIDEO_REFERENCE', '正文未引用任何真实视频');
+  if (kind !== 'follow_up' && !citedVideoIds.length) push('MISSING_VIDEO_REFERENCE', '正文未引用任何真实视频');
 
   const mismatch = findMetricMismatch(bodyText, evidenceVideos);
   if (mismatch) push('METRIC_MISMATCH', `正文数据「${mismatch}」与快照不符`);
@@ -89,7 +89,7 @@ function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evide
     if (ageDays > staleDays) push('STALE_SNAPSHOT', `起草所用快照已 ${Math.floor(ageDays)} 天，超过 ${staleDays} 天阈值`);
   }
 
-  if (kind !== 'first_touch' && (!COMMISSION_PATTERN.test(bodyText || '') || !NO_FIXED_FEE_PATTERN.test(bodyText || ''))) {
+  if (kind === 'reply' && (!COMMISSION_PATTERN.test(bodyText || '') || !NO_FIXED_FEE_PATTERN.test(bodyText || ''))) {
     push('MISSING_REQUIRED_TERM', '缺少佣金说明或"无固定费"表述');
   }
 

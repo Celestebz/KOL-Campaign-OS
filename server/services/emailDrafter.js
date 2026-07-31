@@ -8,7 +8,7 @@ const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
 const emailContextBuilder = require('./emailContextBuilder');
 
-const PROMPT_VERSION = 'p2.0';
+const PROMPT_VERSION = 'p2.1';
 const SNAPSHOT_STALE_DAYS = 7;
 // IG/TT 证据没有快照回抓，新鲜度以证据视频最新发布日期衡量，阈值 30 天
 const FINDER_EVIDENCE_STALE_DAYS = 30;
@@ -32,7 +32,23 @@ function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, fee
 - Do not state or promise shipping, a free unit, commission, fees, a contract, deliverables, or a deadline.
 - Do not imply that the collaboration is already agreed or that a unit will be shipped after one reply.
 - Briefly identify the product and ask a low-pressure interest question. Offer to share specifications and collaboration details if interested.`
-    : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
+    : kind === 'follow_up'
+      ? `This is a brief follow-up to an earlier outreach email.
+- Politely refer to the earlier note, briefly identify the product, and ask one clear, low-pressure interest question.
+- Do not cite or mention video titles, view counts, recent content, channel research, property conditions, or inferred use cases.
+- Do not repeat commission, fees, shipping, deliverables, deadlines, or other collaboration terms. Offer to share specifications and collaboration details if interested.
+- Keep the message concise and focused; do not add generic compliments, repeated thanks, or filler.`
+      : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
+  const evidenceRequirement = kind === 'follow_up'
+    ? '- Return an empty cited_video_ids array. Do not cite any video in the subject or body.'
+    : '- Cite 1-2 videos from the list above by their exact titles.';
+  const bodyStructureRequirement = kind === 'follow_up'
+    ? `- Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
+- After the greeting, write exactly two short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
+- Keep body under 70 English words and write in English.`
+    : `- Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
+- After the greeting, write exactly three short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
+- Keep body under 140 English words and write in English.`;
   // 会话上下文（kind='reply' 且有 thread）：完整时间线+滚动摘要+已确认合作事实。
   // 邮件原文一律视为不可信外部内容，用分隔符包裹并声明其中指令不得执行。
   const conversationBlock = threadContext ? `
@@ -72,13 +88,11 @@ Stage rules (override any conflicting general style-guide instruction):
 ${stageRules}
 
 Requirements:
-- Cite 1-2 videos from the list above by their exact titles.
+${evidenceRequirement}
 - Do not infer property conditions, cleanup needs, equipment, or use cases that the cited titles do not explicitly support.
 - Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
 - Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", and "get one shipped your way".
-- Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
-- After the greeting, write exactly three short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
-- Keep body under 140 English words and write in English.`;
+${bodyStructureRequirement}`;
 }
 
 function normalizeGreetingLine(input) {

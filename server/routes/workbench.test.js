@@ -65,12 +65,14 @@ test('GET / 先 sync 再从 approval_items 组装，契约不变且 items 带 ap
     syncApprovalItems: async () => { calls.push('sync'); return { scanned: 1, inserted: 1, updated: 0, cancelled: 0 }; },
     listPendingWorkbenchItems: async () => { calls.push('items'); return [sampleItem]; },
     getSummary: async () => { calls.push('summary'); return { pending: 1, high_risk: 1, exceptions: 0, handled_today: 0 }; },
-    listRecentDecisions: async () => { calls.push('recent'); return [{ title: 'X', decision: '已通过', decided_at: '2026-07-25T02:00:00.000Z', href: '/emails' }]; }
+    listRecentDecisions: async () => { calls.push('recent'); return [{ title: 'X', decision: '已通过', decided_at: '2026-07-25T02:00:00.000Z', href: '/emails' }]; },
+    listActiveRuns: async () => [],
+    summarizeExceptionGroups: () => []
   }, async () => {
     const handler = findHandler(require('./workbench'), 'get', '/');
     const response = await callHandler(handler);
     assert.equal(calls[0], 'sync', '必须先调用 syncApprovalItems');
-    assert.deepEqual(response.payload.summary, { pending: 1, high_risk: 1, exceptions: 0, handled_today: 0 });
+    assert.deepEqual(response.payload.summary, { pending: 1, high_risk: 1, exceptions: 0, handled_today: 0, exception_records: 0, active_runs: 0 });
     assert.equal(response.payload.items.length, 1);
     const item = response.payload.items[0];
     // 阶段 B 契约字段保持
@@ -91,11 +93,13 @@ test('GET / 空数据返回全零 summary 且不报错', async () => {
     syncApprovalItems: async () => ({ scanned: 0, inserted: 0, updated: 0, cancelled: 0 }),
     listPendingWorkbenchItems: async () => [],
     getSummary: async () => ({ pending: 0, high_risk: 0, exceptions: 0, handled_today: 0 }),
-    listRecentDecisions: async () => []
+    listRecentDecisions: async () => [],
+    listActiveRuns: async () => [],
+    summarizeExceptionGroups: () => []
   }, async () => {
     const handler = findHandler(require('./workbench'), 'get', '/');
     const response = await callHandler(handler);
-    assert.deepEqual(response.payload.summary, { pending: 0, high_risk: 0, exceptions: 0, handled_today: 0 });
+    assert.deepEqual(response.payload.summary, { pending: 0, high_risk: 0, exceptions: 0, handled_today: 0, exception_records: 0, active_runs: 0 });
     assert.deepEqual(response.payload.items, []);
     assert.deepEqual(response.payload.recent_decisions, []);
   });

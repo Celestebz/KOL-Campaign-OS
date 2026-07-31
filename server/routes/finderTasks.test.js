@@ -905,6 +905,126 @@ test('YouTube preflight rejects market, activity and median failures before AI a
   ).reason, 'brand_or_dealer_account');
 });
 
+test('YouTube preflight uses uploads playlist and reuses channel cache without search.list', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const requestedPaths = [];
+  const uniqueChannelId = `UCTestUploads${Date.now()}`;
+  const uniqueUploadsId = `UUTestUploads${Date.now()}`;
+  const publishedAt = new Date(Date.now() - 10 * 86400000).toISOString();
+  const mockGateway = await new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      requestedPaths.push(req.url);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.url.startsWith('/youtube/youtube/v3/playlistItems')) {
+        res.end(JSON.stringify({
+          items: ['one', 'two', 'three'].map((id) => ({
+            contentDetails: { videoId: id },
+            snippet: { publishedAt }
+          }))
+        }));
+        return;
+      }
+      if (req.url.startsWith('/youtube/youtube/v3/videos')) {
+        res.end(JSON.stringify({
+          items: ['one', 'two', 'three'].map((id, index) => ({
+            id,
+            snippet: { title: `Farm test ${id}`, publishedAt },
+            statistics: { viewCount: String(20000 + index * 1000) },
+            contentDetails: { duration: 'PT12M' }
+          }))
+        }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { message: 'unexpected endpoint' } }));
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+  const requestConfig = {
+    campaign: { target_market: 'United States' },
+    strategy: { finder_handoff: {
+      minimum_avg_views: '15,353 median views',
+      required_evidence: ['At least 3 recent relevant long-form videos of 8 minutes or longer']
+    } }
+  };
+  const candidates = [{
+    kol_name: 'Independent Farm Creator',
+    profile_url: `https://www.youtube.com/channel/${uniqueChannelId}`,
+    country_region: 'US',
+    raw_data: {
+      channel: {
+        snippet: { country: 'US' },
+        contentDetails: { relatedPlaylists: { uploads: uniqueUploadsId } }
+      }
+    }
+  }];
+  try {
+    const first = await finderTaskRoutes.preflightYoutubeCandidates(
+      candidates, requestConfig, { api_key: 'token' }, `http://127.0.0.1:${mockGateway.port}`, 10, 1
+    );
+    assert.equal(first.candidates.length, 1);
+    assert.equal(first.requestCount, 2);
+    assert.equal(requestedPaths.filter((path) => path.includes('/search')).length, 0);
+    assert.equal(requestedPaths.filter((path) => path.includes('/playlistItems')).length, 1);
+
+    const second = await finderTaskRoutes.preflightYoutubeCandidates(
+      candidates, requestConfig, { api_key: 'token' }, `http://127.0.0.1:${mockGateway.port}`, 10, 1
+    );
+    assert.equal(second.candidates.length, 1);
+    assert.equal(second.requestCount, 0);
+    assert.equal(requestedPaths.length, 2, 'cached preflight must not call Maton again');
+    assert.equal(second.candidates[0].raw_data.preflight.cache_hit, true);
+  } finally {
+    await new Promise((resolve) => mockGateway.server.close(resolve));
+  }
+});
+
+test('Maton 429 remains the primary error when Google fallback is not configured', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const mockGateway = await new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Maton daily quota exceeded' } }));
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+  try {
+    await models.ApiSetting.destroy({
+      where: { provider: ['system.provider_selection', 'youtube.maton_gateway'] }
+    });
+    await models.ApiSetting.create({
+      provider: 'system.provider_selection',
+      extra_config: JSON.stringify({ platforms: { youtube: { primary: 'maton_gateway', fallbacks: [] } } })
+    });
+    await models.ApiSetting.create({
+      provider: 'youtube.maton_gateway',
+      api_key: 'maton-token',
+      base_url: `http://127.0.0.1:${mockGateway.port}`
+    });
+    await assert.rejects(
+      finderTaskRoutes.runProvider({
+        search_source: 'maton_agent',
+        discovery_route: 'target_platform_first',
+        target_platform: 'youtube',
+        limit: 1,
+        discovery: { keywords: 'tractor mower review' },
+        campaign: { name: 'Mower', target_market: 'United States' },
+        strategy: { finder_handoff: {}, persona_config: {} }
+      }, true),
+      (error) => {
+        assert.match(error.message, /Maton daily quota exceeded/);
+        assert.equal(error.attempts.length, 1);
+        assert.equal(error.attempts[0].provider, 'maton_agent');
+        return true;
+      }
+    );
+  } finally {
+    await new Promise((resolve) => mockGateway.server.close(resolve));
+  }
+});
+
 test('Finder reuses a successful analysis for the same video and Strategy across tasks', async () => {
   await resetTestDatabase();
   await initDatabase();
@@ -1220,6 +1340,11 @@ test('video evidence finder reads only canonical YouTube Maton Gateway configura
 test('Maton discovery paginates past KOL Master duplicates and keeps one video per new channel', async () => {
   await resetTestDatabase();
   await initDatabase();
+  await dbOperations.run('DELETE FROM finder_search_cache');
+  await dbOperations.run('DELETE FROM finder_query_ledger');
+  await models.ApiSetting.destroy({
+    where: { provider: ['system.provider_selection', 'youtube.maton_gateway'] }
+  });
   const app = await buildApp();
   const request = supertest(app);
   const { strategy } = await seedBaseData();

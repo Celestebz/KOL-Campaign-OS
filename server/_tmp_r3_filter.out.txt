@@ -1,0 +1,68 @@
+﻿=== TOTALS ===
+{
+  "fetched": 473,
+  "in_range": 127,
+  "fit": 15,
+  "maybe_auto": 7,
+  "unknown": 105,
+  "reject": 0
+}
+
+=== FIT (all, sorted by avg desc) ===
+1460	Frugal Off Grid	11722	7607
+1284	The Cape on the Corner at Tweedthistle Farms	9482	6056
+646	5 Acre Farm	8708	8762
+214	Ali's Organic Garden & Homestead	8091	8706
+990	Finnegan's Farm	7735	8768
+694	Primal Outdoors - Camping and Overlanding	7344	6570
+158	Lazy Dog Farm	7286	8251
+1365	Y Garden	7063	7582
+360	Home & Garden With Anna	6845	7096
+1151	More than Gardening	6445	5609
+650	Balfour Farm	6222	5281
+1037	Hello Garden	5702	5614
+1179	OFF GRID w/ JLG Woodscapes	5338	5508
+458	Off Grid Challenge	5324	3809
+511	Stivers Homestead	5116	4488
+
+=== UNKNOWN (top 40 by avg) ===
+13	Big Truck Big RV	33010	6480
+556	Tico & the Man Frank Maglio	32909	6617
+425	ManShed	25686	7276
+995	Fix This House	24990	7763
+1053	Individualized Repair Inc	19178	8725
+883	AZ Expert	14624	9092
+895	Billshowto	14461	5497
+1027	Growing Out The Box	13897	8825
+140	Bondo Built	13761	9327
+1001	Fresh Tech	13622	6665
+667	Everything Elliott	13465	5575
+1045	HortTube with Jim Putnam	11540	9658
+1306	The Old Jarhead	10615	6491
+607	DIY’s by Carolina	9988	7527
+1300	The Lawn Whisperer	9674	9674
+829	Topper Machine LLC	9672	8233
+780	Homegrown Handgathered	9561	9561
+998	Florida Turf Pros	9505	6760
+115	The TriggerMan	9341	8681
+405	Lex Vance	9254	2720
+244	Blue Cactus Dairy Goats	8951	8667
+1352	Wild Brothers Untamed	8771	8771
+1335	Two Moose Design	8575	8575
+1106	LAWN LIFE	8545	8545
+1279	Team Marine Service	8524	7392
+582	VAN TREKKING lifestyle	8398	7677
+886	Bearded Tesla Guy	8382	3214
+1353	Wild Floridian	8370	8370
+565	Tory Delury	8269	8121
+575	Two Guys Timberframing	8268	6102
+277	Crissy Marie	8220	8425
+1326	Tools & Stuff	7859	7859
+584	Vintage Machines	7812	2150
+535	The Home Admin	7745	7745
+769	Firebox Stove	7698	7698
+1003	Fy Nyth	7671	7671
+1212	Projects For All	7620	7620
+942	Coop’s House	7567	7567
+1321	Tonys Cool Tools	7529	7529
+464	Our Small Town Life	7497	5378

@@ -94,6 +94,23 @@ test('first-touch prompt uses configured sender and asks interest before commerc
   assert.match(prompt, /override any conflicting general style-guide instruction/);
 });
 
+test('follow-up prompt is brief and does not cite videos or repeat commercial terms', () => {
+  const prompt = emailDrafter.buildUserPrompt({
+    customer: { name: 'Casey', country_region: 'US' },
+    campaign: { name: 'TMB-1401', product: '48-inch PTO finish mower for 15-45 HP tractors' },
+    strategy: null,
+    styleGuide: 'Mention recent videos and 5% commission.',
+    videos: [{ youtube_video_id: 'v1', title: 'A real project', play_count: 1000 }],
+    senderName: 'Celeste',
+    kind: 'follow_up'
+  });
+  assert.match(prompt, /Do not cite or mention video titles/);
+  assert.match(prompt, /Do not repeat commission, fees, shipping/);
+  assert.match(prompt, /Return an empty cited_video_ids array/);
+  assert.match(prompt, /exactly two short paragraphs followed by a signature/);
+  assert.match(prompt, /under 70 English words/);
+});
+
 test('normalizeGreetingLine puts a blank line after a greeting without changing formatted bodies', () => {
   assert.equal(
     emailDrafter.normalizeGreetingLine('Hi Walker Farm Fam, this is Celeste with BILT HARD.\n\nSecond paragraph.'),
@@ -333,7 +350,7 @@ test('reply 起草：有 thread 时走会话上下文并落库新列', async () 
   assert.ok(!seenPrompt.includes('Human feedback on previous version (address it): 语气随和一点\n来信原文'), '邮件原文不混入 feedback');
 
   const insert = draftInsert(fake.statements);
-  assert.equal(insert.params[10], 'p2.0', 'prompt_version 升级');
+  assert.equal(insert.params[10], 'p2.1', 'prompt_version 升级');
   assert.equal(insert.params[13], 33, 'thread_id');
   assert.equal(insert.params[14], '<r2@x>', 'reply_to_message_id 为最新来信');
   assert.deepEqual(JSON.parse(insert.params[15]), ['<r1@x>', '<r2@x>'], 'context_message_ids');

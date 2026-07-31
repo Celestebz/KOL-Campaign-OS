@@ -47,9 +47,15 @@ test('metric mismatch detects wrong view counts in body', () => {
   assert.ok(wrong.riskReasons.some((r) => r.code === 'METRIC_MISMATCH'));
 });
 
-test('missing required terms is low risk', () => {
-  const missing = evaluateDraft({ ...base, kind: 'follow_up', bodyText: 'Hi, your content is great. Want to try our product?' });
-  assert.ok(missing.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
+test('follow-up does not require a video citation or repeated commercial terms', () => {
+  const result = evaluateDraft({
+    ...base,
+    kind: 'follow_up',
+    bodyText: 'Hi Alice, following up on my earlier note. Would this product be relevant to your channel?',
+    citedVideoIds: []
+  });
+  assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_VIDEO_REFERENCE'));
+  assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
 
 test('previous hard bounce is high risk', () => {
@@ -67,7 +73,7 @@ test('first touch does not require commission or fee terms', () => {
 });
 
 test('negated contract and fixed fee language is not a price commitment', () => {
-  const result = evaluateDraft({ ...base, kind: 'follow_up', bodyText: 'We offer 5% commission. There is no contract or fixed fee.' });
+  const result = evaluateDraft({ ...base, kind: 'reply', bodyText: 'We offer 5% commission. There is no contract or fixed fee.' });
   assert.ok(!result.riskReasons.some((r) => r.code === 'PRICE_COMMITMENT'));
   assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
