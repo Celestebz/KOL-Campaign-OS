@@ -635,6 +635,22 @@ test('POST /replies/:id/bind only binds to a KOL in the selected project', async
   });
 });
 
+test('POST /replies/:id/bind rejects a KOL with no project relation', async () => {
+  await withPatchedDb({
+    get: async (sql, params = []) => {
+      const text = String(sql);
+      if (text.includes('FROM email_replies WHERE id = ?')) return { id: 5, customer_id: null };
+      if (text.includes('FROM customers WHERE id = ?')) return { id: params[0] };
+      return null; // campaign_kols 查不到任何项目关系
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/replies/:id/bind');
+    const response = await callHandler(handler, { params: { id: '5' }, body: { customer_id: 7 } });
+    assert.equal(response.statusCode, 409);
+    assert.match(response.payload.error, /不在任何项目/);
+  });
+});
+
 // ---- 审批台顶部指标卡 ----
 
 test('GET /approval-dashboard/summary returns aggregated stats from the dashboard service', async () => {

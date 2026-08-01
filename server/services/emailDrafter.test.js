@@ -333,6 +333,7 @@ test('reply 起草：有 thread 时走会话上下文并落库新列', async () 
   assert.ok(!seenPrompt.includes('Human feedback on previous version (address it): 语气随和一点\n来信原文'), '邮件原文不混入 feedback');
 
   const insert = draftInsert(fake.statements);
+  assert.equal((insert.sql.match(/\?/g) || []).length, insert.params.length, 'INSERT 占位符与参数数量一致');
   assert.equal(insert.params[10], 'p2.0', 'prompt_version 升级');
   assert.equal(insert.params[13], 33, 'thread_id');
   assert.equal(insert.params[14], '<r2@x>', 'reply_to_message_id 为最新来信');

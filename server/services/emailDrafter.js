@@ -349,7 +349,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
           source_reply_id, template_id, prompt_version, ai_model, dedupe_key,
           thread_id, reply_to_message_id, context_message_ids, context_summary_snapshot,
           generated_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
         [campaignId, customerId, kind, subject, bodyText, riskLevel, JSON.stringify(riskReasons), evidence,
          sourceReplyId, styleGuide?.id || null, PROMPT_VERSION, model || null, dedupeKey,
          draftThreadId, replyToMessageId, contextMessageIds, contextSummarySnapshot]

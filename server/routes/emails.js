@@ -692,6 +692,9 @@ router.post('/replies/:id/bind', async (req, res) => {
         [customerId]
       );
       campaignId = kol?.campaign_id || null;
+      if (!campaignId) {
+        return res.status(409).json({ success: false, error: '该达人不在任何项目中，请先添加到项目后再绑定' });
+      }
     }
 
     await dbOperations.run(
