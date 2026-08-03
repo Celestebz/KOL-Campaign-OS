@@ -101,6 +101,104 @@ async function scanOnce() {
 
 let timer = null;
 
+// 纯人工跟进（无草稿）：运营在网页邮箱/IM 自行给达人发了跟进邮件后，
+// 在系统里登记一次：更新 last_outreach_at、follow_up_count +1、可选写入 email_records + 事件时间线。
+// 这样 48h 后的自动起草扫描会自然跳过此达人，避免系统再起草一封重复邮件。
+async function recordManualOutreach({ campaignKolId, subject = null, bodyText = null, note = null, actor = 'ops' }) {
+  const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [campaignKolId]);
+  if (!row) {
+    const error = new Error('项目候选不存在');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (!row.customer_id || !row.campaign_id) {
+    const error = new Error('项目候选缺少达人/项目关联，无法登记');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const customer = await dbOperations.get(
+    'SELECT id, name, email FROM customers WHERE id = ?',
+    [row.customer_id]
+  );
+
+  // 已有确认回复 / 硬退信 / 跟进已封顶：不接受再登记（防误操作把封顶状态回退）
+  const confirmedReply = await dbOperations.get(
+    `SELECT id FROM email_replies
+     WHERE campaign_id = ? AND customer_id = ? AND confirm_status = 'confirmed' LIMIT 1`,
+    [row.campaign_id, row.customer_id]
+  );
+  if (confirmedReply) {
+    const error = new Error('该达人已有确认回复，无需再登记跟进');
+    error.statusCode = 409;
+    throw error;
+  }
+  const hardBounce = await dbOperations.get(
+    `SELECT id FROM email_bounces
+     WHERE campaign_id = ? AND customer_id = ? AND bounce_type = 'hard' LIMIT 1`,
+    [row.campaign_id, row.customer_id]
+  );
+  if (hardBounce) {
+    const error = new Error('该达人已硬退信，无法再登记跟进');
+    error.statusCode = 409;
+    throw error;
+  }
+  if ((row.follow_up_count || 0) >= MAX_FOLLOW_UPS) {
+    const error = new Error(`该达人已跟进 ${row.follow_up_count}/${MAX_FOLLOW_UPS} 次，达到上限`);
+    error.statusCode = 409;
+    throw error;
+  }
+
+  // last_outreach_at + follow_up_count + outreach_status（与自动跟进语义一致）
+  await dbOperations.run(
+    `UPDATE campaign_kols
+     SET last_outreach_at = NOW(),
+         follow_up_count = COALESCE(follow_up_count, 0) + 1,
+         outreach_status = CASE
+           WHEN outreach_status IN ('interested', 'confirmed', 'terminated', 'rejected') THEN outreach_status
+           ELSE 'waiting_reply'
+         END,
+         sync_status = 'sync_pending', updated_at = NOW()
+     WHERE id = ?`,
+    [campaignKolId]
+  );
+
+  // 可选：把人工跟进也写成一次 email_records，便于后续审计/会话组装
+  if (subject || bodyText || note) {
+    const recordNote = note || '已由人工手动跟进（外部渠道）';
+    try {
+      await dbOperations.run(
+        `INSERT INTO email_records
+         (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, created_at)
+         VALUES (NULL, ?, ?, ?, ?, ?, ?, 'success', ?, NOW())`,
+        [row.campaign_id, row.customer_id, customer?.name || null, customer?.email || null,
+         subject || '(人工跟进，未填写主题)', bodyText || null, recordNote]
+      );
+    } catch (error) {
+      // 记录失败不影响主流程（last_outreach_at / follow_up_count 已经回写）
+      console.error(`[email] 人工跟进审计记录写入失败 (campaignKol ${campaignKolId}):`, error.message);
+    }
+  }
+
+  // 事件时间线：和 reply_confirmed 类似，由前端/审计追溯
+  try {
+    const timeline = require('./campaignKolTimeline');
+    await timeline.appendEvent({
+      campaignKol: row,
+      eventType: 'manual_outreach',
+      summary: note || '运营在外部渠道手动跟进',
+      sourceType: 'manual',
+      outreachStatus: 'waiting_reply',
+      actor
+    });
+  } catch (error) {
+    console.error(`[email] 人工跟进事件流水写入失败 (campaignKol ${campaignKolId}):`, error.message);
+  }
+
+  const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [campaignKolId]);
+  return { campaign_kol_id: campaignKolId, follow_up_count: updated.follow_up_count, last_outreach_at: updated.last_outreach_at };
+}
+
 function startFollowUpTimer() {
   if (timer) return;
   console.log(`[email] 跟进自动化已启动，每 ${SCAN_INTERVAL_MINUTES} 分钟扫描一次。`);
@@ -108,4 +206,4 @@ function startFollowUpTimer() {
   timer.unref();
 }
 
-module.exports = { startFollowUpTimer, scanOnce, FOLLOW_UP_AFTER_HOURS, GIVE_UP_AFTER_DAYS, MAX_FOLLOW_UPS, SCAN_INTERVAL_MINUTES };
+module.exports = { startFollowUpTimer, scanOnce, recordManualOutreach, FOLLOW_UP_AFTER_HOURS, GIVE_UP_AFTER_DAYS, MAX_FOLLOW_UPS, SCAN_INTERVAL_MINUTES };

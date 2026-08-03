@@ -2,6 +2,7 @@ const express = require('express');
 const { dbOperations } = require('../database');
 const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
 const timeline = require('../services/campaignKolTimeline');
+const emailFollowUp = require('../services/emailFollowUp');
 const {
   PROJECT_STATUSES,
   PRIORITY_LEVELS,
@@ -560,6 +561,32 @@ router.post('/:id/confirm-cooperation', async (req, res) => {
     const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
     res.json({ success: true, data: updated, message: 'KOL cooperation confirmed' });
   } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 运营在外部渠道（网页邮箱/IM/电话后补邮件）已对达人发起一次跟进，
+// 在系统里登记以阻断 48h 自动跟进扫描重起草。
+// body 可选字段：subject / body_text / note / actor
+router.post('/:id/record-manual-outreach', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: 'Campaign KOL id must be a positive integer' });
+    }
+    const body = req.body || {};
+    const result = await emailFollowUp.recordManualOutreach({
+      campaignKolId: id,
+      subject: typeof body.subject === 'string' ? body.subject.slice(0, 500) : null,
+      bodyText: typeof body.body_text === 'string' ? body.body_text : null,
+      note: typeof body.note === 'string' ? body.note.slice(0, 1000) : null,
+      actor: typeof body.actor === 'string' && body.actor.trim() ? body.actor.trim().slice(0, 100) : 'ops'
+    });
+    res.json({ success: true, message: '已登记人工跟进，自动跟进将延后', data: result });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, error: error.message });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
