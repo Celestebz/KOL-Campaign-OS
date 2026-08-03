@@ -116,3 +116,6 @@ server/submit_candidates.js
 
 # Local database backups
 backups/
+
+# Installer vendor binaries (downloaded at build time)
+installer/vendor/
