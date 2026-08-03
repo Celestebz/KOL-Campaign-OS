@@ -174,6 +174,31 @@ test('confirmManuallySent records the manual send and updates outreach status', 
   assert.ok(writes.some(({ sql }) => sql.includes("status = 'sent'")));
   assert.ok(writes.some(({ sql, params }) => sql.includes('INSERT INTO email_records') && params.includes('已由人工确认通过网页邮箱发送')));
   assert.ok(writes.some(({ sql }) => sql.includes('UPDATE campaign_kols')));
+  // 普通草稿（非 follow_up）不应递增 follow_up_count
+  const increment = writes.find(({ sql }) => /UPDATE campaign_kols/.test(sql) && /follow_up_count/.test(sql));
+  assert.equal(increment, undefined, 'first_touch manual confirm must not bump follow_up_count');
+});
+
+test('confirmManuallySent on a follow_up draft bumps follow_up_count to prevent duplicate auto-drafts', async () => {
+  const writes = [];
+  dbOperations.get = async (sql) => {
+    if (sql.includes('FROM email_drafts')) {
+      return { id: 11, status: 'sending', kind: 'follow_up', campaign_id: 2, customer_id: 4, subject: 'Re: Hi', body_text: 'Body' };
+    }
+    if (sql.includes('FROM customers')) return { id: 4, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  dbOperations.run = async (sql, params) => {
+    writes.push({ sql, params });
+    return { changes: 1 };
+  };
+
+  const result = await emailDraftSender.confirmManuallySent(11);
+
+  assert.equal(result.manually_confirmed, true);
+  const increment = writes.find(({ sql }) => /UPDATE campaign_kols/.test(sql) && /follow_up_count/.test(sql));
+  assert.ok(increment, 'follow_up manual confirm must bump follow_up_count');
+  assert.deepEqual(increment.params, [2, 4], 'must target the same campaign/customer');
 });
 
 test('confirmNotSent restores an unresolved draft to pending review', async () => {

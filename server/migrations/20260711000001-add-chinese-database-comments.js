@@ -257,7 +257,7 @@ function columnDefinition(sequelize, column, comment) {
   parts.push(column.Null === 'NO' ? 'NOT NULL' : 'NULL');
 
   if (column.Default !== null) {
-    const isExpression = /^(CURRENT_TIMESTAMP(?:\(\d+\))?)$/i.test(String(column.Default));
+    const isExpression = /^(CURRENT_TIMESTAMP(?:\(\d*\))?)$/i.test(String(column.Default));
     parts.push(`DEFAULT ${isExpression ? column.Default : sequelize.escape(column.Default)}`);
   } else if (column.Null === 'YES') {
     parts.push('DEFAULT NULL');

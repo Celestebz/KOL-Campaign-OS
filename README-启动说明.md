@@ -1,5 +1,17 @@
 # KOL Campaign OS - 启动说明
 
+## 分发安装包 - Windows（给非技术用户）
+
+无需安装 Node.js / Docker。从 GitHub Releases 下载 `KOL-Campaign-OS-Setup-x.y.z.exe`，双击安装：
+
+- 安装到 `%LOCALAPPDATA%\KOL-Campaign-OS`（免管理员），内含便携 Node + 便携 MariaDB；
+- 自动注册开机自启（用户级计划任务），之后每次开机自动后台运行；
+- 安装完成自动启动服务并打开 `http://localhost:5001`；
+- 数据库端口默认 3306，被占用时自动改用 3307/3308；
+- 卸载：设置 > 应用 > KOL Campaign OS，卸载时可选保留数据。
+
+构建安装包（开发者）：在要发布的分支上（工作区即打包内容），运行 `scripts\build-installer.bat`，产物在 `dist\`。一键构建并上传 GitHub Releases：`scripts\release.bat`（需 `gh auth login`；版本号取 `package.json` 的 version，发版前先 bump）。
+
 ## 开机自启 - Mac（推荐）
 
 一次配置后，每次登录 Mac 都会自动在后台启动工作台（launchd LaunchAgent），无需再双击任何脚本。浏览器收藏 `http://localhost:5001`，开机后直接打开书签即可。

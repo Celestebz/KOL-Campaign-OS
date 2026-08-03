@@ -232,6 +232,16 @@ async function confirmManuallySent(draftId) {
     }
   }
   await markOutreachAfterSend(draft);
+  // 人工确认的跟进草稿：与系统自动起草一样需要计入 follow_up_count，
+  // 否则 48h 后系统仍会按"还有跟进名额"再起草一封与人工跟进重复的草稿。
+  if (draft.kind === 'follow_up') {
+    await dbOperations.run(
+      `UPDATE campaign_kols
+       SET follow_up_count = COALESCE(follow_up_count, 0) + 1, updated_at = NOW()
+       WHERE campaign_id = ? AND customer_id = ?`,
+      [draft.campaign_id, draft.customer_id]
+    );
+  }
   return { draft_id: draft.id, manually_confirmed: true, to: customer?.email || null };
 }
 

@@ -359,3 +359,139 @@ test('GET / hides cooperation-only values for candidates while preserving projec
     dbOperations.query = originalQuery;
   }
 });
+
+// ---- POST /:id/record-manual-outreach ----
+
+async function runRecordManualOutreach({ id = 42, body = {}, rowOverrides = {}, getOverrides = {}, notFound = false } = {}) {
+  const writes = [];
+  const queries = [];
+  const originalGet = dbOperations.get;
+  const originalRun = dbOperations.run;
+  const originalQuery = dbOperations.query;
+  const updates = {};
+  const baseRow = notFound ? null : {
+    id,
+    campaign_id: 3,
+    customer_id: 11,
+    follow_up_count: 0,
+    outreach_status: 'waiting_reply',
+    pipeline_stage: 'candidate',
+    ...rowOverrides
+  };
+
+  // getOverrides: { substrings: [str,str,...] → fn}
+  const overrideEntries = Object.entries(getOverrides).map(([key, fn]) => {
+    const tokens = key.split('|').map((s) => s.trim()).filter(Boolean);
+    return { tokens, fn };
+  });
+
+  dbOperations.get = async (sql, params = []) => {
+    const text = String(sql);
+    for (const { tokens, fn } of overrideEntries) {
+      if (tokens.every((t) => text.includes(t))) return fn(params);
+    }
+    if (text.includes('FROM campaign_kols WHERE id = ?')) {
+      if (!baseRow) return null;
+      return updates.id === params[0] ? { ...baseRow, ...updates } : { ...baseRow };
+    }
+    if (text.includes('FROM customers WHERE id = ?')) {
+      return { id: 11, name: 'Creator', email: 'creator@example.com' };
+    }
+    return null;
+  };
+  dbOperations.run = async (sql, params = []) => {
+    const text = String(sql);
+    writes.push({ sql: text, params });
+    if (text.includes('UPDATE campaign_kols') && text.includes('follow_up_count')) {
+      updates.follow_up_count = (baseRow.follow_up_count || 0) + 1;
+      updates.last_outreach_at = 'NOW()';
+      updates.outreach_status = 'waiting_reply';
+    }
+    return { changes: 1 };
+  };
+  dbOperations.query = async (sql, params = []) => {
+    queries.push({ sql: String(sql), params });
+    return [];
+  };
+
+  try {
+    const handler = findHandler(require('./campaignKols'), 'post', '/:id/record-manual-outreach');
+    const response = await callHandler(handler, { params: { id: String(id) }, body });
+    return { response, writes, queries };
+  } finally {
+    dbOperations.get = originalGet;
+    dbOperations.run = originalRun;
+    dbOperations.query = originalQuery;
+  }
+}
+
+test('record-manual-outreach bumps follow_up_count and writes a manual outreach record', async () => {
+  const { response, writes } = await runRecordManualOutreach({
+    body: { subject: 'Re: Hi', body_text: 'Just checking in', note: '邮件已发' }
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.success, true);
+
+  const update = writes.find((w) => w.sql.includes('UPDATE campaign_kols') && w.sql.includes('follow_up_count'));
+  assert.ok(update, 'expected follow_up_count increment UPDATE');
+  assert.deepEqual(update.params, [42]);
+
+  const insert = writes.find((w) => w.sql.includes('INSERT INTO email_records'));
+  assert.ok(insert, 'expected email_records audit insert');
+  // Params: [campaign_id, customer_id, kol_name, to_address, subject, body_text, error_note]
+  assert.equal(insert.params[0], 3, 'campaign_id');
+  assert.equal(insert.params[1], 11, 'customer_id');
+  assert.equal(insert.params[2], 'Creator', 'kol_name');
+  assert.equal(insert.params[3], 'creator@example.com', 'to_address');
+  assert.equal(insert.params[4], 'Re: Hi', 'subject');
+  assert.equal(insert.params[5], 'Just checking in', 'body_text');
+  assert.equal(insert.params[6], '邮件已发', 'note');
+});
+
+test('record-manual-outreach skips email_records audit when no subject/body/note supplied', async () => {
+  const { response, writes } = await runRecordManualOutreach({ body: {} });
+  assert.equal(response.statusCode, 200);
+  const insert = writes.find((w) => w.sql.includes('INSERT INTO email_records'));
+  assert.equal(insert, undefined, 'should not write email_records without audit fields');
+  const update = writes.find((w) => w.sql.includes('UPDATE campaign_kols') && w.sql.includes('follow_up_count'));
+  assert.ok(update, 'still must increment follow_up_count');
+});
+
+test('record-manual-outreach rejects a non-existent candidate', async () => {
+  const { response, writes } = await runRecordManualOutreach({ id: 9999, notFound: true });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.payload.success, false);
+  assert.equal(writes.length, 0);
+});
+
+test('record-manual-outreach rejects a candidate already in confirmed reply state', async () => {
+  const { response } = await runRecordManualOutreach({
+    getOverrides: {
+      'FROM email_replies | confirm_status = \'confirmed\' | LIMIT 1': () => ({ id: 1 })
+    }
+  });
+  assert.equal(response.statusCode, 409);
+  assert.ok(response.payload.error.includes('已有确认回复'));
+});
+
+test('record-manual-outreach rejects when the kol already has a hard bounce', async () => {
+  const { response } = await runRecordManualOutreach({
+    getOverrides: {
+      'FROM email_bounces | bounce_type = \'hard\' | LIMIT 1': () => ({ id: 1 })
+    }
+  });
+  assert.equal(response.statusCode, 409);
+  assert.ok(response.payload.error.includes('硬退信'));
+});
+
+test('record-manual-outreach rejects when follow_up_count already at cap', async () => {
+  const { response } = await runRecordManualOutreach({ rowOverrides: { follow_up_count: 2 } });
+  assert.equal(response.statusCode, 409);
+  assert.ok(response.payload.error.includes('上限'));
+});
+
+test('record-manual-outreach rejects a non-numeric id', async () => {
+  const handler = findHandler(require('./campaignKols'), 'post', '/:id/record-manual-outreach');
+  const response = await callHandler(handler, { params: { id: 'abc' } });
+  assert.equal(response.statusCode, 400);
+});
