@@ -18,7 +18,7 @@ rem auto-run pending migrations when NODE_ENV=production.
 
 rem Load DB port chosen at install time (default 3306).
 set "DB_PORT=3306"
-for /f "tokens=2 delims==" %%i in ('findstr /B "DB_PORT=" .env 2^>nul') do set "DB_PORT=%%i"
+for /f %%i in ('powershell -NoProfile -Command "if (Test-Path .env) { $m = Get-Content .env | Select-String '^DB_PORT=(\d+)'; if ($m) { $m.Matches[0].Groups[1].Value } }"') do set "DB_PORT=%%i"
 
 rem 1. Start bundled MariaDB if its port is not already listening.
 netstat -ano | findstr /C:":%DB_PORT% " | findstr /C:"LISTENING" >nul
