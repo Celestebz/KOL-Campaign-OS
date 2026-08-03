@@ -61,6 +61,21 @@ FunctionEnd
 
 Section "Install"
   SetOutPath "$INSTDIR"
+
+  ; --- stop a running instance first (upgrade scenario): exe files are locked otherwise ---
+  ${If} ${FileExists} "$INSTDIR\uninstall.exe"
+    DetailPrint "检测到已有安装，停止运行中的服务..."
+    nsExec::ExecToLog 'powershell -NoProfile -Command "$$c=Get-NetTCPConnection -LocalPort 5001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if($$c){Stop-Process -Id $$c.OwningProcess -Force -ErrorAction SilentlyContinue}"'
+    ReadRegStr $R3 HKCU ${REG_APP} "DBPort"
+    ${If} $R3 == ""
+      StrCpy $R3 "3306"
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\mariadb\bin\mariadb-admin.exe"
+      nsExec::ExecToLog '"$INSTDIR\mariadb\bin\mariadb-admin.exe" --protocol=TCP -h127.0.0.1 -P$R3 -uroot shutdown'
+    ${EndIf}
+    Sleep 3000
+  ${EndIf}
+
   DetailPrint "复制程序文件..."
   File /r "..\dist\app\*.*"
 
@@ -87,6 +102,15 @@ Section "Install"
     FileWrite $0 "DB_NAME=kol_campaign_os$\r$\n"
     FileWrite $0 "# APP_ACCESS_PASSWORD=$\r$\n"
     FileClose $0
+  ${Else}
+    ; upgrade: honor the port recorded in the existing .env so my.ini matches it
+    nsExec::ExecToStack 'powershell -NoProfile -Command "$$m = Get-Content \"$INSTDIR\.env\" | Select-String ''^DB_PORT=(\d+)''; if($$m){$$m.Matches[0].Groups[1].Value}"'
+    Pop $0
+    Pop $1
+    ${If} $1 != ""
+      StrCpy $DbPort $1
+    ${EndIf}
+    DetailPrint "沿用已有配置，数据库端口: $DbPort"
   ${EndIf}
 
   ; --- data\my.ini (forward-slash paths) ---
