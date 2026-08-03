@@ -415,6 +415,12 @@ function buildStrategyPrompt(strategy, campaign, materialContext = null) {
         minimum_followers: '',
         maximum_followers: '',
         minimum_avg_views: '',
+        minimum_median_views: '',
+        recent_activity_days: '',
+        minimum_recent_videos: '',
+        minimum_video_duration_seconds: '',
+        search_date_posted: '',
+        search_sort_by: '',
         required_evidence: [],
         approve_threshold: 75,
         tier_rules: {

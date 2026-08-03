@@ -31,6 +31,20 @@ test('builds only the TikTok Keyword Search endpoint', () => {
   assert.equal(url.includes('/search/top'), false);
 });
 
+test('adds supported recency and pagination parameters', () => {
+  const url = buildTikTokKeywordSearchUrl('https://api.scrapecreators.com/v1', 'christmas tree', {
+    datePosted: 'last-6-months',
+    sortBy: 'date-posted',
+    region: 'us',
+    cursor: 12,
+    trim: true
+  });
+  assert.equal(
+    url,
+    'https://api.scrapecreators.com/v1/tiktok/search/keyword?query=christmas+tree&date_posted=last-6-months&sort_by=date-posted&region=US&cursor=12&trim=true'
+  );
+});
+
 test('extracts only aweme_info video records', () => {
   assert.deepEqual(
     extractTikTokVideos({ search_item_list: [{ aweme_info: officialVideo }, { type: 1 }] }),

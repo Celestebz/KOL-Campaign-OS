@@ -36,6 +36,7 @@ const MATON_EXTERNAL_REQUEST_BUDGET = 32;
 const PLATFORM_SEARCH_CACHE_TTL_DAYS = 1;
 const MIN_NEW_CREATOR_YIELD = 0.1;
 const LOW_YIELD_STREAK_LIMIT = 2;
+const TIKTOK_MAX_PAGES_PER_QUERY = 2;
 const EVIDENCE_SIGNAL_TYPES = new Set(['competitor', 'category', 'use_case', 'feature', 'community']);
 
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
@@ -936,6 +937,17 @@ function inferCountryRegion(...values) {
   return '';
 }
 
+function inferInstagramOwnerCountry(owner = {}) {
+  const username = clean(owner.username).toLowerCase();
+  const fullName = clean(owner.full_name).toLowerCase();
+  // Search results do not include a reliable country field. Only infer from
+  // explicit regional account suffixes/names; ordinary surnames such as
+  // "Spain" must not be treated as locations.
+  if (/(?:^|[._-])uk$/.test(username) || /\b(?:uk|united kingdom)\b/.test(fullName)) return 'United Kingdom';
+  if (/(?:^|[._-])au$/.test(username) || /\baustralia\b/.test(fullName)) return 'Australia';
+  return '';
+}
+
 function targetMarketAllowsCountry(targetMarket, countryRegion) {
   const target = clean(targetMarket).toLowerCase();
   const country = clean(countryRegion).toLowerCase();
@@ -973,6 +985,10 @@ function applyFollowerGate(candidate, request) {
   const avgViews = parseMetricNumber(candidate.avg_views);
   const failures = [];
 
+  if ((minFollowers !== null || maxFollowers !== null) && followerCount === null) {
+    failures.push('followers unavailable');
+  }
+
   if (minFollowers !== null && followerCount !== null && followerCount < minFollowers) {
     failures.push(`followers ${followerCount} < minimum ${minFollowers}`);
   }
@@ -993,22 +1009,30 @@ function applyFollowerGate(candidate, request) {
   };
 }
 
-const CREATOR_POSITIVE_TERMS = [
-  'review', 'reviewer', 'reviews', 'demo', 'gear', 'pedal', 'vocal', 'vocals',
-  'singer', 'songwriter', 'musician', 'producer', 'loop', 'looping', 'looper',
-  'worship', 'busking', 'live performer', 'youtube', 'creator', 'content',
-  'studio', 'recording', 'audio', 'mixing', 'sound', 'tutorial'
-];
-
-const NON_CREATOR_NEGATIVE_TERMS = [
-  'store', 'shop', 'online store', 'music store', 'open everyday', 'dealer',
-  'distributor', 'rental', 'repair', 'restaurant', 'cafe', 'fashion', 'beauty',
-  'makeup', 'fitness', 'real estate', 'agency'
-];
-
-const STRONG_NON_CREATOR_TERMS = [
-  'online store', 'music store', 'open everyday', 'dealer', 'distributor', 'rental', 'repair'
-];
+function strategySemanticRules(request = {}) {
+  const handoff = request.strategy?.finder_handoff || {};
+  const persona = request.strategy?.persona_config || {};
+  const normalizeTerms = (values) => [...new Set(values.flatMap(parseList).map((term) => clean(term).toLowerCase()).filter(Boolean))];
+  return {
+    positiveTerms: normalizeTerms([
+      handoff.required_keywords,
+      persona.positive_audience_signals,
+      persona.primary_persona,
+      persona.secondary_personas
+    ]),
+    exclusionTerms: normalizeTerms([
+      handoff.exclusion_keywords,
+      persona.negative_signals,
+      persona.exclusion_personas
+    ]),
+    brandTerms: normalizeTerms([
+      request.campaign?.brand,
+      handoff.competitor_keywords,
+      request.product?.brand,
+      request.strategy?.product_context?.competitors
+    ])
+  };
+}
 
 function appendGateFailure(candidate, message) {
   return {
@@ -1019,32 +1043,35 @@ function appendGateFailure(candidate, message) {
   };
 }
 
-function applyInstagramCreatorQualityGate(candidate) {
+function applyInstagramCreatorQualityGate(candidate, request = {}) {
   if (candidate.platform !== 'instagram') return candidate;
   const raw = candidate.raw_data || {};
+  const owner = raw.owner || {};
   const text = [
     candidate.kol_name,
-    raw.username,
-    raw.full_name,
-    raw.biography,
-    raw.category_name,
+    owner.username || raw.username,
+    owner.full_name || raw.full_name,
+    owner.biography || raw.biography,
+    owner.category_name || raw.category_name,
     raw.google_title,
     raw.google_description,
     raw.external_url
   ].map(clean).join(' ').toLowerCase();
   const followers = parseMetricNumber(candidate.followers);
-  const mediaCount = parseMetricNumber(raw.media_count);
+  const mediaCount = parseMetricNumber(owner.post_count || owner.media_count || raw.media_count);
   const failures = [];
-  const positives = CREATOR_POSITIVE_TERMS.filter((term) => text.includes(term));
-  const negatives = NON_CREATOR_NEGATIVE_TERMS.filter((term) => text.includes(term));
-  const strongNegatives = STRONG_NON_CREATOR_TERMS.filter((term) => text.includes(term));
+  const semanticRules = strategySemanticRules(request);
+  const positives = semanticRules.positiveTerms.filter((term) => text.includes(term));
+  const negatives = semanticRules.exclusionTerms.filter((term) => text.includes(term));
+  const profileName = clean(owner.full_name || candidate.kol_name).toLowerCase();
+  const username = clean(owner.username || raw.username).toLowerCase();
+  const matchedBrand = semanticRules.brandTerms.find((term) => profileName === term || username === term.replace(/^@/, ''));
 
-  if (raw.is_private) failures.push('private account');
+  if (owner.is_private || raw.is_private) failures.push('private account');
   if (followers !== null && followers < 1000) failures.push(`followers ${followers} < Instagram baseline 1000`);
   if (mediaCount !== null && mediaCount < 30) failures.push(`media count ${mediaCount} < baseline 30`);
-  if (strongNegatives.length) failures.push(`strong non-creator profile signals: ${strongNegatives.slice(0, 3).join(', ')}`);
-  if (negatives.length && !positives.length) failures.push(`non-creator profile signals: ${negatives.slice(0, 3).join(', ')}`);
-  if (!positives.length) failures.push('missing creator/reviewer/gear signals in profile');
+  if (negatives.length) failures.push(`strategy exclusion signals: ${negatives.slice(0, 3).join(', ')}`);
+  if ((owner.is_verified || raw.is_verified) && matchedBrand) failures.push(`verified strategy brand account: ${matchedBrand}`);
   if (raw.matched_from === 'caption' && followers !== null && followers < 5000 && positives.length < 2) {
     failures.push('caption-only match with weak creator signals');
   }
@@ -1054,7 +1081,7 @@ function applyInstagramCreatorQualityGate(candidate) {
       ...candidate,
       scoring_breakdown: {
         ...(candidate.scoring_breakdown || {}),
-        creator_quality_signals: positives.slice(0, 6),
+        strategy_profile_signals: positives.slice(0, 6),
         instagram_media_count: mediaCount
       }
     };
@@ -1063,7 +1090,7 @@ function applyInstagramCreatorQualityGate(candidate) {
 }
 
 function applyFinderGates(candidate, request) {
-  return applyInstagramCreatorQualityGate(applyFollowerGate(applyMarketGate(candidate, request), request));
+  return applyInstagramCreatorQualityGate(applyFollowerGate(applyMarketGate(candidate, request), request), request);
 }
 
 function buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetPlatform, limit) {
@@ -1241,7 +1268,7 @@ async function youtubeMatonGatewayAdapter(request, setting, baseUrl) {
     } while (pageToken && candidates.length < maxScannedChannels && searchedPages < maxSearchPages);
     if (candidates.length >= maxScannedChannels || searchedPages >= maxSearchPages) break;
   }
-  if (!candidates.length) throw new Error('Maton 已连通，但 YouTube Search 返回 0 条候选；建议先用更短关键词测试，例如单个竞品名 + review。');
+  if (!candidates.length) throw new Error('Maton 已连通，但 YouTube Search 返回 0 条候选；请检查 Finder 策略关键词或改用更短的策略词。');
   const preflight = await preflightYoutubeCandidates(
     candidates.slice(0, maxScannedChannels),
     request,
@@ -1282,13 +1309,20 @@ function youtubePreflightConfig(request) {
   const minimumMedianViews = parseMetricNumber(handoff.minimum_median_views || handoff.minimum_avg_views) || 0;
   const evidenceText = parseList(handoff.required_evidence).join(' ');
   const countMatch = evidenceText.match(/at least\s+(\d+)\s+recent/i);
+  const durationMatch = evidenceText.match(/(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)\s+or\s+longer/i);
+  const activityDays = parseMetricNumber(handoff.activity_days || handoff.recent_activity_days) || 0;
+  const minimumContentCount = parseMetricNumber(handoff.minimum_recent_videos || handoff.minimum_content_count)
+    || (countMatch ? Number(countMatch[1]) : 0);
+  const minimumContentSeconds = parseMetricNumber(handoff.minimum_video_duration_seconds || handoff.minimum_content_duration_seconds)
+    || (durationMatch ? Math.round(Number(durationMatch[1]) * 60) : 0);
   return {
-    enabled: minimumMedianViews > 0,
+    enabled: minimumMedianViews > 0 || activityDays > 0 || minimumContentCount > 0 || minimumContentSeconds > 0,
     targetMarket: clean(request.campaign?.target_market).toLowerCase(),
-    activityDays: 90,
-    minimumLongVideos: countMatch ? Number(countMatch[1]) : 3,
-    minimumLongSeconds: 8 * 60,
-    minimumMedianViews
+    activityDays,
+    minimumLongVideos: minimumContentCount,
+    minimumLongSeconds: minimumContentSeconds,
+    minimumMedianViews,
+    semanticRules: strategySemanticRules(request)
   };
 }
 
@@ -1297,22 +1331,24 @@ function finderScanLimit(request, targetQualifiedCount) {
   return youtubePreflightConfig(request).enabled ? Math.min(100, target * 5) : target;
 }
 
-function looksLikeBrandOrDealer(candidate) {
+function looksLikeExcludedYoutubeAccount(candidate, config = {}) {
   const channel = candidate.raw_data?.channel || {};
   const text = [candidate.kol_name, channel.snippet?.title, channel.snippet?.description]
     .map(clean).join(' ').toLowerCase();
-  return /\b(official channel|manufacturer|authorized dealer|dealership|equipment dealer|tractor dealer)\b/.test(text)
-    || /\b(ltd\.?|inc\.?|llc)\s*$/.test(clean(candidate.kol_name).toLowerCase());
+  const name = clean(channel.snippet?.title || candidate.kol_name).toLowerCase();
+  const exclusions = config.semanticRules?.exclusionTerms || [];
+  const brands = config.semanticRules?.brandTerms || [];
+  return exclusions.some((term) => text.includes(term)) || brands.some((term) => name === term);
 }
 
 function evaluateYoutubePreflight(candidate, videos, config, now = new Date()) {
   const country = clean(candidate.country_region || candidate.raw_data?.channel?.snippet?.country).toUpperCase();
   if (config.targetMarket.includes('united states') || config.targetMarket === 'us') {
-    if (country !== 'US') return { passed: false, reason: country ? 'market_mismatch' : 'market_unverified', country };
+    if (country && country !== 'US') return { passed: false, reason: 'market_mismatch', country };
   }
-  if (looksLikeBrandOrDealer(candidate)) return { passed: false, reason: 'brand_or_dealer_account', country };
+  if (looksLikeExcludedYoutubeAccount(candidate, config)) return { passed: false, reason: 'strategy_excluded_account', country };
 
-  const cutoff = now.getTime() - config.activityDays * 24 * 60 * 60 * 1000;
+  const cutoff = config.activityDays > 0 ? now.getTime() - config.activityDays * 24 * 60 * 60 * 1000 : null;
   const normalized = videos.map((video) => ({
     id: video.id,
     title: clean(video.snippet?.title),
@@ -1321,18 +1357,18 @@ function evaluateYoutubePreflight(candidate, videos, config, now = new Date()) {
     durationSeconds: parseYoutubeDurationSeconds(video.contentDetails?.duration)
   })).filter((video) => video.id);
   if (!normalized.length) return { passed: false, reason: 'preflight_unavailable', country };
-  const recent = normalized.filter((video) => new Date(video.publishedAt).getTime() >= cutoff);
-  if (!recent.length) return { passed: false, reason: 'inactive_90d', country, recentCount: 0 };
+  const recent = cutoff === null ? normalized : normalized.filter((video) => new Date(video.publishedAt).getTime() >= cutoff);
+  if (config.activityDays > 0 && !recent.length) return { passed: false, reason: 'inactive_in_strategy_window', country, recentCount: 0 };
 
   const longVideos = normalized
-    .filter((video) => video.durationSeconds >= config.minimumLongSeconds)
+    .filter((video) => config.minimumLongSeconds <= 0 || video.durationSeconds >= config.minimumLongSeconds)
     .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
     .slice(0, 10);
-  if (longVideos.length < config.minimumLongVideos) {
+  if (config.minimumLongVideos > 0 && longVideos.length < config.minimumLongVideos) {
     return { passed: false, reason: 'insufficient_long_videos', country, recentCount: recent.length, longVideoCount: longVideos.length };
   }
   const medianViews = medianNumber(longVideos.map((video) => video.views));
-  if (medianViews < config.minimumMedianViews) {
+  if (config.minimumMedianViews > 0 && medianViews < config.minimumMedianViews) {
     return {
       passed: false, reason: 'median_views_below_threshold', country,
       recentCount: recent.length, longVideoCount: longVideos.length, medianViews,
@@ -1366,8 +1402,8 @@ async function preflightYoutubeCandidates(candidates, request, setting, baseUrl,
   });
   const likelyEligible = feeds.filter((item) => {
     const country = clean(item.candidate.country_region || item.candidate.raw_data?.channel?.snippet?.country).toUpperCase();
-    const marketMatches = !(config.targetMarket.includes('united states') || config.targetMarket === 'us') || country === 'US';
-    return marketMatches && !looksLikeBrandOrDealer(item.candidate);
+    const marketMatches = !(config.targetMarket.includes('united states') || config.targetMarket === 'us') || !country || country === 'US';
+    return marketMatches && !looksLikeExcludedYoutubeAccount(item.candidate, config);
   });
   await Promise.all(likelyEligible.map(async (item) => {
     item.videoIds = item.channelId ? await youtubeFeedVideoIds(item.channelId) : [];
@@ -1563,9 +1599,10 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   let externalRequestCount = 0;
   let lowYieldStreak = 0;
   let stoppedForLowYield = false;
+  const nextCursors = {};
 
   for (const query of keywordQueries(request)) {
-    if (candidates.length >= maxResults) break;
+    if (candidates.length >= maxResults || stoppedForLowYield) break;
     if (request.target_platform === 'instagram') {
       const endpoint = buildInstagramReelSearchUrl(baseUrl, query);
       let data = await getCachedPlatformSearch('scrapecreators', 'instagram', query);
@@ -1612,56 +1649,71 @@ async function scrapeCreatorsFinderAdapterV2(request) {
       continue;
     }
 
-    const endpoint = buildTikTokKeywordSearchUrl(baseUrl, query);
-    lastEndpoint = endpoint;
+    const handoff = request.strategy?.finder_handoff || {};
+    const datePosted = clean(handoff.tiktok_date_posted || handoff.search_date_posted);
+    const sortBy = clean(handoff.tiktok_sort_by || handoff.search_sort_by);
+    const market = clean(request.campaign?.target_market || request.target_market).toUpperCase();
+    const region = /^[A-Z]{2}$/.test(market) ? market : '';
+    let cursor = clean(request.tiktok_cursors?.[query]);
+    let endpoint = '';
     try {
-      let data = await getCachedPlatformSearch('scrapecreators', 'tiktok', query);
-      if (data) {
-        cacheHitCount += 1;
-      } else {
-        data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
-        externalRequestCount += 1;
-        await savePlatformSearchCache('scrapecreators', 'tiktok', query, data);
-      }
-      const videos = extractTikTokVideos(data);
-      tiktokVideoCount += videos.length;
-      const beforeCount = candidates.length;
-      for (const video of videos) {
-        const mapped = tiktokVideoToCandidate(video, {
-          ...request,
-          discovery: { ...request.discovery, keywords: query }
-        });
-        if (!mapped) continue;
-        const videoId = video.aweme_id.trim();
-        if (seenTikTokVideoIds.has(videoId)) continue;
-        seenTikTokVideoIds.add(videoId);
-        if (isExcludedPlatformCreator(
-          request.creator_exclusions || new Set(),
-          'tiktok',
-          mapped.profile_url,
-          mapped.kol_name
-        )) {
-          excludedCreatorCount += 1;
-          continue;
+      for (let page = 0; page < TIKTOK_MAX_PAGES_PER_QUERY && candidates.length < maxResults; page += 1) {
+        const variant = [datePosted, sortBy, region].join('|');
+        endpoint = buildTikTokKeywordSearchUrl(baseUrl, query, { datePosted, sortBy, region, cursor });
+        lastEndpoint = endpoint;
+        let data = await getCachedPlatformSearch('scrapecreators', 'tiktok', query, cursor, variant);
+        if (data) {
+          cacheHitCount += 1;
+        } else {
+          data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+          externalRequestCount += 1;
+          await savePlatformSearchCache('scrapecreators', 'tiktok', query, data, cursor, variant);
         }
-        const creatorIdentity = creatorSearchIdentity('tiktok', mapped);
-        if (!creatorIdentity || seenCreatorIds.has(creatorIdentity)) continue;
-        seenCreatorIds.add(creatorIdentity);
-        candidates.push(mapped);
-        if (candidates.length >= maxResults) break;
-      }
-      const newCount = candidates.length - beforeCount;
-      lowYieldStreak = videos.length > 0 && newCount / videos.length < MIN_NEW_CREATOR_YIELD ? lowYieldStreak + 1 : 0;
-      tiktokQueryAttempts.push({
-        search_source: request.search_source || 'tiktok_search',
-        provider: 'scrapecreators',
-        ok: true,
-        endpoint,
-        query
-      });
-      if (lowYieldStreak >= LOW_YIELD_STREAK_LIMIT) {
-        stoppedForLowYield = true;
-        break;
+        const videos = extractTikTokVideos(data);
+        tiktokVideoCount += videos.length;
+        const beforeCount = candidates.length;
+        for (const video of videos) {
+          const mapped = tiktokVideoToCandidate(video, {
+            ...request,
+            discovery: { ...request.discovery, keywords: query }
+          });
+          if (!mapped) continue;
+          const videoId = video.aweme_id.trim();
+          if (seenTikTokVideoIds.has(videoId)) continue;
+          seenTikTokVideoIds.add(videoId);
+          if (isExcludedPlatformCreator(
+            request.creator_exclusions || new Set(),
+            'tiktok',
+            mapped.profile_url,
+            mapped.kol_name
+          )) {
+            excludedCreatorCount += 1;
+            continue;
+          }
+          const creatorIdentity = creatorSearchIdentity('tiktok', mapped);
+          if (!creatorIdentity || seenCreatorIds.has(creatorIdentity)) continue;
+          seenCreatorIds.add(creatorIdentity);
+          candidates.push(mapped);
+          if (candidates.length >= maxResults) break;
+        }
+        const newCount = candidates.length - beforeCount;
+        lowYieldStreak = videos.length > 0 && newCount / videos.length < MIN_NEW_CREATOR_YIELD ? lowYieldStreak + 1 : 0;
+        tiktokQueryAttempts.push({
+          search_source: request.search_source || 'tiktok_search',
+          provider: 'scrapecreators',
+          ok: true,
+          endpoint,
+          query,
+          cursor: cursor || ''
+        });
+        const nextCursor = clean(data?.cursor);
+        nextCursors[query] = nextCursor;
+        if (lowYieldStreak >= LOW_YIELD_STREAK_LIMIT) {
+          stoppedForLowYield = true;
+          break;
+        }
+        if (!nextCursor || nextCursor === cursor || videos.length === 0) break;
+        cursor = nextCursor;
       }
     } catch (error) {
       const safeMessage = redactKnownSecrets(error.message, [setting.api_key]);
@@ -1690,6 +1742,7 @@ async function scrapeCreatorsFinderAdapterV2(request) {
       cache_hit_count: cacheHitCount,
       external_request_count: externalRequestCount,
       stopped_for_low_yield: stoppedForLowYield,
+      next_cursors: nextCursors,
       attempts: request.target_platform === 'tiktok' ? tiktokQueryAttempts : []
     };
   }
@@ -1735,18 +1788,19 @@ async function scrapeCreatorsFinderAdapterV2(request) {
     cache_hit_count: cacheHitCount,
     external_request_count: externalRequestCount,
     stopped_for_low_yield: stoppedForLowYield,
+    next_cursors: nextCursors,
     attempts: request.target_platform === 'tiktok' ? tiktokQueryAttempts : []
   };
 }
 
-function platformSearchCacheKey(provider, platform, query) {
+function platformSearchCacheKey(provider, platform, query, pageToken = '', variant = '') {
   return crypto.createHash('sha256')
-    .update([clean(provider), clean(platform).toLowerCase(), clean(query).toLowerCase()].join('|'))
+    .update([clean(provider), clean(platform).toLowerCase(), clean(query).toLowerCase(), clean(pageToken), clean(variant)].join('|'))
     .digest('hex');
 }
 
-async function getCachedPlatformSearch(provider, platform, query) {
-  const cacheKey = platformSearchCacheKey(provider, platform, query);
+async function getCachedPlatformSearch(provider, platform, query, pageToken = '', variant = '') {
+  const cacheKey = platformSearchCacheKey(provider, platform, query, pageToken, variant);
   const row = await dbOperations.get(
     'SELECT * FROM finder_search_cache WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAMP LIMIT 1',
     [cacheKey]
@@ -1761,18 +1815,18 @@ async function getCachedPlatformSearch(provider, platform, query) {
   return parseJson(row.response_json, {});
 }
 
-async function savePlatformSearchCache(provider, platform, query, data) {
-  const cacheKey = platformSearchCacheKey(provider, platform, query);
+async function savePlatformSearchCache(provider, platform, query, data, pageToken = '', variant = '') {
+  const cacheKey = platformSearchCacheKey(provider, platform, query, pageToken, variant);
   const expiresAt = new Date(Date.now() + PLATFORM_SEARCH_CACHE_TTL_DAYS * 24 * 60 * 60 * 1000);
   const resultCount = platform === 'instagram' ? extractInstagramReels(data).length : extractTikTokVideos(data).length;
   await dbOperations.run(
     `INSERT INTO finder_search_cache
      (cache_key, provider, platform, query_text, page_token, max_results, response_json,
       result_count, hit_count, expires_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, '', 0, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
      ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), result_count = VALUES(result_count),
        expires_at = VALUES(expires_at), updated_at = CURRENT_TIMESTAMP`,
-    [cacheKey, provider, platform, clean(query), JSON.stringify(data || {}), resultCount, toMysqlDatetime(expiresAt)]
+    [cacheKey, provider, platform, clean(query), clean(pageToken), JSON.stringify(data || {}), resultCount, toMysqlDatetime(expiresAt)]
   );
 }
 
@@ -1800,7 +1854,7 @@ function normalizeCandidate(input, request, provider) {
     followers: clean(input.followers || input.follower_count || input.subscriber_count || input.subscribers),
     avg_views: clean(input.avg_views || input.average_views || input.views),
     email: clean(input.email),
-    country_region: clean(input.country_region || input.country || input.region),
+    country_region: clean(input.country_region || input.country || input.region || inferInstagramOwnerCountry(input.raw_data?.owner)),
     matched_keywords: clean(input.matched_keywords || request.discovery.keywords),
     matched_persona: clean(input.matched_persona || request.strategy.persona_config?.primary_persona),
     ai_score: normalizeNumber(input.ai_score || input.score),
@@ -1838,17 +1892,6 @@ function inferPersonaFromEvidence(row = {}, strategy = {}) {
   const configured = primaryPersonaFromStrategy(strategy);
   if (configured) return configured;
 
-  const text = [
-    row.source_signal,
-    row.source_query,
-    row.title,
-    row.video_title,
-    row.summary,
-    row.decision_reason,
-    row.content_relevance_score,
-    row.evidence_strength_score
-  ].map((value) => String(value || '').toLowerCase()).join(' ');
-
   const scores = {
     competitor: Number(row.competitor_fit) || 0,
     category: Number(row.category_fit) || 0,
@@ -1858,17 +1901,13 @@ function inferPersonaFromEvidence(row = {}, strategy = {}) {
   };
   const strongest = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
   if (strongest?.[1] >= MIN_RELEVANT_SIGNAL_SCORE) {
-    if (strongest[0] === 'competitor') return '竞品评测型 KOL';
-    if (strongest[0] === 'category' || strongest[0] === 'feature') return '品类评测型 KOL';
-    if (strongest[0] === 'useCase') return '场景体验型 KOL';
-    if (strongest[0] === 'community') return '垂直社群型 KOL';
+    if (strongest[0] === 'competitor') return '竞品证据匹配 KOL';
+    if (strongest[0] === 'category') return '品类证据匹配 KOL';
+    if (strongest[0] === 'feature') return '功能证据匹配 KOL';
+    if (strongest[0] === 'useCase') return '使用场景证据匹配 KOL';
+    if (strongest[0] === 'community') return '目标社群证据匹配 KOL';
   }
-
-  if (text.includes('competitor')) return '竞品评测型 KOL';
-  if (text.includes('review') || text.includes('category') || text.includes('backpack') || text.includes('carrier')) return '品类评测型 KOL';
-  if (text.includes('use_case') || text.includes('travel') || text.includes('outdoor')) return '场景体验型 KOL';
-  if (text.includes('community') || text.includes('cat')) return '垂直社群型 KOL';
-  return '待确认画像';
+  return '策略画像待确认';
 }
 
 function profileKey(candidate) {
@@ -1933,6 +1972,7 @@ async function upsertRawCandidate(candidate, task, provider, creatorContext = nu
        ai_score = COALESCE(ai_score, ?),
        ai_match_reason = COALESCE(NULLIF(ai_match_reason, ''), ?),
        matched_persona = COALESCE(NULLIF(matched_persona, ''), ?),
+       scoring_breakdown = CASE WHEN ? <> '{}' THEN ? ELSE scoring_breakdown END,
        raw_data = ?,
        updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
@@ -1965,6 +2005,8 @@ async function upsertRawCandidate(candidate, task, provider, creatorContext = nu
         candidate.ai_score,
         candidate.ai_match_reason,
         candidate.matched_persona,
+        JSON.stringify(candidate.scoring_breakdown || {}),
+        JSON.stringify(candidate.scoring_breakdown || {}),
         rawData,
         existing.id
       ], transaction
@@ -2456,6 +2498,27 @@ async function saveTaskCheckpoint(taskId, checkpoint) {
   await updateTask(taskId, { checkpoint_json: JSON.stringify(checkpoint) });
 }
 
+async function loadRecentTikTokCursors(task) {
+  const previous = await dbOperations.get(
+    `SELECT ft.checkpoint_json
+     FROM finder_tasks ft
+     JOIN (
+       SELECT id
+       FROM finder_tasks
+       WHERE strategy_id = ? AND LOWER(platform) = 'tiktok' AND id <> ?
+         AND updated_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 DAY)
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1
+     ) recent ON recent.id = ft.id`,
+    [task.strategy_id, task.id]
+  );
+  const checkpoint = parseJson(previous?.checkpoint_json, {});
+  if (checkpoint.search_stopped_for_low_yield === true) return {};
+  return checkpoint.tiktok_next_cursors && typeof checkpoint.tiktok_next_cursors === 'object'
+    ? checkpoint.tiktok_next_cursors
+    : {};
+}
+
 async function processVideoEvidenceTask(taskId, options = {}) {
   const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
   if (!task) return;
@@ -2476,10 +2539,15 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   if (['instagram', 'tiktok'].includes(targetPlatform)) {
     request.creator_exclusions = await loadPlatformExclusionSet(targetPlatform);
   }
+  if (targetPlatform === 'tiktok') {
+    request.tiktok_cursors = await loadRecentTikTokCursors(task);
+  }
   const allAttempts = [];
   const responseSummary = [];
   let insertedCount = 0;
   let resumedCount = 0;
+  let rawCandidateInsertedCount = 0;
+  let rawCandidateUpdatedCount = 0;
   let failedCount = 0;
   let discoveryError = '';
 
@@ -2521,6 +2589,7 @@ async function processVideoEvidenceTask(taskId, options = {}) {
       checkpoint.search_cache_hit_count = Number(result.cache_hit_count || 0);
       checkpoint.search_external_request_count = Number(result.external_request_count || 0);
       checkpoint.search_stopped_for_low_yield = result.stopped_for_low_yield === true;
+      checkpoint.tiktok_next_cursors = result.next_cursors || {};
       checkpoint.videos_imported = 0;
       checkpoint.imported_video_urls = [];
       checkpoint.import_failures = [];
@@ -2529,8 +2598,51 @@ async function processVideoEvidenceTask(taskId, options = {}) {
     let skipped = 0;
     const importedUrls = new Set(checkpoint.imported_video_urls);
     for (const raw of importSource.candidates.slice(0, limit)) {
-      const normalized = normalizeCandidate(raw, request, importSource.provider);
+      const normalized = applyFinderGates(normalizeCandidate(raw, request, importSource.provider), request);
       const videoUrl = clean(normalized.video_url || normalized.evidence_url);
+      if (normalized.status === 'ignored') {
+        skipped += 1;
+        continue;
+      }
+      if (['instagram', 'tiktok'].includes(targetPlatform) && normalized.profile_url) {
+        try {
+          const creatorContext = await resolveExistingCreatorContext(
+            normalized.platform,
+            normalized.profile_url,
+            normalized.kol_name
+          );
+          const identity = buildCandidateIdentity(
+            normalized.platform,
+            normalized.profile_url,
+            normalized.kol_name
+          );
+          const directImport = await withActiveTaskBindingForWrite(taskId, async ({ task: activeTask, transaction }) => {
+            const saved = await upsertRawCandidate(
+              { ...normalized, status: normalized.status || 'new' },
+              activeTask,
+              importSource.provider,
+              creatorContext,
+              transaction
+            );
+            if (saved.id) {
+              await upsertRawCandidateProductFit(
+                normalized,
+                activeTask,
+                identity,
+                creatorContext,
+                saved.id,
+                transaction
+              );
+            }
+            return saved;
+          });
+          if (directImport.inserted) rawCandidateInsertedCount += 1;
+          else if (directImport.id) rawCandidateUpdatedCount += 1;
+        } catch (itemError) {
+          if (itemError.status === 404 || itemError.status === 409) throw itemError;
+          importFailures.push({ profile_url: normalized.profile_url, error: itemError.message });
+        }
+      }
       if (!isVideoEvidenceUrl(videoUrl) || detectPlatformFromUrl(videoUrl) !== targetPlatform) {
         skipped += 1;
         continue;
@@ -2592,6 +2704,8 @@ async function processVideoEvidenceTask(taskId, options = {}) {
         max_scanned_channels: importSource.max_scanned_channels || limit,
       inserted: insertedCount,
       already_imported: resumedCount,
+      raw_candidates_inserted: rawCandidateInsertedCount,
+      raw_candidates_updated: rawCandidateUpdatedCount,
       skipped,
       import_failures: importFailures,
       query_failures: failedQueryAudit(importSource.attempts || [])
@@ -2617,7 +2731,10 @@ async function processVideoEvidenceTask(taskId, options = {}) {
     });
   }
 
-  const totalImported = insertedCount + resumedCount;
+  const directCreatorImported = rawCandidateInsertedCount + rawCandidateUpdatedCount;
+  const totalImported = ['instagram', 'tiktok'].includes(targetPlatform)
+    ? directCreatorImported
+    : insertedCount + resumedCount;
   failedCount += importFailures.length;
   const status = totalImported > 0 && failedCount > 0 ? 'partial_failed' : totalImported > 0 ? 'success' : 'failed';
   await updateTask(taskId, {
@@ -3283,6 +3400,8 @@ module.exports.creatorSearchIdentity = creatorSearchIdentity;
 module.exports.platformSearchCacheKey = platformSearchCacheKey;
 module.exports.rankedKeywordQueries = rankedKeywordQueries;
 module.exports.evaluateYoutubePreflight = evaluateYoutubePreflight;
+module.exports.normalizeCandidate = normalizeCandidate;
+module.exports.applyFinderGates = applyFinderGates;
 module.exports.youtubePreflightConfig = youtubePreflightConfig;
 module.exports.finderScanLimit = finderScanLimit;
 module.exports.createFinderTask = createFinderTask;

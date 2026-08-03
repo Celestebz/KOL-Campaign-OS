@@ -860,6 +860,8 @@ test('YouTube preflight rejects market, activity and median failures before AI a
   });
   assert.equal(parsedConfig.minimumMedianViews, 20000);
   assert.equal(parsedConfig.minimumLongVideos, 3);
+  assert.equal(parsedConfig.minimumLongSeconds, 480);
+  assert.equal(parsedConfig.activityDays, 0);
   assert.equal(finderTaskRoutes.finderScanLimit({
     campaign: { target_market: 'United States' },
     strategy: { finder_handoff: { minimum_avg_views: '15,353 median views' } }
@@ -871,7 +873,8 @@ test('YouTube preflight rejects market, activity and median failures before AI a
     activityDays: 90,
     minimumLongVideos: 3,
     minimumLongSeconds: 480,
-    minimumMedianViews: 15353
+    minimumMedianViews: 15353,
+    semanticRules: { exclusionTerms: ['retailer'], brandTerms: ['example brand'] }
   };
   const now = new Date('2026-07-30T00:00:00Z');
   const video = (id, daysAgo, views, duration = 'PT10M') => ({
@@ -891,18 +894,40 @@ test('YouTube preflight rejects market, activity and median failures before AI a
     { ...creator, country_region: 'CA' }, [video('a', 10, 20000)], config, now
   ).reason, 'market_mismatch');
   assert.equal(finderTaskRoutes.evaluateYoutubePreflight(
-    { ...creator, country_region: '' }, [video('a', 10, 20000)], config, now
-  ).reason, 'market_unverified');
+    { ...creator, country_region: '' }, [video('a', 10, 20000), video('b', 20, 18000), video('c', 30, 16000)], config, now
+  ).passed, true);
   assert.equal(finderTaskRoutes.evaluateYoutubePreflight(creator, [
     video('a', 120, 20000), video('b', 130, 20000), video('c', 140, 20000)
-  ], config, now).reason, 'inactive_90d');
+  ], config, now).reason, 'inactive_in_strategy_window');
   assert.equal(finderTaskRoutes.evaluateYoutubePreflight(creator, [], config, now).reason, 'preflight_unavailable');
   assert.equal(finderTaskRoutes.evaluateYoutubePreflight(creator, [
     video('a', 10, 1000), video('b', 20, 2000), video('c', 30, 3000)
   ], config, now).reason, 'median_views_below_threshold');
   assert.equal(finderTaskRoutes.evaluateYoutubePreflight(
-    { ...creator, kol_name: 'Example Tractor Ltd' }, [video('a', 10, 20000), video('b', 20, 20000), video('c', 30, 20000)], config, now
-  ).reason, 'brand_or_dealer_account');
+    { ...creator, kol_name: 'Example Brand' }, [video('a', 10, 20000), video('b', 20, 20000), video('c', 30, 20000)], config, now
+  ).reason, 'strategy_excluded_account');
+});
+
+test('platform gates use Strategy semantics instead of built-in product keywords', () => {
+  const request = {
+    campaign: { target_market: 'US', brand: 'Target Brand' },
+    product: { brand: 'Target Brand' },
+    discovery: { keywords: 'strategy category phrase' },
+    strategy: {
+      persona_config: { positive_audience_signals: ['strategy category phrase'], negative_signals: ['configured exclusion'] },
+      finder_handoff: { minimum_followers: 10000, maximum_followers: 500000, minimum_avg_views: 5000 }
+    }
+  };
+  const instagram = finderTaskRoutes.normalizeCandidate({
+    platform: 'instagram', kol_name: 'Unrelated historical category words', profile_url: 'https://instagram.com/example',
+    followers: 20000, avg_views: 8000, raw_data: { owner: { username: 'example', full_name: 'Unrelated historical category words', post_count: 40 } }
+  }, request, 'instagram_search');
+  assert.notEqual(finderTaskRoutes.applyFinderGates(instagram, request).status, 'ignored');
+  const excluded = finderTaskRoutes.normalizeCandidate({
+    platform: 'instagram', kol_name: 'Configured Exclusion Account', profile_url: 'https://instagram.com/excluded',
+    followers: 20000, avg_views: 8000, raw_data: { owner: { username: 'excluded', full_name: 'Configured Exclusion Account', post_count: 40 } }
+  }, request, 'instagram_search');
+  assert.equal(finderTaskRoutes.applyFinderGates(excluded, request).status, 'ignored');
 });
 
 test('Finder reuses a successful analysis for the same video and Strategy across tasks', async () => {
@@ -1823,7 +1848,7 @@ test('Instagram automatic Reel discovery persists evidence, analyzes it, and agg
 
     const task = await models.FinderTask.findByPk(taskId);
     assert.equal(task.status, 'success');
-    assert.equal(task.success_count, 2);
+    assert.equal(task.success_count, 1, 'task success count should represent unique creators imported into Raw Candidates');
     assert.equal(task.provider_attempts.includes(scrapeApiKey), false);
     assert.equal(task.raw_response_summary.includes(scrapeApiKey), false);
     assert.ok(scrapeRequests.length > 0);
@@ -1838,22 +1863,26 @@ test('Instagram automatic Reel discovery persists evidence, analyzes it, and agg
 
     const sources = await models.VideoSource.findAll();
     const evidence = await models.FinderVideoEvidence.findAll();
-    assert.equal(sources.length, 2, 'canonical-equivalent Reel URLs should reuse one video source');
-    assert.equal(evidence.length, 2, 'two distinct Reels should persist as two evidence rows');
+    assert.equal(sources.length, 1, 'creator discovery should retain one representative Reel per unique creator');
+    assert.equal(evidence.length, 1, 'one representative Reel should persist for the unique creator');
     const extractedMetrics = evidence.map((row) => safeParseJson(row.raw_data)?.data?.avg_views);
     assert.ok(extractedMetrics.includes('0'), 'official video_play_count=0 should be preserved');
+
+    const directlyImported = await models.RawCandidate.findAll();
+    assert.equal(directlyImported.length, 1, 'Instagram creator should enter Raw Candidates before evidence analysis');
+    assert.equal(directlyImported[0].profile_url, 'https://www.instagram.com/demo_creator/');
 
     const analyzeRes = await request
       .post(`/api/finder-tasks/${taskId}/evidence-analysis`)
       .send({});
     assert.equal(analyzeRes.status, 200);
-    assert.equal(analyzeRes.body.data.success_count, 2);
+    assert.equal(analyzeRes.body.data.success_count, 1);
 
     const generateRes = await request
       .post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`)
       .send({});
     assert.equal(generateRes.status, 200);
-    assert.equal(generateRes.body.data.inserted_count, 1);
+    assert.equal(generateRes.body.data.inserted_count, 0, 'evidence generation should enrich the existing creator instead of duplicating it');
 
     const candidates = await models.RawCandidate.findAll();
     assert.equal(candidates.length, 1);
@@ -1861,8 +1890,8 @@ test('Instagram automatic Reel discovery persists evidence, analyzes it, and agg
     assert.equal(candidates[0].profile_url, 'https://www.instagram.com/demo_creator/');
     assert.match(candidates[0].video_url, /^https:\/\/(?:www\.)?instagram\.com\/reel\//);
     assert.notEqual(candidates[0].video_url, candidates[0].profile_url);
-    assert.equal(safeParseJson(candidates[0].scoring_breakdown).evidence_count, 2);
-    assert.equal(safeParseJson(candidates[0].raw_data).data.evidence_ids.length, 2);
+    assert.equal(safeParseJson(candidates[0].scoring_breakdown).evidence_count, 1);
+    assert.equal(safeParseJson(candidates[0].raw_data).data.evidence_ids.length, 1);
   } finally {
     scrapeServer.close();
     aiServer.close();
@@ -2039,7 +2068,7 @@ test('TikTok automatic Keyword Search persists evidence, analyzes it, and aggreg
 
     const task = await models.FinderTask.findByPk(taskId);
     assert.equal(task.status, 'success');
-    assert.equal(task.success_count, 2);
+    assert.equal(task.success_count, 1, 'task success count should represent unique creators imported into Raw Candidates');
     assert.equal(task.provider_attempts.includes(scrapeApiKey), false);
     assert.equal(task.raw_response_summary.includes(scrapeApiKey), false);
     for (const item of requests) {
@@ -2050,19 +2079,22 @@ test('TikTok automatic Keyword Search persists evidence, analyzes it, and aggreg
       assert.equal(item.headers.authorization, undefined);
     }
 
-    assert.equal(await models.VideoSource.count(), 2);
-    assert.equal(await models.FinderVideoEvidence.count(), 2);
+    assert.equal(await models.VideoSource.count(), 1);
+    assert.equal(await models.FinderVideoEvidence.count(), 1);
+    const directlyImported = await models.RawCandidate.findAll();
+    assert.equal(directlyImported.length, 1, 'TikTok creator should enter Raw Candidates before evidence analysis');
+    assert.equal(directlyImported[0].profile_url, 'https://www.tiktok.com/@demo.creator');
     const analyze = await request.post(`/api/finder-tasks/${taskId}/evidence-analysis`).send({});
-    assert.equal(analyze.body.data.success_count, 2);
+    assert.equal(analyze.body.data.success_count, 1);
     const generate = await request.post(`/api/finder-tasks/${taskId}/generate-candidates-from-evidence`).send({});
-    assert.equal(generate.body.data.inserted_count, 1);
+    assert.equal(generate.body.data.inserted_count, 0, 'evidence generation should enrich the existing creator instead of duplicating it');
     const candidates = await models.RawCandidate.findAll();
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].platform, 'tiktok');
     assert.equal(candidates[0].profile_url, 'https://www.tiktok.com/@demo.creator');
     assert.match(candidates[0].video_url, /^https:\/\/www\.tiktok\.com\/@demo\.creator\/video\/\d+$/);
     assert.notEqual(candidates[0].profile_url, candidates[0].video_url);
-    assert.equal(safeParseJson(candidates[0].scoring_breakdown).evidence_count, 2);
+    assert.equal(safeParseJson(candidates[0].scoring_breakdown).evidence_count, 1);
   } finally {
     scrapeServer.close();
     aiServer.close();

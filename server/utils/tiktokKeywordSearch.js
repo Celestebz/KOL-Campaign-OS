@@ -7,10 +7,17 @@ function firstDefined(...values) {
   return clean(value);
 }
 
-function buildTikTokKeywordSearchUrl(baseUrl, query) {
+function buildTikTokKeywordSearchUrl(baseUrl, query, options = {}) {
   const root = clean(baseUrl).replace(/\/$/, '').replace(/\/v[123]$/, '');
   const url = new URL(`${root}/v1/tiktok/search/keyword`);
   url.searchParams.set('query', clean(query));
+  if (clean(options.datePosted)) url.searchParams.set('date_posted', clean(options.datePosted));
+  if (clean(options.sortBy)) url.searchParams.set('sort_by', clean(options.sortBy));
+  if (clean(options.region)) url.searchParams.set('region', clean(options.region).toUpperCase());
+  if (options.cursor !== undefined && options.cursor !== null && options.cursor !== '') {
+    url.searchParams.set('cursor', String(options.cursor));
+  }
+  if (options.trim === true) url.searchParams.set('trim', 'true');
   return url.toString();
 }
 
