@@ -31,6 +31,11 @@ const FINDER_ANALYSIS_VERSION = 'finder-evidence-v1';
 const MATON_SEARCH_CACHE_TTL_DAYS = 7;
 const MATON_DISCOVERY_REQUEST_BUDGET = 6;
 const MATON_EXTERNAL_REQUEST_BUDGET = 32;
+// Seasonal Instagram/TikTok discovery changes quickly; one day avoids duplicate spend
+// without hiding newly published creators for a full week.
+const PLATFORM_SEARCH_CACHE_TTL_DAYS = 1;
+const MIN_NEW_CREATOR_YIELD = 0.1;
+const LOW_YIELD_STREAK_LIMIT = 2;
 const EVIDENCE_SIGNAL_TYPES = new Set(['competitor', 'category', 'use_case', 'feature', 'community']);
 
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
@@ -132,6 +137,43 @@ async function loadYoutubeExclusionSet() {
   accounts.forEach((row) => add(row.username, row.profile_url));
   candidates.forEach((row) => add(row.kol_name, row.profile_url));
   return { channelIds, labels };
+}
+
+async function loadPlatformExclusionSet(platform) {
+  const normalized = normalizedPlatform(platform);
+  if (!['instagram', 'tiktok'].includes(normalized)) return new Set();
+  const platformColumn = normalized === 'instagram' ? 'instagram_url' : 'tiktok_url';
+  const snapshotColumn = normalized === 'instagram' ? 'instagram_url_snapshot' : 'tiktok_url_snapshot';
+  const [customers, accounts, candidates, campaignKols] = await Promise.all([
+    dbOperations.query(`SELECT name, profile_url, ${platformColumn} AS platform_url FROM customers`),
+    dbOperations.query('SELECT username, profile_url FROM kol_platform_accounts WHERE LOWER(platform) = ?', [normalized]),
+    dbOperations.query('SELECT kol_name, profile_url FROM raw_candidates WHERE LOWER(platform) = ?', [normalized]),
+    dbOperations.query(`SELECT kol_name_snapshot AS kol_name, ${snapshotColumn} AS profile_url FROM campaign_kols WHERE LOWER(COALESCE(target_platform, '')) = ?`, [normalized])
+  ]);
+  const exclusions = new Set();
+  const add = (_name, ...urls) => {
+    for (const url of urls) {
+      const normalizedUrl = normalizeProfileIdentity(normalized, url);
+      if (normalizedUrl) exclusions.add(`profile:${normalizedUrl}`);
+      const username = usernameFromProfileUrl(normalized, normalizedUrl);
+      if (username) exclusions.add(`username:${username}`);
+    }
+  };
+  customers.forEach((row) => add(row.name, row.platform_url, row.profile_url));
+  accounts.forEach((row) => add(row.username, row.profile_url));
+  candidates.forEach((row) => add(row.kol_name, row.profile_url));
+  campaignKols.forEach((row) => add(row.kol_name, row.profile_url));
+  return exclusions;
+}
+
+function isExcludedPlatformCreator(exclusions, platform, profileUrl, authorName) {
+  const normalized = normalizedPlatform(platform, profileUrl);
+  const normalizedUrl = normalizeProfileIdentity(normalized, profileUrl);
+  const username = usernameFromProfileUrl(normalized, normalizedUrl);
+  return Boolean(
+    (normalizedUrl && exclusions.has(`profile:${normalizedUrl}`))
+    || (username && exclusions.has(`username:${username}`))
+  );
 }
 
 function isExcludedYoutubeCreator(exclusions, channelId, channelTitle) {
@@ -1509,37 +1551,81 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   const baseUrl = (setting.base_url || 'https://api.scrapecreators.com').replace(/\/$/, '').replace(/\/v1$/, '');
   const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
   const candidates = [];
+  const seenCreatorIds = new Set();
   const seenTikTokVideoIds = new Set();
   const tiktokQueryAttempts = [];
   const tiktokQueryErrors = [];
   let lastEndpoint = '';
   let instagramReelCount = 0;
   let tiktokVideoCount = 0;
+  let excludedCreatorCount = 0;
+  let cacheHitCount = 0;
+  let externalRequestCount = 0;
+  let lowYieldStreak = 0;
+  let stoppedForLowYield = false;
 
   for (const query of keywordQueries(request)) {
     if (candidates.length >= maxResults) break;
     if (request.target_platform === 'instagram') {
       const endpoint = buildInstagramReelSearchUrl(baseUrl, query);
-      const data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+      let data = await getCachedPlatformSearch('scrapecreators', 'instagram', query);
+      if (data) {
+        cacheHitCount += 1;
+      } else {
+        data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+        externalRequestCount += 1;
+        await savePlatformSearchCache('scrapecreators', 'instagram', query, data);
+      }
       lastEndpoint = endpoint;
       const reels = extractInstagramReels(data);
       instagramReelCount += reels.length;
+      const beforeCount = candidates.length;
       const mapped = reels
         .map((reel) => instagramReelToCandidate(reel, {
           ...request,
           discovery: { ...request.discovery, keywords: query }
         }))
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter((candidate) => {
+          const excluded = isExcludedPlatformCreator(
+            request.creator_exclusions || new Set(),
+            'instagram',
+            candidate.profile_url,
+            candidate.kol_name
+          );
+          if (excluded) excludedCreatorCount += 1;
+          return !excluded;
+        })
+        .filter((candidate) => {
+          const identity = creatorSearchIdentity('instagram', candidate);
+          if (!identity || seenCreatorIds.has(identity)) return false;
+          seenCreatorIds.add(identity);
+          return true;
+        });
       candidates.push(...mapped.slice(0, maxResults - candidates.length));
+      const newCount = candidates.length - beforeCount;
+      lowYieldStreak = reels.length > 0 && newCount / reels.length < MIN_NEW_CREATOR_YIELD ? lowYieldStreak + 1 : 0;
+      if (lowYieldStreak >= LOW_YIELD_STREAK_LIMIT) {
+        stoppedForLowYield = true;
+        break;
+      }
       continue;
     }
 
     const endpoint = buildTikTokKeywordSearchUrl(baseUrl, query);
     lastEndpoint = endpoint;
     try {
-      const data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+      let data = await getCachedPlatformSearch('scrapecreators', 'tiktok', query);
+      if (data) {
+        cacheHitCount += 1;
+      } else {
+        data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+        externalRequestCount += 1;
+        await savePlatformSearchCache('scrapecreators', 'tiktok', query, data);
+      }
       const videos = extractTikTokVideos(data);
       tiktokVideoCount += videos.length;
+      const beforeCount = candidates.length;
       for (const video of videos) {
         const mapped = tiktokVideoToCandidate(video, {
           ...request,
@@ -1549,9 +1635,23 @@ async function scrapeCreatorsFinderAdapterV2(request) {
         const videoId = video.aweme_id.trim();
         if (seenTikTokVideoIds.has(videoId)) continue;
         seenTikTokVideoIds.add(videoId);
+        if (isExcludedPlatformCreator(
+          request.creator_exclusions || new Set(),
+          'tiktok',
+          mapped.profile_url,
+          mapped.kol_name
+        )) {
+          excludedCreatorCount += 1;
+          continue;
+        }
+        const creatorIdentity = creatorSearchIdentity('tiktok', mapped);
+        if (!creatorIdentity || seenCreatorIds.has(creatorIdentity)) continue;
+        seenCreatorIds.add(creatorIdentity);
         candidates.push(mapped);
         if (candidates.length >= maxResults) break;
       }
+      const newCount = candidates.length - beforeCount;
+      lowYieldStreak = videos.length > 0 && newCount / videos.length < MIN_NEW_CREATOR_YIELD ? lowYieldStreak + 1 : 0;
       tiktokQueryAttempts.push({
         search_source: request.search_source || 'tiktok_search',
         provider: 'scrapecreators',
@@ -1559,6 +1659,10 @@ async function scrapeCreatorsFinderAdapterV2(request) {
         endpoint,
         query
       });
+      if (lowYieldStreak >= LOW_YIELD_STREAK_LIMIT) {
+        stoppedForLowYield = true;
+        break;
+      }
     } catch (error) {
       const safeMessage = redactKnownSecrets(error.message, [setting.api_key]);
       const attempt = {
@@ -1573,6 +1677,21 @@ async function scrapeCreatorsFinderAdapterV2(request) {
       tiktokQueryAttempts.push(attempt);
       tiktokQueryErrors.push(attempt);
     }
+  }
+
+  if (!candidates.length && excludedCreatorCount > 0) {
+    return {
+      provider: request.search_source || 'scrapecreators',
+      endpoint: lastEndpoint,
+      candidates: [],
+      returned_count: request.target_platform === 'instagram' ? instagramReelCount : tiktokVideoCount,
+      excluded_count: excludedCreatorCount,
+      new_creator_count: 0,
+      cache_hit_count: cacheHitCount,
+      external_request_count: externalRequestCount,
+      stopped_for_low_yield: stoppedForLowYield,
+      attempts: request.target_platform === 'tiktok' ? tiktokQueryAttempts : []
+    };
   }
 
   if (!candidates.length && request.target_platform === 'tiktok') {
@@ -1610,8 +1729,59 @@ async function scrapeCreatorsFinderAdapterV2(request) {
     provider: request.search_source || 'scrapecreators',
     endpoint: lastEndpoint,
     candidates: candidates.slice(0, maxResults),
+    returned_count: request.target_platform === 'instagram' ? instagramReelCount : tiktokVideoCount,
+    excluded_count: excludedCreatorCount,
+    new_creator_count: candidates.length,
+    cache_hit_count: cacheHitCount,
+    external_request_count: externalRequestCount,
+    stopped_for_low_yield: stoppedForLowYield,
     attempts: request.target_platform === 'tiktok' ? tiktokQueryAttempts : []
   };
+}
+
+function platformSearchCacheKey(provider, platform, query) {
+  return crypto.createHash('sha256')
+    .update([clean(provider), clean(platform).toLowerCase(), clean(query).toLowerCase()].join('|'))
+    .digest('hex');
+}
+
+async function getCachedPlatformSearch(provider, platform, query) {
+  const cacheKey = platformSearchCacheKey(provider, platform, query);
+  const row = await dbOperations.get(
+    'SELECT * FROM finder_search_cache WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAMP LIMIT 1',
+    [cacheKey]
+  );
+  if (!row) return null;
+  await dbOperations.run(
+    `UPDATE finder_search_cache
+     SET hit_count = hit_count + 1, last_hit_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [row.id]
+  );
+  return parseJson(row.response_json, {});
+}
+
+async function savePlatformSearchCache(provider, platform, query, data) {
+  const cacheKey = platformSearchCacheKey(provider, platform, query);
+  const expiresAt = new Date(Date.now() + PLATFORM_SEARCH_CACHE_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const resultCount = platform === 'instagram' ? extractInstagramReels(data).length : extractTikTokVideos(data).length;
+  await dbOperations.run(
+    `INSERT INTO finder_search_cache
+     (cache_key, provider, platform, query_text, page_token, max_results, response_json,
+      result_count, hit_count, expires_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, '', 0, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), result_count = VALUES(result_count),
+       expires_at = VALUES(expires_at), updated_at = CURRENT_TIMESTAMP`,
+    [cacheKey, provider, platform, clean(query), JSON.stringify(data || {}), resultCount, toMysqlDatetime(expiresAt)]
+  );
+}
+
+function creatorSearchIdentity(platform, candidate) {
+  const normalizedUrl = normalizeProfileIdentity(platform, candidate?.profile_url);
+  const username = usernameFromProfileUrl(platform, normalizedUrl);
+  if (username) return `username:${platform}:${username}`;
+  if (normalizedUrl) return `profile:${platform}:${normalizedUrl}`;
+  return `name:${platform}:${normalizeCreatorLabel(candidate?.kol_name)}`;
 }
 
 function normalizeCandidate(input, request, provider) {
@@ -2303,6 +2473,9 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
   const request = buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetPlatform, limit);
   request.finder_task_id = task.id;
+  if (['instagram', 'tiktok'].includes(targetPlatform)) {
+    request.creator_exclusions = await loadPlatformExclusionSet(targetPlatform);
+  }
   const allAttempts = [];
   const responseSummary = [];
   let insertedCount = 0;
@@ -2319,11 +2492,10 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   }
 
   // 断点续跑：搜索节点已完成且候选缓存非空时不再调供应商（spec 11.3 已完成节点不重跑）。
-  // 缓存为空说明失败正发生在搜索节点本身（如供应商 0 结果/报错），retry 必须重新搜索。
+  // 供应商 0 结果/报错不会写入检查点；如果结果全部命中全局排除库，则保存空结果，retry 不重复计费。
   const checkpoint = readTaskCheckpoint(task);
   const canResumeSearch = checkpoint.search_completed === true
-    && Array.isArray(checkpoint.search_candidates)
-    && checkpoint.search_candidates.length > 0;
+    && Array.isArray(checkpoint.search_candidates);
   let importSource = null;
   const importFailures = [];
 
@@ -2343,6 +2515,12 @@ async function processVideoEvidenceTask(taskId, options = {}) {
       checkpoint.search_completed = true;
       checkpoint.search_provider = result.provider;
       checkpoint.search_candidates = result.candidates.slice(0, limit);
+      checkpoint.search_returned_count = Number(result.returned_count || result.candidates.length || 0);
+      checkpoint.search_excluded_count = Number(result.excluded_count || 0);
+      checkpoint.search_new_creator_count = Number(result.new_creator_count || result.candidates.length || 0);
+      checkpoint.search_cache_hit_count = Number(result.cache_hit_count || 0);
+      checkpoint.search_external_request_count = Number(result.external_request_count || 0);
+      checkpoint.search_stopped_for_low_yield = result.stopped_for_low_yield === true;
       checkpoint.videos_imported = 0;
       checkpoint.imported_video_urls = [];
       checkpoint.import_failures = [];
@@ -2402,8 +2580,12 @@ async function processVideoEvidenceTask(taskId, options = {}) {
       provider: importSource.provider,
       resumed_from_checkpoint: canResumeSearch,
         returned: importSource.candidates.length,
-        external_request_count: importSource.external_request_count || 0,
-        cache_hit_count: importSource.cache_hit_count || 0,
+        provider_returned: Number(importSource.returned_count ?? checkpoint.search_returned_count ?? importSource.candidates.length),
+        existing_creator_duplicates: Number(importSource.excluded_count ?? checkpoint.search_excluded_count ?? 0),
+        new_creators: Number(importSource.new_creator_count ?? checkpoint.search_new_creator_count ?? importSource.candidates.length),
+        external_request_count: Number(importSource.external_request_count ?? checkpoint.search_external_request_count ?? 0),
+        cache_hit_count: Number(importSource.cache_hit_count ?? checkpoint.search_cache_hit_count ?? 0),
+        stopped_for_low_yield: importSource.stopped_for_low_yield ?? checkpoint.search_stopped_for_low_yield ?? false,
         preflight_rejected: importSource.preflight_rejected || [],
         scanned_channel_count: importSource.scanned_channel_count || importSource.candidates.length,
         target_qualified_count: importSource.target_qualified_count || limit,
@@ -3095,6 +3277,10 @@ module.exports.runVideoEvidenceDiscovery = processVideoEvidenceTask;
 module.exports.buildCandidateIdentity = buildCandidateIdentity;
 module.exports.youtubeChannelIdentity = youtubeChannelIdentity;
 module.exports.normalizeCreatorLabel = normalizeCreatorLabel;
+module.exports.isExcludedPlatformCreator = isExcludedPlatformCreator;
+module.exports.normalizeProfileIdentity = normalizeProfileIdentity;
+module.exports.creatorSearchIdentity = creatorSearchIdentity;
+module.exports.platformSearchCacheKey = platformSearchCacheKey;
 module.exports.rankedKeywordQueries = rankedKeywordQueries;
 module.exports.evaluateYoutubePreflight = evaluateYoutubePreflight;
 module.exports.youtubePreflightConfig = youtubePreflightConfig;
