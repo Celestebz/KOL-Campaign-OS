@@ -23,6 +23,8 @@ const {
   fetchJson,
   callAi
 } = require('../services/aiClient');
+const scYoutube = require('../services/scrapecreatorsYoutube');
+const scYt = require('../utils/scrapecreatorsYoutubeSearch');
 
 const router = express.Router();
 
@@ -31,6 +33,7 @@ const FINDER_ANALYSIS_VERSION = 'finder-evidence-v1';
 const MATON_SEARCH_CACHE_TTL_DAYS = 7;
 const MATON_DISCOVERY_REQUEST_BUDGET = 6;
 const MATON_EXTERNAL_REQUEST_BUDGET = 32;
+const SC_FINDER_REQUEST_BUDGET = 200;
 // Seasonal Instagram/TikTok discovery changes quickly; one day avoids duplicate spend
 // without hiding newly published creators for a full week.
 const PLATFORM_SEARCH_CACHE_TTL_DAYS = 1;
@@ -1290,6 +1293,159 @@ async function youtubeMatonGatewayAdapter(request, setting, baseUrl) {
   };
 }
 
+async function recordScYoutubeQueryLedger({ taskId, query, pageToken, cacheHit, returned, excluded, newChannels, requestCost, status = 'success', error = '' }) {
+  await dbOperations.run(
+    `INSERT INTO finder_query_ledger
+     (finder_task_id, provider, platform, query_text, query_hash, page_token, cache_hit,
+      returned_count, excluded_count, new_channel_count, request_cost, status, error_message, created_at)
+     VALUES (?, 'scrapecreators_youtube', 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    [taskId || null, clean(query), finderQueryHash(query), clean(pageToken), cacheHit ? 1 : 0,
+      Number(returned || 0), Number(excluded || 0), Number(newChannels || 0), Number(requestCost || 0), status, clean(error)]
+  );
+}
+
+async function youtubeScrapeCreatorsAdapter(request) {
+  const setting = await scYoutube.getYoutubeScrapeCreatorsSetting();
+  if (!setting?.api_key) throw new Error('ScrapeCreators API Key 未配置');
+  const targetQualifiedCount = Math.max(1, Math.min(Number(request.limit || 10), 50));
+  const maxScannedChannels = finderScanLimit(request, targetQualifiedCount);
+  const candidates = [];
+  const exclusions = await loadYoutubeExclusionSet();
+  const seenChannelIds = new Set();
+  const maxSearchPages = Math.max(2, Math.min(20, Math.ceil(maxScannedChannels / 5) * 3));
+  let searchedPages = 0;
+  let externalRequestCount = 0;
+  let cacheHitCount = 0;
+  let lastEndpoint = '';
+  for (const query of await rankedKeywordQueries(request)) {
+    let continuationToken = '';
+    do {
+      const remaining = maxScannedChannels - candidates.length;
+      if (remaining <= 0 || searchedPages >= maxSearchPages || externalRequestCount >= SC_FINDER_REQUEST_BUDGET) break;
+      lastEndpoint = scYt.buildYoutubeSearchUrl(setting.base_url, query, continuationToken);
+      const currentToken = continuationToken;
+      const cached = await getCachedPlatformSearch('scrapecreators', 'youtube', query, currentToken);
+      let searchData = cached;
+      let searchRequestCost = 0;
+      if (cached) {
+        cacheHitCount += 1;
+      } else {
+        try {
+          searchData = await scYoutube.search(setting, query, currentToken);
+          externalRequestCount += 1;
+          searchRequestCost = 1;
+          await savePlatformSearchCache('scrapecreators', 'youtube', query, searchData, currentToken);
+        } catch (error) {
+          await recordScYoutubeQueryLedger({
+            taskId: request.finder_task_id, query, pageToken: currentToken, cacheHit: false,
+            requestCost: 1, status: 'failed', error: error.message
+          });
+          throw error;
+        }
+      }
+      searchedPages += 1;
+      continuationToken = clean(searchData.continuationToken);
+      const returnedItems = scYt.toV3SearchItems(searchData);
+      const items = returnedItems.filter((item) => {
+        const channelId = clean(item.snippet?.channelId);
+        if (!channelId || seenChannelIds.has(channelId.toLowerCase())) return false;
+        seenChannelIds.add(channelId.toLowerCase());
+        return !isExcludedYoutubeCreator(exclusions, channelId, item.snippet?.channelTitle);
+      }).slice(0, remaining);
+      // SC 无批量频道查询：每频道 1 次调用；单频道失败不阻断（留空 channel，由后续 gate 处理）
+      const channels = {};
+      let channelRequestCost = 0;
+      for (const item of items) {
+        if (externalRequestCount >= SC_FINDER_REQUEST_BUDGET) break;
+        const channelId = item.snippet.channelId;
+        try {
+          const channelData = await scYoutube.channel(setting, { channelId });
+          externalRequestCount += 1;
+          channelRequestCost += 1;
+          channels[channelId] = scYt.toV3ChannelItem(channelData);
+        } catch (error) {
+          // 单个频道富化失败不阻断整批
+        }
+      }
+      candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, discovery: { ...request.discovery, keywords: query } }, `Matched ScrapeCreators YouTube search: ${query}`));
+      await recordScYoutubeQueryLedger({
+        taskId: request.finder_task_id,
+        query,
+        pageToken: currentToken,
+        cacheHit: Boolean(cached),
+        returned: returnedItems.length,
+        excluded: returnedItems.length - items.length,
+        newChannels: items.length,
+        requestCost: searchRequestCost + channelRequestCost
+      });
+    } while (continuationToken && candidates.length < maxScannedChannels && searchedPages < maxSearchPages);
+    if (candidates.length >= maxScannedChannels || searchedPages >= maxSearchPages || externalRequestCount >= SC_FINDER_REQUEST_BUDGET) break;
+  }
+  if (!candidates.length) throw new Error('ScrapeCreators 已连通，但 YouTube 搜索返回 0 条候选；请检查 Finder 策略关键词或改用更短的策略词。');
+  const preflight = await preflightScYoutubeCandidates(
+    candidates.slice(0, maxScannedChannels),
+    request,
+    setting,
+    Math.max(0, SC_FINDER_REQUEST_BUDGET - externalRequestCount)
+  );
+  externalRequestCount += preflight.requestCount;
+  return {
+    provider: 'scrapecreators_youtube',
+    endpoint: lastEndpoint,
+    candidates: preflight.candidates.slice(0, targetQualifiedCount),
+    preflight_rejected: preflight.rejected,
+    scanned_channel_count: candidates.length,
+    target_qualified_count: targetQualifiedCount,
+    max_scanned_channels: maxScannedChannels,
+    external_request_count: externalRequestCount,
+    cache_hit_count: cacheHitCount
+  };
+}
+
+// SC 版 preflight：channel-videos 一次调用取齐近 ~30 条（含时长/播放/发布时间），
+// 阈值判定复用 evaluateYoutubePreflight（v3 形状由 toV3VideoItems 提供）。
+async function preflightScYoutubeCandidates(candidates, request, setting, requestBudget) {
+  const config = youtubePreflightConfig(request);
+  if (!config.enabled || !candidates.length) return { candidates, rejected: [], requestCount: 0 };
+  let requestCount = 0;
+  const passed = [];
+  const rejected = [];
+  for (const candidate of candidates) {
+    const country = clean(candidate.country_region || candidate.raw_data?.channel?.snippet?.country).toUpperCase();
+    const marketBlocked = (config.targetMarket.includes('united states') || config.targetMarket === 'us') && country && country !== 'US';
+    if (marketBlocked || looksLikeExcludedYoutubeAccount(candidate, config)) {
+      rejected.push({
+        kol_name: candidate.kol_name,
+        profile_url: candidate.profile_url,
+        passed: false,
+        reason: marketBlocked ? 'market_mismatch' : 'strategy_excluded_account',
+        country
+      });
+      continue;
+    }
+    let videos = [];
+    const channelId = youtubeChannelIdentity(candidate.profile_url).channelId;
+    if (requestCount < requestBudget && channelId) {
+      try {
+        const data = await scYoutube.channelVideos(setting, { channelId });
+        requestCount += 1;
+        videos = scYt.toV3VideoItems(data);
+      } catch (error) {
+        videos = [];
+      }
+    }
+    const result = evaluateYoutubePreflight(candidate, videos, config);
+    const enriched = {
+      ...candidate,
+      avg_views: result.medianViews ? String(Math.round(result.medianViews)) : candidate.avg_views,
+      raw_data: { ...(candidate.raw_data || {}), preflight: result }
+    };
+    if (result.passed) passed.push(enriched);
+    else rejected.push({ kol_name: candidate.kol_name, profile_url: candidate.profile_url, ...result });
+  }
+  return { candidates: passed, rejected, requestCount };
+}
+
 function parseYoutubeDurationSeconds(value) {
   const match = clean(value).match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/i);
   if (!match) return 0;
@@ -2200,20 +2356,46 @@ async function runProvider(request, allowFallback) {
     }
   }
 
+  // youtube fallback：按 provider_selection.platforms.youtube.fallbacks 顺序尝试
+  // scrapecreators / google_official；无 selection 时保持原有 google 兜底。
+  // 非 youtube 平台保持原 scrapeCreatorsFinderAdapterV2 兜底。
+  if (request.target_platform === 'youtube') {
+    const selection = await getSelection();
+    const order = (selection.platforms?.youtube?.fallbacks || [])
+      .filter((p) => ['scrapecreators', 'google_official'].includes(p));
+    if (!order.includes('google_official')) order.push('google_official');
+    let lastError = null;
+    for (const provider of order) {
+      try {
+        const fallback = provider === 'scrapecreators'
+          ? await youtubeScrapeCreatorsAdapter({ ...request, search_source: 'scrapecreators_youtube' })
+          : await youtubeSearchAdapter({ ...request, search_source: 'youtube_search' });
+        attempts.push(...(fallback.attempts || []));
+        attempts.push({ search_source: fallback.provider, provider: fallback.provider, ok: true, endpoint: fallback.endpoint });
+        return { ...fallback, attempts };
+      } catch (error) {
+        lastError = error;
+        appendProviderErrorAttempts(attempts, error, {
+          search_source: provider === 'scrapecreators' ? 'scrapecreators_youtube' : 'youtube_search',
+          provider
+        });
+      }
+    }
+    throw providerErrorWithAttempts(lastError || new Error('YouTube 全部数据源均失败'), attempts);
+  }
+
   try {
-    const fallback = request.target_platform === 'youtube'
-      ? await youtubeSearchAdapter({ ...request, search_source: 'youtube_search' })
-      : await scrapeCreatorsFinderAdapterV2({
-        ...request,
-        search_source: request.target_platform === 'instagram' ? 'instagram_search' : 'tiktok_search'
-      });
+    const fallback = await scrapeCreatorsFinderAdapterV2({
+      ...request,
+      search_source: request.target_platform === 'instagram' ? 'instagram_search' : 'tiktok_search'
+    });
     attempts.push(...(fallback.attempts || []));
     attempts.push({ search_source: fallback.provider, provider: fallback.provider, ok: true, endpoint: fallback.endpoint });
     return { ...fallback, attempts };
   } catch (error) {
     appendProviderErrorAttempts(attempts, error, {
-      search_source: request.target_platform === 'youtube' ? 'youtube_search' : `${request.target_platform}_search`,
-      provider: request.target_platform === 'youtube' ? 'google_official' : 'scrapecreators'
+      search_source: `${request.target_platform}_search`,
+      provider: 'scrapecreators'
     });
     throw providerErrorWithAttempts(error, attempts);
   }
@@ -3399,6 +3581,7 @@ module.exports.normalizeProfileIdentity = normalizeProfileIdentity;
 module.exports.creatorSearchIdentity = creatorSearchIdentity;
 module.exports.platformSearchCacheKey = platformSearchCacheKey;
 module.exports.rankedKeywordQueries = rankedKeywordQueries;
+module.exports.youtubeScrapeCreatorsAdapter = youtubeScrapeCreatorsAdapter;
 module.exports.evaluateYoutubePreflight = evaluateYoutubePreflight;
 module.exports.normalizeCandidate = normalizeCandidate;
 module.exports.applyFinderGates = applyFinderGates;
