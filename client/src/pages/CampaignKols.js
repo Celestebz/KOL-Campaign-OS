@@ -1076,13 +1076,15 @@ const CampaignKols = ({ view = 'cooperation' }) => {
                 </Form.Item>
               </>
             )}
-            <Form.Item label="预算审批状态" name="budget_approval_status">
-              <Select allowClear style={{ width: 170 }} options={[
-                { value: 'pending', label: '待审批' },
-                { value: 'approved', label: '已通过' },
-                { value: 'rejected', label: '未通过' }
-              ]} />
-            </Form.Item>
+            {isCandidatePool && (
+              <Form.Item label="预算审批状态" name="budget_approval_status">
+                <Select allowClear style={{ width: 170 }} options={[
+                  { value: 'pending', label: '待审批' },
+                  { value: 'approved', label: '已通过' },
+                  { value: 'rejected', label: '未通过' }
+                ]} />
+              </Form.Item>
+            )}
           </Space>
           <Space align="start" style={{ width: '100%' }} wrap>
             <Form.Item label="总预计成本" name="estimated_total_cost_usd">
