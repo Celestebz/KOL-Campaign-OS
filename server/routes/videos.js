@@ -19,6 +19,8 @@ const {
   fetchJson,
   callAi
 } = require('../services/aiClient');
+const scYoutube = require('../services/scrapecreatorsYoutube');
+const { scVideoDetailToNormalized, scCommentsToNormalized } = require('../utils/scrapecreatorsYoutubeSearch');
 
 const EXPORT_HEADERS = [
   '视频ID', '产品/活动', '平台', 'KOL', '标题', '作者', '原始链接', '平台视频ID', '状态', '抓取状态', 'AI状态',
@@ -317,6 +319,37 @@ async function fetchYouTubeMaton(url, setting) {
   return normalizeYouTubeItem(item, videoId, comments, url);
 }
 
+async function fetchYouTubeScrapeCreators(url, setting) {
+  if (!setting?.api_key) throw new Error('ScrapeCreators API Key 未配置');
+
+  const videoId = parseYouTubeVideoId(url);
+  if (!videoId) throw new Error('无法识别 YouTube 视频 ID');
+
+  const data = await scYoutube.video(setting, url);
+  if (!data || !data.id) throw new Error('ScrapeCreators 未返回该 YouTube 视频数据');
+
+  const normalized = scVideoDetailToNormalized(data, url);
+  normalized.platform_video_id = normalized.platform_video_id || videoId;
+  normalized.exposure = buildExposure('youtube', normalized.content_type, normalized.metrics);
+  // SC comments 单页 20 条：翻页拉取，封顶 100 条；失败降级为空数组（与 fetchYouTubeComments 语义一致）
+  const comments = [];
+  let token = '';
+  try {
+    for (let page = 0; page < 5 && comments.length < 100; page += 1) {
+      const commentsData = await scYoutube.videoComments(setting, url, token);
+      const batch = scCommentsToNormalized(commentsData, 100 - comments.length);
+      comments.push(...batch);
+      token = String(commentsData.continuationToken || '').trim();
+      if (!token || batch.length === 0) break;
+    }
+  } catch (error) {
+    comments.length = 0;
+  }
+  normalized.comments = comments;
+  normalized.raw = data;
+  return normalized;
+}
+
 async function fetchYouTubeComments(url, options = {}) {
   try {
     const commentData = await fetchJson(url, options);
@@ -421,6 +454,7 @@ async function fetchScrapeCreators(platform, url, setting) {
 async function fetchWithProvider(platform, provider, url, setting) {
   if (platform === 'youtube' && provider === 'google_official') return fetchYouTubeGoogle(url, setting);
   if (platform === 'youtube' && provider === 'maton_gateway') return fetchYouTubeMaton(url, setting);
+  if (platform === 'youtube' && provider === 'scrapecreators') return fetchYouTubeScrapeCreators(url, setting);
   if ((platform === 'instagram' || platform === 'tiktok') && provider === 'scrapecreators') {
     return fetchScrapeCreators(platform, url, setting);
   }
@@ -477,7 +511,9 @@ async function fetchVideoData(url) {
 
   for (const provider of providers) {
     const key = providerKey(platform, provider);
-    const setting = await getSetting(key, legacyKeysFor(platform, provider));
+    const setting = platform === 'youtube' && provider === 'scrapecreators'
+      ? await scYoutube.getYoutubeScrapeCreatorsSetting()
+      : await getSetting(key, legacyKeysFor(platform, provider));
 
     if (!hasProviderConfig(setting)) {
       attempts.push({ provider, ok: false, error: `${PROVIDER_LABELS[provider] || provider} 未配置` });
@@ -1315,3 +1351,4 @@ router.get('/jobs/:id/export', async (req, res) => {
 
 module.exports = router;
 module.exports.crawlVideo = crawlVideo;
+module.exports.fetchYouTubeScrapeCreators = fetchYouTubeScrapeCreators;
