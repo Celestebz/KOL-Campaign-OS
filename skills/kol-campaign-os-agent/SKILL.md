@@ -103,6 +103,17 @@ Authorization: Bearer <token>
 
 `metric_mode=any` means average or median may pass; `all` requires both. Review returned creator context for product fit instead of treating views alone as sufficient.
 
+YouTube searches may use view thresholds and optional `min_followers`.
+Instagram and TikTok KOL Master records currently have follower counts but no
+platform-specific 30-day view metrics, so search them with `min_followers`:
+
+```http
+GET {base_url}/api/agent/campaigns/{campaign_id}/kol-master/search?platform=instagram&min_followers=10000&exclude_in_campaign=true
+```
+
+Do not send `min_avg_views_30d` or `min_median_views_30d` for Instagram or
+TikTok; the API rejects that combination instead of applying YouTube metrics.
+
 ## Add Existing KOLs to Candidate Pool
 
 Always preview first:

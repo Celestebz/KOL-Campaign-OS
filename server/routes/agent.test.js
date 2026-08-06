@@ -103,6 +103,21 @@ test('restricted agent campaign API searches, previews, writes candidates and pe
     youtube_avg_views_30d: 1000,
     youtube_median_views_30d: 2000
   });
+  const instagramEligible = await models.Customer.create({
+    name: 'Instagram Creator',
+    instagram_url: 'https://instagram.com/eligible',
+    instagram_followers: '25K'
+  });
+  await models.Customer.create({
+    name: 'Instagram Below Threshold',
+    instagram_url: 'https://instagram.com/below',
+    instagram_followers: '4,999'
+  });
+  const tiktokEligible = await models.Customer.create({
+    name: 'TikTok Creator',
+    tiktok_url: 'https://tiktok.com/@eligible',
+    tiktok_followers: '1.2M'
+  });
 
   const app = express();
   app.use(express.json());
@@ -130,6 +145,41 @@ test('restricted agent campaign API searches, previews, writes candidates and pe
     .expect(200);
   assert.equal(search.body.data.total, 1);
   assert.equal(search.body.data.items[0].customer_id, eligible.id);
+  assert.equal(search.body.data.platform, 'youtube');
+  assert.equal(search.body.data.items[0].platform_url, eligible.youtube_url);
+
+  const instagramSearch = await request
+    .get(`/api/agent/campaigns/${campaign.id}/kol-master/search`)
+    .set(auth)
+    .query({ platform: 'instagram', min_followers: 10000 })
+    .expect(200);
+  assert.equal(instagramSearch.body.data.platform, 'instagram');
+  assert.equal(instagramSearch.body.data.total, 1);
+  assert.equal(instagramSearch.body.data.items[0].customer_id, instagramEligible.id);
+  assert.equal(instagramSearch.body.data.items[0].platform_url, instagramEligible.instagram_url);
+  assert.equal(instagramSearch.body.data.items[0].followers, '25K');
+
+  const tiktokSearch = await request
+    .get(`/api/agent/campaigns/${campaign.id}/kol-master/search`)
+    .set(auth)
+    .query({ platform: 'tiktok', min_followers: 500000 })
+    .expect(200);
+  assert.equal(tiktokSearch.body.data.platform, 'tiktok');
+  assert.equal(tiktokSearch.body.data.total, 1);
+  assert.equal(tiktokSearch.body.data.items[0].customer_id, tiktokEligible.id);
+
+  const unsupportedInstagramMetrics = await request
+    .get(`/api/agent/campaigns/${campaign.id}/kol-master/search`)
+    .set(auth)
+    .query({ platform: 'instagram', min_avg_views_30d: 5000 })
+    .expect(400);
+  assert.match(unsupportedInstagramMetrics.body.error, /view metrics are not available/i);
+
+  await request
+    .get(`/api/agent/campaigns/${campaign.id}/kol-master/search`)
+    .set(auth)
+    .query({ platform: 'facebook', min_followers: 10000 })
+    .expect(400);
 
   const candidateBody = {
     idempotency_key: 'candidate-test-1',

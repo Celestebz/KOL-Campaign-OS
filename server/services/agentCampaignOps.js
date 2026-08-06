@@ -6,6 +6,11 @@ const { draftDedupeKey, isDuplicateError } = require('./emailDraftDedupe');
 const ALLOWED_PLATFORMS = new Set(['youtube', 'instagram', 'tiktok', 'facebook', 'x']);
 const MAX_CANDIDATE_BATCH = 100;
 const MAX_DRAFT_BATCH = 50;
+const SEARCH_PLATFORMS = {
+  youtube: { url: 'youtube_url', followers: 'youtube_followers' },
+  instagram: { url: 'instagram_url', followers: 'instagram_followers' },
+  tiktok: { url: 'tiktok_url', followers: 'tiktok_followers' }
+};
 
 function positiveInt(value, name) {
   const parsed = Number(value);
@@ -108,8 +113,25 @@ async function searchKols(campaignId, query) {
   await assertActiveCampaign(campaignId);
   const page = Math.max(1, Number(query.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(query.page_size) || 50));
-  const avgMin = Number(query.min_avg_views_30d);
-  const medianMin = Number(query.min_median_views_30d);
+  const platform = clean(query.platform || 'youtube').toLowerCase();
+  const platformConfig = SEARCH_PLATFORMS[platform];
+  if (!platformConfig) throw new Error('platform must be youtube, instagram, or tiktok');
+  const hasAvgMin = clean(query.min_avg_views_30d) !== '';
+  const hasMedianMin = clean(query.min_median_views_30d) !== '';
+  const hasFollowerMin = clean(query.min_followers) !== '';
+  const avgMin = hasAvgMin ? Number(query.min_avg_views_30d) : NaN;
+  const medianMin = hasMedianMin ? Number(query.min_median_views_30d) : NaN;
+  const followerMin = hasFollowerMin ? Number(query.min_followers) : NaN;
+  if ((hasAvgMin && (!Number.isFinite(avgMin) || avgMin < 0))
+      || (hasMedianMin && (!Number.isFinite(medianMin) || medianMin < 0))) {
+    throw new Error('View thresholds must be non-negative numbers');
+  }
+  if (hasFollowerMin && (!Number.isFinite(followerMin) || followerMin < 0)) {
+    throw new Error('min_followers must be a non-negative number');
+  }
+  if (platform !== 'youtube' && (hasAvgMin || hasMedianMin)) {
+    throw new Error(`${platform} view metrics are not available; use min_followers instead`);
+  }
   const mode = clean(query.metric_mode || 'any').toLowerCase();
   if (!['any', 'all'].includes(mode)) throw new Error('metric_mode must be any or all');
   const metricParts = [];
@@ -122,15 +144,30 @@ async function searchKols(campaignId, query) {
     metricParts.push('COALESCE(c.youtube_median_views_30d, 0) > ?');
     metricParams.push(medianMin);
   }
-  if (!metricParts.length) throw new Error('At least one view threshold is required');
+  if (platform === 'youtube' && !metricParts.length && !hasFollowerMin) {
+    throw new Error('At least one view threshold or min_followers is required');
+  }
+  if (platform !== 'youtube' && !hasFollowerMin) {
+    throw new Error('min_followers is required for instagram and tiktok searches');
+  }
 
   const where = [
-    `(${metricParts.join(mode === 'all' ? ' AND ' : ' OR ')})`,
+    ...(metricParts.length ? [`(${metricParts.join(mode === 'all' ? ' AND ' : ' OR ')})`] : []),
+    `(c.${platformConfig.url} IS NOT NULL AND c.${platformConfig.url} <> '')`,
     "COALESCE(c.cooperation_status, 'available') <> 'do_not_contact'"
   ];
   const params = [...metricParams];
-  if (clean(query.platform || 'youtube').toLowerCase() === 'youtube') {
-    where.push("(c.youtube_url IS NOT NULL AND c.youtube_url <> '')");
+  if (hasFollowerMin) {
+    const normalizedFollowers = `CASE
+      WHEN LOWER(REPLACE(TRIM(c.${platformConfig.followers}), ',', '')) REGEXP '^[0-9]+(\\\\.[0-9]+)?k$'
+        THEN CAST(LEFT(LOWER(REPLACE(TRIM(c.${platformConfig.followers}), ',', '')), CHAR_LENGTH(LOWER(REPLACE(TRIM(c.${platformConfig.followers}), ',', ''))) - 1) AS DECIMAL(20,2)) * 1000
+      WHEN LOWER(REPLACE(TRIM(c.${platformConfig.followers}), ',', '')) REGEXP '^[0-9]+(\\\\.[0-9]+)?m$'
+        THEN CAST(LEFT(LOWER(REPLACE(TRIM(c.${platformConfig.followers}), ',', '')), CHAR_LENGTH(LOWER(REPLACE(TRIM(c.${platformConfig.followers}), ',', ''))) - 1) AS DECIMAL(20,2)) * 1000000
+      WHEN REPLACE(TRIM(c.${platformConfig.followers}), ',', '') REGEXP '^[0-9]+(\\\\.[0-9]+)?$'
+        THEN CAST(REPLACE(TRIM(c.${platformConfig.followers}), ',', '') AS DECIMAL(20,2))
+      ELSE 0 END`;
+    where.push(`(${normalizedFollowers}) >= ?`);
+    params.push(followerMin);
   }
   if (String(query.exclude_in_campaign ?? 'true').toLowerCase() !== 'false') {
     where.push('ck.id IS NULL');
@@ -143,19 +180,23 @@ async function searchKols(campaignId, query) {
     allParams
   );
   const rows = await dbOperations.query(
-    `SELECT c.id AS customer_id, c.name, c.profile_url, c.youtube_url,
+    `SELECT c.id AS customer_id, c.name, c.profile_url, '${platform}' AS platform,
+            c.${platformConfig.url} AS platform_url,
+            c.${platformConfig.followers} AS followers,
+            c.youtube_url,
             c.youtube_followers, c.youtube_posts_30d, c.youtube_avg_views_30d,
             c.youtube_median_views_30d, c.youtube_engagement_rate_30d,
             c.youtube_snapshot_updated_at, c.creator_type, c.audience_fit,
             c.country_region, c.cooperation_status, c.cooperation_risk_category,
             c.cooperation_risk_reason, ck.id AS campaign_kol_id
      ${from} WHERE ${where.join(' AND ')}
-     ORDER BY GREATEST(COALESCE(c.youtube_avg_views_30d, 0),
-                       COALESCE(c.youtube_median_views_30d, 0)) DESC, c.id DESC
+     ORDER BY ${platform === 'youtube'
+    ? `GREATEST(COALESCE(c.youtube_avg_views_30d, 0), COALESCE(c.youtube_median_views_30d, 0))`
+    : 'c.id'} DESC, c.id DESC
      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
     allParams
   );
-  return { campaign_id: campaignId, page, page_size: pageSize, total: Number(totalRow?.total || 0), items: rows };
+  return { campaign_id: campaignId, platform, page, page_size: pageSize, total: Number(totalRow?.total || 0), items: rows };
 }
 
 function normalizeCandidateItem(item) {

@@ -27,6 +27,20 @@ GET /api/agent/campaigns/:campaignId/kol-master/search
 The default is to exclude KOLs already in the campaign and KOLs marked
 `do_not_contact`.
 
+YouTube searches accept `min_avg_views_30d`, `min_median_views_30d`, and
+optional `min_followers`. Instagram and TikTok KOL Master records do not yet
+store view metrics, so those platforms require `min_followers` instead:
+
+```http
+GET /api/agent/campaigns/:campaignId/kol-master/search
+  ?platform=instagram
+  &min_followers=10000
+```
+
+Passing a view threshold for Instagram or TikTok returns HTTP 400 rather than
+silently filtering by YouTube metrics. Search results include the normalized
+`platform`, `platform_url`, and the platform-specific `followers` value.
+
 ## Preview or add candidates
 
 ```http
