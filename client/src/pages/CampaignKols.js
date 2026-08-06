@@ -87,6 +87,15 @@ const parsePlatforms = (value, fallback = []) => {
   return values.map((item) => labels[String(item).toLowerCase()] || item).filter(Boolean);
 };
 
+// 项目名历史上以「项目｜产品」合并文本存储（半角 | 与全角 ｜ 混用），
+// 列表与筛选需要拆成独立的项目名与产品两段。
+export const splitCampaignName = (name) => {
+  const text = String(name || '').trim();
+  const parts = text.split(/[｜|]/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return { project: text, product: '' };
+  return { project: parts[0], product: parts.slice(1).join(' | ') };
+};
+
 export const normalizeLegacyProjectStatus = (value) => ({
   confirmed: 'pending_shipping',
   candidate: 'pending_confirmation'
@@ -201,6 +210,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   const [draftRunError, setDraftRunError] = useState('');
   const draftPollTimerRef = useRef(null);
   const [filters, setFilters] = useState({});
+  const [skuFilter, setSkuFilter] = useState();
   const [editing, setEditing] = useState(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [confirmingId, setConfirmingId] = useState(null);
@@ -223,8 +233,18 @@ const CampaignKols = ({ view = 'cooperation' }) => {
 
   const campaignOptions = useMemo(() => campaigns.map((item) => ({
     value: item.id,
-    label: item.name
+    label: splitCampaignName(item.name).project || item.name
   })), [campaigns]);
+
+  // SKU 筛选在前端做：候选行一次全量返回，SKU 选项也从当前行集合去重得出。
+  const skuOptions = useMemo(() => (
+    [...new Set(rows.map((row) => row.product_sku).filter(Boolean))]
+      .map((sku) => ({ value: sku, label: sku }))
+  ), [rows]);
+
+  const visibleRows = useMemo(() => (
+    skuFilter ? rows.filter((row) => row.product_sku === skuFilter) : rows
+  ), [rows, skuFilter]);
 
   useEffect(() => {
     fetchCampaigns();
@@ -631,7 +651,8 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   };
 
   const columns = [
-    { title: '项目/产品', dataIndex: 'campaign_name', key: 'campaign_name', width: 150, fixed: 'left' },
+    { title: '项目', key: 'campaign_project', width: 130, fixed: 'left', render: (_, r) => splitCampaignName(r.campaign_name).project || '-' },
+    { title: '产品SKU', key: 'campaign_product_sku', width: 130, render: (_, r) => r.product_sku || splitCampaignName(r.campaign_name).product || r.product_name || '-' },
     {
       title: 'KOL',
       key: 'kol',
@@ -677,7 +698,6 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       const values = parsePlatforms(v, [r.platform_account_platform].filter(Boolean));
       return values.length ? <Space wrap size={[4, 4]}>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-';
     } },
-    { title: '合作SKU', dataIndex: 'product_sku', key: 'product_sku', width: 120, render: (v, r) => v || r.product_name || '-' },
     { title: '优先级', dataIndex: 'priority_level', key: 'priority_level', width: 150, render: (v) => priorityOptions.find((item) => item.value === v)?.label || v || '-' },
     { title: 'KOL合作费', dataIndex: 'final_fee', key: 'final_fee', width: 140, render: (v, r) => r.cooperation_type === 'product_exchange' ? '现金 0' : formatFee(v || r.price_rmb, r.currency || 'USD') },
     ...(isCandidatePool ? [] : [    { title: '项目状态', dataIndex: 'project_status', key: 'project_status', width: 150, render: (v) => {
@@ -739,7 +759,8 @@ const CampaignKols = ({ view = 'cooperation' }) => {
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 180 }} />
+          <Select allowClear placeholder="项目" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 160 }} />
+          <Select allowClear showSearch placeholder="产品SKU" value={skuFilter} onChange={(v) => setSkuFilter(v || undefined)} options={skuOptions} style={{ width: 150 }} />
           {isCandidatePool ? (
             <>
               <Select allowClear placeholder="外联状态" value={filters.outreach_status} onChange={(v) => updateFilter('outreach_status', v)} options={OUTREACH_PHASE_OPTIONS} style={{ width: 150 }} />
@@ -769,7 +790,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
         <Table
           rowKey="id"
           columns={columns}
-          dataSource={rows}
+          dataSource={visibleRows}
           loading={loading}
           rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
           scroll={{ x: 2100 }}

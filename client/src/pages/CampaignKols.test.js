@@ -12,7 +12,8 @@ import CampaignKols, {
   OUTREACH_PHASE_OPTIONS,
   displayEmail,
   hasPendingEmail,
-  outreachPhaseForDisplay
+  outreachPhaseForDisplay,
+  splitCampaignName
 } from './CampaignKols';
 import { describeSyncResult } from './campaignKolSyncResult';
 
@@ -447,7 +448,8 @@ describe('CampaignKols 筛选栏按阶段使用对应状态', () => {
     expect(screen.getAllByText('外联状态').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('邮件待办')).toHaveLength(1);
 
-    await userEvent.click(screen.getAllByRole('combobox')[1]);
+    // 筛选顺序：项目 → 产品SKU → 外联状态
+    await userEvent.click(screen.getAllByRole('combobox')[2]);
     await userEvent.click(await screen.findByText('沟通中'));
     await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/campaign-kols', expect.objectContaining({
       params: expect.objectContaining({ outreach_status: 'negotiating', pipeline_stage: 'candidate' })
@@ -468,8 +470,71 @@ describe('CampaignKols 筛选栏按阶段使用对应状态', () => {
     expect(screen.getAllByText('飞书同步状态').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('待同步')).toBeInTheDocument();
 
-    await userEvent.click(screen.getAllByRole('combobox')[2]);
+    // 筛选顺序：项目 → 产品SKU → 外联状态 → 飞书同步状态
+    await userEvent.click(screen.getAllByRole('combobox')[3]);
     expect(await screen.findByText('已同步')).toBeInTheDocument();
     expect(await screen.findByText('同步失败')).toBeInTheDocument();
+  });
+});
+
+describe('splitCampaignName', () => {
+  test('splits 项目｜产品 on both full-width and half-width delimiters', () => {
+    expect(splitCampaignName('TMB-1407｜PTO Rotary Cutter'))
+      .toEqual({ project: 'TMB-1407', product: 'PTO Rotary Cutter' });
+    expect(splitCampaignName('TMB-1404 | Flail Mower'))
+      .toEqual({ project: 'TMB-1404', product: 'Flail Mower' });
+  });
+
+  test('keeps names without a delimiter as the project', () => {
+    expect(splitCampaignName('TSA-0512')).toEqual({ project: 'TSA-0512', product: '' });
+    expect(splitCampaignName('')).toEqual({ project: '', product: '' });
+  });
+});
+
+describe('CampaignKols 项目与产品SKU拆分', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/campaigns') {
+        return Promise.resolve({ data: { data: [{ id: 3, name: 'TMB-1407｜PTO Rotary Cutter' }] } });
+      }
+      if (url === '/api/campaign-kols') {
+        return Promise.resolve({
+          data: {
+            data: [
+              { ...kolRow, id: 7, campaign_name: 'TMB-1407｜PTO Rotary Cutter', product_sku: 'RC-1200', kol_name: 'Alice' },
+              { ...kolRow, id: 8, campaign_name: 'TMB-1407｜PTO Rotary Cutter', product_sku: 'RC-1500', kol_name: 'Bob' }
+            ]
+          }
+        });
+      }
+      return Promise.resolve({ data: { data: [] } });
+    });
+  });
+
+  test('候选池把合并字段拆成项目与产品SKU两列，项目筛选只显示项目名', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.getAllByText('项目').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('产品SKU').length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText('项目/产品')).not.toBeInTheDocument();
+    expect(screen.getAllByText('TMB-1407').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('RC-1200').length).toBeGreaterThanOrEqual(1);
+
+    await userEvent.click(screen.getAllByRole('combobox')[0]);
+    const option = (await screen.findAllByText('TMB-1407')).find((el) => el.closest('.ant-select-item-option'));
+    expect(option).toBeTruthy();
+  });
+
+  test('产品SKU 筛选只保留对应 SKU 的行', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Bob')).toBeInTheDocument();
+
+    // 筛选顺序：项目 → 产品SKU
+    await userEvent.click(screen.getAllByRole('combobox')[1]);
+    const option = (await screen.findAllByText('RC-1500')).find((el) => el.closest('.ant-select-item-option'));
+    await userEvent.click(option);
+    await waitFor(() => expect(screen.queryByText('Alice')).not.toBeInTheDocument());
+    expect(screen.getByText('Bob')).toBeInTheDocument();
   });
 });
