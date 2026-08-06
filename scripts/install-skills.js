@@ -11,11 +11,13 @@ const manifestPath = path.join(skillsRoot, 'manifest.json');
 function usage() {
   return [
     'Usage:',
-    '  npm run install-skills',
-    '  npm run install-skills -- --target ~/.agents/skills',
+    '  npm run install-skills -- --target <dir>',
     '',
-    'Options:',
-    '  --target <dir>   Install skills into a specific skills directory'
+    'Required:',
+    '  --target <dir>   Install skills into <dir> (e.g. ~/.codex/skills).',
+    '',
+    'The target directory must live outside the project tree so user-local',
+    'skills (Codex, Claude, etc.) never pollute this repository.'
   ].join('\n');
 }
 
@@ -43,14 +45,36 @@ function parseArgs(argv) {
       args.target = arg.slice('--target='.length);
       continue;
     }
-    throw new Error(`Unknown argument: ${arg}\n\n${usage()}`);
+    throw new Error('Unknown argument: ' + arg + '\n\n' + usage());
   }
   return args;
 }
 
+function ensureTargetProvided(args) {
+  if (!args.target || !args.target.trim()) {
+    throw new Error(
+      'Missing required --target <dir>.\n' +
+      'Default installs are no longer supported to avoid contaminating the project tree.\n' +
+      'Example: npm run install-skills -- --target ~/.codex/skills\n\n' +
+      usage()
+    );
+  }
+}
+
+function ensureTargetOutsideRepo(resolvedTarget) {
+  const resolvedRepoRoot = path.resolve(repoRoot) + path.sep;
+  const resolved = path.resolve(resolvedTarget);
+  if (resolved === path.resolve(repoRoot) || resolved.startsWith(resolvedRepoRoot)) {
+    throw new Error(
+      'Refusing to install skills into the project tree: ' + resolved + '\n' +
+      'Pass a home-directory path, e.g. --target ~/.codex/skills'
+    );
+  }
+}
+
 function readManifest() {
   if (!fs.existsSync(manifestPath)) {
-    throw new Error(`Missing skills manifest: ${manifestPath}`);
+    throw new Error('Missing skills manifest: ' + manifestPath);
   }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   if (!manifest.entry_skill || !Array.isArray(manifest.skills) || !manifest.skills.length) {
@@ -61,7 +85,7 @@ function readManifest() {
 
 function validateSkillName(name) {
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(name)) {
-    throw new Error(`Invalid skill name in manifest: ${name}`);
+    throw new Error('Invalid skill name in manifest: ' + name);
   }
 }
 
@@ -71,32 +95,21 @@ function validateSources(manifest) {
     const sourceDir = path.join(skillsRoot, skill);
     const skillFile = path.join(sourceDir, 'SKILL.md');
     if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
-      throw new Error(`Missing skill directory: ${sourceDir}`);
+      throw new Error('Missing skill directory: ' + sourceDir);
     }
     if (!fs.existsSync(skillFile)) {
-      throw new Error(`Missing SKILL.md for ${skill}: ${skillFile}`);
+      throw new Error('Missing SKILL.md for ' + skill + ': ' + skillFile);
     }
   }
   if (!manifest.skills.includes(manifest.entry_skill)) {
-    throw new Error(`entry_skill must be included in skills: ${manifest.entry_skill}`);
+    throw new Error('entry_skill must be included in skills: ' + manifest.entry_skill);
   }
   for (const skill of manifest.removed_skills || []) {
     validateSkillName(skill);
     if (manifest.skills.includes(skill)) {
-      throw new Error(`removed_skills must not include an installed skill: ${skill}`);
+      throw new Error('removed_skills must not include an installed skill: ' + skill);
     }
   }
-}
-
-function defaultTarget() {
-  const candidates = [
-    path.join(os.homedir(), '.config', 'agents', 'skills'),
-    path.join(os.homedir(), '.claude', 'skills'),
-    path.join(os.homedir(), '.codex', 'skills'),
-    path.join(os.homedir(), '.agents', 'skills'),
-    path.join(repoRoot, '.agents', 'skills')
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
 }
 
 function copyDirectory(source, target) {
@@ -122,7 +135,7 @@ function removeLegacySkills(manifest, targetRoot) {
     const targetDir = path.join(targetRoot, skill);
     if (!fs.existsSync(targetDir)) continue;
     fs.rmSync(targetDir, { recursive: true, force: true });
-    removed.push({ skill, path: targetDir });
+    removed.push({ skill: skill, path: targetDir });
   }
   return removed;
 }
@@ -133,38 +146,40 @@ function verifyInstall(manifest, targetRoot) {
     const skillFile = path.join(targetDir, 'SKILL.md');
     const nestedSkillFile = path.join(targetDir, skill, 'SKILL.md');
     if (!fs.existsSync(skillFile)) {
-      throw new Error(`Install verification failed, missing ${skillFile}`);
+      throw new Error('Install verification failed, missing ' + skillFile);
     }
     if (fs.existsSync(nestedSkillFile)) {
-      throw new Error(`Install verification failed, nested skill detected: ${nestedSkillFile}`);
+      throw new Error('Install verification failed, nested skill detected: ' + nestedSkillFile);
     }
   }
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  ensureTargetProvided(args);
   const manifest = readManifest();
   validateSources(manifest);
-  const targetRoot = path.resolve(expandHome(args.target) || defaultTarget());
+  const targetRoot = path.resolve(expandHome(args.target));
+  ensureTargetOutsideRepo(targetRoot);
 
   fs.mkdirSync(targetRoot, { recursive: true });
   const removed = removeLegacySkills(manifest, targetRoot);
   const installed = manifest.skills.map((skill) => ({
-    skill,
+    skill: skill,
     path: installSkill(skill, targetRoot)
   }));
   verifyInstall(manifest, targetRoot);
 
   console.log('KOL Campaign OS skills installed.');
-  console.log(`Target: ${targetRoot}`);
-  console.log(`Entry skill: ${manifest.entry_skill}`);
+  console.log('Target: ' + targetRoot);
+  console.log('Entry skill: ' + manifest.entry_skill);
   console.log('Installed skills:');
   for (const item of installed) {
-    console.log(`- ${item.skill}: ${item.path}`);
+    console.log('- ' + item.skill + ': ' + item.path);
   }
   if (removed.length) {
     console.log('Removed legacy skills:');
-    for (const item of removed) console.log(`- ${item.skill}: ${item.path}`);
+    for (const item of removed) console.log('- ' + item.skill + ': ' + item.path);
   }
   console.log('');
   console.log('Next: start KOL Campaign OS, then choose the entry skill in your agent.');
@@ -174,6 +189,6 @@ function main() {
 try {
   main();
 } catch (error) {
-  console.error(`Skill install failed: ${error.message}`);
+  console.error('Skill install failed: ' + error.message);
   process.exit(1);
 }

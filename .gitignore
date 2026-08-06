@@ -119,3 +119,14 @@ backups/
 
 # Installer vendor binaries (downloaded at build time)
 installer/vendor/
+
+# Agent-local state and user-specific skill caches (NOT project content)
+# These hold Codex / Claude / generic agent skills installed per-developer
+# and must never be committed to this repository.
+.agents/
+.claude/
+.codex/
+
+# skills-lock.json records user-local skill installations and third-party
+# skill hashes. Project-bundled skills are tracked via skills/manifest.json.
+skills-lock.json
