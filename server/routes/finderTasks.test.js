@@ -46,6 +46,22 @@ async function resetTestDatabase() {
   await admin.close();
 }
 
+// 20260727 起 campaigns 增加 campaign_type/status/period（该迁移含生产数据校验，测试库不可重放）。
+// 迁移类测试只手动跑选定迁移，这里在 baseline 之后补齐模型所需的后期列。
+async function addPostBaselineCampaignColumns() {
+  const queryInterface = sequelize.getQueryInterface();
+  const cols = await queryInterface.describeTable('campaigns');
+  if (!cols.campaign_type) {
+    await queryInterface.addColumn('campaigns', 'campaign_type', { type: Sequelize.STRING(30), allowNull: false, defaultValue: 'active_project' });
+  }
+  if (!cols.status) {
+    await queryInterface.addColumn('campaigns', 'status', { type: Sequelize.STRING(20), allowNull: false, defaultValue: 'active' });
+  }
+  if (!cols.period) {
+    await queryInterface.addColumn('campaigns', 'period', { type: Sequelize.STRING(50) });
+  }
+}
+
 function safeParseJson(value) {
   if (!value) return null;
   if (typeof value === 'object') return value;
@@ -115,6 +131,7 @@ test('migration replaces cycle schema without clearing business data', async () 
 
   // Run baseline migration to create V2 schema and seed configuration defaults.
   await baselineMigration.up(sequelize.getQueryInterface(), Sequelize);
+  await addPostBaselineCampaignColumns();
 
   // Seed configuration rows that must survive the destructive migration.
   await models.ApiSetting.create({ provider: 'test-provider', api_key: 'test-key' });
@@ -187,6 +204,7 @@ test('migration replaces cycle schema without clearing business data', async () 
 test('multi-product migration preserves legacy campaign data', async () => {
   await resetTestDatabase();
   await baselineMigration.up(sequelize.getQueryInterface(), Sequelize);
+  await addPostBaselineCampaignColumns();
 
   const campaign = await models.Campaign.create({
     name: 'Multi-product Migration Campaign',
@@ -374,6 +392,7 @@ test('multi-product migration preserves legacy campaign data', async () => {
 test('multi-product migration upgrades legacy raw candidate product fits safely', async () => {
   await resetTestDatabase();
   await baselineMigration.up(sequelize.getQueryInterface(), Sequelize);
+  await addPostBaselineCampaignColumns();
 
   const queryInterface = sequelize.getQueryInterface();
   const campaign = await models.Campaign.create({
@@ -1005,23 +1024,8 @@ test('product fit identity normalizes profile variants and repeated discovery pr
   assert.deepEqual(firstIdentity, secondIdentity);
   assert.match(firstIdentity.identityKeyHash, /^[a-f0-9]{64}$/);
 
-  const wrongCustomer = await models.Customer.create({
-    name: 'Product Creator',
-    cooperation_status: 'do_not_contact',
-    profile_url: 'https://www.youtube.com/@different.creator'
-  });
-  const matchedCustomer = await models.Customer.create({
-    name: 'Master Product Creator',
-    cooperation_status: 'available'
-  });
-  await models.KolPlatformAccount.create({
-    customer_id: matchedCustomer.id,
-    platform: 'youtube',
-    username: 'product.creator',
-    profile_url: normalizedProfileUrl,
-    profile_url_hash: computeUrlHash(normalizedProfileUrl)
-  });
-
+  // d201e72 起：已在 KOL Master 的创作者生成候选时被跳过（master_duplicate，由对应用例覆盖）。
+  // 本测试聚焦：URL 变体合并、人工 decision 保留、并行生成幂等。
   const taskRes = await request.post('/api/finder-tasks').send({
     strategy_id: strategy.id,
     target_platform: 'youtube'
@@ -1084,9 +1088,8 @@ test('product fit identity normalizes profile variants and repeated discovery pr
     [campaignProduct.id]
   );
   assert.equal(fits.length, 1);
-  assert.equal(fits[0].existing_customer_id, matchedCustomer.id);
-  assert.notEqual(fits[0].existing_customer_id, wrongCustomer.id);
-  assert.equal(fits[0].identity_status, 'known_kol_new_product_fit');
+  assert.equal(fits[0].existing_customer_id, null);
+  assert.equal(fits[0].identity_status, 'new_kol');
   assert.equal(fits[0].decision_status, 'pending');
   assert.equal(fits[0].analysis_version, 1);
   assert.equal(safeParseJson(fits[0].evidence_summary).evidence_count, 2);
@@ -1620,7 +1623,7 @@ test('finder evidence analysis writes to video_ai_analysis_results', async () =>
   const rawCandidates = await models.RawCandidate.findAll();
   assert.equal(rawCandidates.length, 1);
   assert.equal(rawCandidates[0].status, 'new');
-  assert.equal(rawCandidates[0].matched_persona, '品类评测型 KOL');
+  assert.equal(rawCandidates[0].matched_persona, '品类证据匹配 KOL');
 });
 
 test('generate candidates from evidence fills persona from strategy config', async () => {

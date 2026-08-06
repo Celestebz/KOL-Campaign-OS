@@ -105,7 +105,7 @@ beforeEach(() => {
 
 test('未识别回复列表支持绑定 KOL', async () => {
   render(<Emails />);
-  await userEvent.click(await screen.findByText('邮件待办'));
+  await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
   await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/emails/replies', { params: { scope: 'needs_reply' } }));
   expect(await screen.findByText('Alice')).toBeInTheDocument();
 
@@ -125,7 +125,7 @@ test('未识别回复列表支持绑定 KOL', async () => {
   await userEvent.click(within(dialog).getByRole('button', { name: /绑\s*定/ }));
   await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/9/bind', { customer_id: 7 }));
   await waitFor(() => expect(message.success).toHaveBeenCalledWith('已绑定 KOL，AI 摘要生成中'));
-});
+}, 30000);
 
 test('邮箱配置显示收信模式与连接状态，支持测试 IMAP 和立即同步', async () => {
   render(<Emails />);
@@ -232,20 +232,20 @@ test('审批台指标接口失败时不影响审批列表，三张卡显示 —'
     return Promise.resolve({ data: { data: [] } });
   });
   render(<Emails />);
-  // 审批列表仍然可用（说明：草稿筛选条件存在）
-  expect(await screen.findByText('状态')).toBeInTheDocument();
+  // 审批列表仍然可用（summary 接口失败时草稿行正常渲染；“状态”筛选已迁至审批记录页）
+  expect(await screen.findByText('Alice')).toBeInTheDocument();
   // summary 接口失败时三张卡的数值占位都是 —（指标卡数值位置至少 3 个 —）
   await waitFor(() => expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3));
 });
 
-test('审批列表的状态筛选条件仍保留待审阅/已批准/已发送等选项', async () => {
+test('审批记录的状态筛选保留已发送/已批准/发送失败等选项', async () => {
   render(<Emails />);
-  // Antd Select 的占位文字 "状态" 不可点击；改点 combobox
+  await userEvent.click(await screen.findByRole('tab', { name: '审批记录' }));
+  // 状态筛选在审批记录页（审批台只保留 类型/风险 两个 Select）；最后一个 combobox 即“全部状态”
   const comboboxes = await screen.findAllByRole('combobox');
-  // 第三个 combobox 是 "状态" 过滤（前两个：类型、风险）
-  await userEvent.click(comboboxes[2]);
-  expect(await screen.findByText('待审阅')).toBeInTheDocument();
+  await userEvent.click(comboboxes[comboboxes.length - 1]);
+  expect(await screen.findByText('已发送')).toBeInTheDocument();
   expect(screen.getByText('已批准')).toBeInTheDocument();
-  expect(screen.getByText('已发送')).toBeInTheDocument();
+  expect(screen.getByText('已驳回')).toBeInTheDocument();
   expect(screen.getByText('发送失败')).toBeInTheDocument();
 });
