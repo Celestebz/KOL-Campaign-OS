@@ -1,7 +1,16 @@
 const { dbOperations } = require('../database');
+const scYoutube = require('./scrapecreatorsYoutube');
+const { toV3ChannelItem, toV3VideoItems } = require('../utils/scrapecreatorsYoutubeSearch');
 
 const GOOGLE_PROVIDER = 'youtube.google_official';
 const MATON_PROVIDER = 'youtube.maton_gateway';
+
+function scIdentityFromLookup(lookup = {}) {
+  if (lookup.id) return { channelId: lookup.id };
+  if (lookup.forHandle) return { handle: lookup.forHandle };
+  if (lookup.forUsername) return { handle: lookup.forUsername };
+  throw new Error('ScrapeCreators 快照需要频道 ID 或 Handle（视频链接请先解析为频道）');
+}
 
 function parseJson(value, fallback = {}) {
   try { return value ? JSON.parse(value) : fallback; } catch (error) { return fallback; }
@@ -31,19 +40,25 @@ async function youtubeConfig() {
   const google = await dbOperations.get('SELECT api_key, base_url, extra_config FROM api_settings WHERE provider = ?', [GOOGLE_PROVIDER]);
   if (google?.api_key) {
     return {
+      mode: 'v3',
       endpoint(path, params) { return `${String(google.base_url || 'https://www.googleapis.com').replace(/\/$/, '')}/youtube/v3/${path}?${params}&key=${encodeURIComponent(google.api_key)}`; },
       options: {}
     };
   }
   const maton = await dbOperations.get('SELECT api_key, base_url, extra_config FROM api_settings WHERE provider = ?', [MATON_PROVIDER]);
-  if (!maton?.api_key) throw new Error('Google Official YouTube API Key 或 Maton Gateway 未配置');
-  const extra = parseJson(maton.extra_config);
-  const headers = { Authorization: `Bearer ${maton.api_key}` };
-  if (extra.connection_id) headers['Maton-Connection'] = extra.connection_id;
-  return {
-    endpoint(path, params) { return `${String(maton.base_url || 'https://api.maton.ai').replace(/\/$/, '')}/youtube/youtube/v3/${path}?${params}`; },
-    options: { headers }
-  };
+  if (maton?.api_key) {
+    const extra = parseJson(maton.extra_config);
+    const headers = { Authorization: `Bearer ${maton.api_key}` };
+    if (extra.connection_id) headers['Maton-Connection'] = extra.connection_id;
+    return {
+      mode: 'v3',
+      endpoint(path, params) { return `${String(maton.base_url || 'https://api.maton.ai').replace(/\/$/, '')}/youtube/youtube/v3/${path}?${params}`; },
+      options: { headers }
+    };
+  }
+  const scSetting = await scYoutube.getYoutubeScrapeCreatorsSetting();
+  if (scSetting?.api_key) return { mode: 'scrapecreators', setting: scSetting };
+  throw new Error('Google Official / Maton Gateway / ScrapeCreators 均未配置');
 }
 
 function channelLookup(profileUrl) {
@@ -76,52 +91,84 @@ async function runYoutubeIntakeSnapshot(customerId) {
 
   try {
     const config = await youtubeConfig();
-    let lookup = channelLookup(profileUrl);
-    if (lookup.videoId) {
-      const videoData = await fetchJson(
-        config.endpoint('videos', `part=snippet&id=${encodeURIComponent(lookup.videoId)}`),
-        config.options
-      );
-      const channelId = videoData.items?.[0]?.snippet?.channelId;
-      if (!channelId) throw new Error('无法从 YouTube 视频链接识别所属频道');
-      lookup = { id: channelId };
-    }
-    const lookupParam = Object.entries(lookup).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
-    const channelData = await fetchJson(config.endpoint('channels', `part=contentDetails,statistics&${lookupParam}`), config.options);
-    const channel = channelData.items?.[0];
-    if (!channel) throw new Error('YouTube 未找到对应频道');
-    const uploads = channel.contentDetails?.relatedPlaylists?.uploads;
-    if (!uploads) throw new Error('YouTube 频道没有 uploads 播放列表');
+    let channel;
+    let videoItems;
+    if (config.mode === 'scrapecreators') {
+      let lookup = channelLookup(profileUrl);
+      if (lookup.videoId) {
+        const videoData = await scYoutube.video(config.setting, profileUrl);
+        const channelId = videoData.channel?.id;
+        if (!channelId) throw new Error('无法从 YouTube 视频链接识别所属频道');
+        lookup = { id: channelId };
+      }
+      const identity = scIdentityFromLookup(lookup);
+      const channelData = await scYoutube.channel(config.setting, identity);
+      channel = toV3ChannelItem(channelData);
+      if (!channel.id) throw new Error('YouTube 未找到对应频道');
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      // SC channel-videos 单页 30 条，翻页已实测可用：上限 3 页，遇到早于截止线的条目即停
+      const scItems = [];
+      let continuationToken = '';
+      for (let page = 0; page < 3; page += 1) {
+        const data = await scYoutube.channelVideos(config.setting, identity, continuationToken);
+        const pageItems = toV3VideoItems(data);
+        scItems.push(...pageItems);
+        const reachedCutoff = pageItems.some((item) => {
+          const published = new Date(item.snippet.publishedAt || 0).getTime();
+          return published > 0 && published < cutoff;
+        });
+        continuationToken = String(data.continuationToken || '').trim();
+        if (reachedCutoff || !continuationToken || !pageItems.length) break;
+      }
+      videoItems = scItems.filter((item) => new Date(item.snippet.publishedAt || 0).getTime() >= cutoff);
+    } else {
+      let lookup = channelLookup(profileUrl);
+      if (lookup.videoId) {
+        const videoData = await fetchJson(
+          config.endpoint('videos', `part=snippet&id=${encodeURIComponent(lookup.videoId)}`),
+          config.options
+        );
+        const channelId = videoData.items?.[0]?.snippet?.channelId;
+        if (!channelId) throw new Error('无法从 YouTube 视频链接识别所属频道');
+        lookup = { id: channelId };
+      }
+      const lookupParam = Object.entries(lookup).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
+      const channelData = await fetchJson(config.endpoint('channels', `part=contentDetails,statistics&${lookupParam}`), config.options);
+      channel = channelData.items?.[0];
+      if (!channel) throw new Error('YouTube 未找到对应频道');
+      const uploads = channel.contentDetails?.relatedPlaylists?.uploads;
+      if (!uploads) throw new Error('YouTube 频道没有 uploads 播放列表');
 
-    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const playlistItems = [];
-    let pageToken = '';
-    for (let page = 0; page < 10; page += 1) {
-      const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
-      const playlistData = await fetchJson(
-        config.endpoint('playlistItems', `part=snippet,contentDetails&playlistId=${encodeURIComponent(uploads)}&maxResults=50${tokenParam}`),
-        config.options
-      );
-      const items = playlistData.items || [];
-      playlistItems.push(...items);
-      const reachedCutoff = items.some((item) => {
-        const publishedAt = item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt;
-        return publishedAt && new Date(publishedAt).getTime() < cutoff;
-      });
-      pageToken = playlistData.nextPageToken || '';
-      if (reachedCutoff || !pageToken) break;
-    }
-    const recent = playlistItems.filter((item) => new Date(item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt).getTime() >= cutoff);
-    const ids = recent.map((item) => item.contentDetails?.videoId).filter(Boolean);
-    // videos.list accepts at most 50 ids per call; chunk to avoid invalidFilters on busy channels.
-    const videoItems = [];
-    for (let offset = 0; offset < ids.length; offset += 50) {
-      const chunk = ids.slice(offset, offset + 50);
-      const chunkData = await fetchJson(
-        config.endpoint('videos', `part=snippet,statistics,contentDetails,liveStreamingDetails&id=${encodeURIComponent(chunk.join(','))}`),
-        config.options
-      );
-      videoItems.push(...(chunkData.items || []));
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const playlistItems = [];
+      let pageToken = '';
+      for (let page = 0; page < 10; page += 1) {
+        const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+        const playlistData = await fetchJson(
+          config.endpoint('playlistItems', `part=snippet,contentDetails&playlistId=${encodeURIComponent(uploads)}&maxResults=50${tokenParam}`),
+          config.options
+        );
+        const items = playlistData.items || [];
+        playlistItems.push(...items);
+        const reachedCutoff = items.some((item) => {
+          const publishedAt = item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt;
+          return publishedAt && new Date(publishedAt).getTime() < cutoff;
+        });
+        pageToken = playlistData.nextPageToken || '';
+        if (reachedCutoff || !pageToken) break;
+      }
+      const recent = playlistItems.filter((item) => new Date(item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt).getTime() >= cutoff);
+      const ids = recent.map((item) => item.contentDetails?.videoId).filter(Boolean);
+      // videos.list accepts at most 50 ids per call; chunk to avoid invalidFilters on busy channels.
+      videoItems = [];
+      for (let offset = 0; offset < ids.length; offset += 50) {
+        const chunk = ids.slice(offset, offset + 50);
+        const chunkData = await fetchJson(
+          config.endpoint('videos', `part=snippet,statistics,contentDetails,liveStreamingDetails&id=${encodeURIComponent(chunk.join(','))}`),
+          config.options
+        );
+        videoItems.push(...(chunkData.items || []));
+      }
     }
     const videosData = { items: videoItems };
     const snapshotAt = new Date();
@@ -188,4 +235,4 @@ async function runYoutubeIntakeSnapshot(customerId) {
   }
 }
 
-module.exports = { runYoutubeIntakeSnapshot, durationSeconds, median };
+module.exports = { runYoutubeIntakeSnapshot, durationSeconds, median, scIdentityFromLookup };

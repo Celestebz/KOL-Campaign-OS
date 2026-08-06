@@ -25,8 +25,9 @@ function buildYoutubeChannelUrl(baseUrl, identity) {
   return `${buildBase(baseUrl)}/v1/youtube/channel?${channelIdentityParam(identity)}`;
 }
 
-function buildYoutubeChannelVideosUrl(baseUrl, identity) {
-  return `${buildBase(baseUrl)}/v1/youtube/channel-videos?${channelIdentityParam(identity)}&includeExtras=true`;
+function buildYoutubeChannelVideosUrl(baseUrl, identity, continuationToken = '') {
+  const token = clean(continuationToken);
+  return `${buildBase(baseUrl)}/v1/youtube/channel-videos?${channelIdentityParam(identity)}&includeExtras=true${token ? `&continuationToken=${encodeURIComponent(token)}` : ''}`;
 }
 
 function buildYoutubeVideoUrl(baseUrl, url) {
@@ -78,13 +79,26 @@ function toV3SearchItems(data = {}) {
   return items;
 }
 
+const SC_COUNTRY_TO_ISO = {
+  'united states': 'US',
+  'united states of america': 'US',
+  usa: 'US'
+};
+
+// SC 返回国家全名（"United States"），v3 返回 ISO 代码（"US"）；
+// preflight 的市场判定按 ISO 语义比较，这里对齐，未收录的全名原样保留。
+function normalizeScCountry(country) {
+  const c = clean(country);
+  return SC_COUNTRY_TO_ISO[c.toLowerCase()] || c;
+}
+
 function toV3ChannelItem(data = {}) {
   return {
     id: clean(data.channelId),
     snippet: {
       title: clean(data.name),
       description: clean(data.description),
-      country: clean(data.country)
+      country: normalizeScCountry(data.country)
     },
     statistics: {
       subscriberCount: String(Math.round(Number(data.subscriberCount) || 0)),

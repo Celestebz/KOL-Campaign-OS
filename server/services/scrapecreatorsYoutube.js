@@ -58,8 +58,8 @@ async function channel(setting, identity) {
   return fetchScJson(buildYoutubeChannelUrl(setting.base_url, identity), setting);
 }
 
-async function channelVideos(setting, identity) {
-  return fetchScJson(buildYoutubeChannelVideosUrl(setting.base_url, identity), setting);
+async function channelVideos(setting, identity, continuationToken = '') {
+  return fetchScJson(buildYoutubeChannelVideosUrl(setting.base_url, identity, continuationToken), setting);
 }
 
 async function video(setting, url) {

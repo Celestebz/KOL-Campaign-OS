@@ -73,9 +73,12 @@ test('toV3ChannelItem 映射为 v3 channel 形状并取整订阅数', () => {
     subscriberCount: 65099.99, videoCount: 30, handle: '@chan', links: ['https://x.com/a']
   });
   assert.equal(item.id, 'UC1');
-  assert.equal(item.snippet.country, 'United States');
+  // SC 返回国家全名，需对齐 v3 的 ISO 代码语义
+  assert.equal(item.snippet.country, 'US');
   assert.equal(item.statistics.subscriberCount, '65100');
   assert.equal(item._sc.handle, 'chan');
+  // 非美国国家全名原样保留
+  assert.equal(toV3ChannelItem({ channelId: 'UC2', country: 'Canada' }).snippet.country, 'Canada');
 });
 
 test('toV3VideoItems 映射时长/统计，lives 标记 liveBroadcastContent', () => {
