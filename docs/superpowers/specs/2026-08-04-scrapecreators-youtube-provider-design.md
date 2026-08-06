@@ -1,7 +1,7 @@
 # ScrapeCreators YouTube Provider 接入设计
 
 - 日期：2026-08-04
-- 状态：已确认（brainstorm 评审通过）
+- 状态：已实现（2026-08-04 端到端验证通过）
 - 范围：KOL Campaign OS 的 YouTube 数据源接入 ScrapeCreators，覆盖 Finder 发现、视频详情+评论、30 天 intake 快照三处；通用品类（换品类 = 换策略，零代码改动）
 
 ## 1. 背景与依据
