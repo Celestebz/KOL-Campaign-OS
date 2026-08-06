@@ -8,6 +8,7 @@ dotenv.config();
 
 const models = require('./models');
 const { sequelize } = models;
+const { sanitizeBindParams } = require('./utils/mysqlDateTime');
 
 const DEFAULT_ANALYSIS_SYSTEM_PROMPT = 'You are a senior KOL marketing analyst. Return valid JSON only. Do not include Markdown, explanations, or chain-of-thought. The system is brand-agnostic: never assume the target brand is MOOER or any fixed brand unless it is provided in the campaign context.';
 const DEFAULT_ANALYSIS_USER_PROMPT = 'Analyze the video performance metrics and comments for KOL marketing value. Consider creator/category fit, audience feedback, purchase intent, brand or category mentions, collaboration risks, product feedback, cooperation advice, and content optimization suggestions. If a target brand or product is configured, evaluate fit against it; otherwise evaluate the video generically for its apparent category. Return all required fields.';
@@ -16,7 +17,7 @@ const DEFAULT_ANALYSIS_USER_PROMPT = 'Analyze the video performance metrics and 
 const dbOperations = {
   query: async (sql, params = []) => {
     const rows = await sequelize.query(sql, {
-      replacements: params,
+      replacements: sanitizeBindParams(params),
       type: sequelize.QueryTypes.SELECT,
       logging: false
     });
@@ -28,7 +29,7 @@ const dbOperations = {
   },
   run: async (sql, params = []) => {
     const [result, metadata] = await sequelize.query(sql, {
-      replacements: params,
+      replacements: sanitizeBindParams(params),
       type: sequelize.QueryTypes.RAW,
       logging: false
     });
