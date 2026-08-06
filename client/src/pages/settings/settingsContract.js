@@ -24,7 +24,7 @@ export const PLATFORM_META = {
     providers: [
       provider('google_official', 'Google Official'),
       provider('maton_gateway', 'Maton Gateway', { fields: ['api_key', 'base_url', 'connection_id'] }),
-      provider('scrapecreators', 'ScrapeCreators', { reserved: true }),
+      provider('scrapecreators', 'ScrapeCreators'),
       provider('brightdata', 'Bright Data', { reserved: true }),
       provider('custom', 'Custom', {
         reserved: true,
