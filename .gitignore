@@ -130,3 +130,6 @@ installer/vendor/
 # skills-lock.json records user-local skill installations and third-party
 # skill hashes. Project-bundled skills are tracked via skills/manifest.json.
 skills-lock.json
+
+# Temporary work outputs (candidate lists, verification JSONs, decks)
+outputs/
