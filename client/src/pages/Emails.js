@@ -119,6 +119,7 @@ function ApprovalTab() {
   const [actionLoading, setActionLoading] = useState(false);
   const [dashboard, setDashboard] = useState(EMPTY_DASHBOARD_SUMMARY);
   const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [mailboxes, setMailboxes] = useState([]);
 
   const fetchDrafts = useCallback(async () => {
     setLoading(true);
@@ -154,6 +155,7 @@ function ApprovalTab() {
 
   useEffect(() => { fetchDrafts(); }, [fetchDrafts]);
   useEffect(() => { fetchDashboard(); }, [fetchDashboard]);
+  useEffect(() => { getEmailSettings().then((rows) => setMailboxes(rows || [])).catch(() => {}); }, []);
 
   // 审批动作完成后顺带刷新指标，保持"今日/本周"数字与最新外联状态同步。
   const refreshAll = useCallback(() => {
@@ -196,7 +198,8 @@ function ApprovalTab() {
   const handleApprove = async () => {
     setActionLoading(true);
     try {
-      await approveDraft(selected.id);
+      const approved = await approveDraft(selected.id);
+      if (approved?.warning) message.warning(approved.warning);
       message.success('邮件已发送，外联状态已同步');
       refreshAll();
     } catch (error) {
@@ -223,7 +226,8 @@ function ApprovalTab() {
   const handleSend = async () => {
     setActionLoading(true);
     try {
-      await sendDraft(selected.id);
+      const sent = await sendDraft(selected.id);
+      if (sent?.warning) message.warning(sent.warning);
       message.success('发送成功，状态已回写');
       refreshAll();
     } catch (error) {
@@ -338,6 +342,9 @@ function ApprovalTab() {
         <Select allowClear placeholder="风险" style={{ width: 120 }}
           value={filters.risk_level} onChange={(v) => setFilters({ ...filters, risk_level: v })}
           options={[{ value: 'high', label: '高风险' }, { value: 'low', label: '低风险' }, { value: 'none', label: '无风险' }]} />
+        <Select allowClear placeholder="全部邮箱" style={{ width: 180 }}
+          value={filters.mailbox_id} onChange={(v) => setFilters({ ...filters, mailbox_id: v })}
+          options={mailboxes.map((m) => ({ value: m.id, label: m.label || m.username }))} />
         <Button icon={<ReloadOutlined />} onClick={fetchDrafts}>刷新</Button>
       </Space>
 
@@ -536,25 +543,29 @@ function ApprovalHistoryTab() {
   const [drafts, setDrafts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState();
+  const [mailboxes, setMailboxes] = useState([]);
+  const [mailboxId, setMailboxId] = useState();
   const [selected, setSelected] = useState(null);
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getDrafts(status ? { status } : {});
+      const data = await getDrafts({ ...(status ? { status } : {}), ...(mailboxId ? { mailbox_id: mailboxId } : {}) });
       setDrafts((data.drafts || []).filter((draft) => HISTORY_STATUSES.has(draft.status)));
     } catch (error) {
       message.error('获取审批记录失败');
     } finally {
       setLoading(false);
     }
-  }, [status]);
+  }, [status, mailboxId]);
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
+  useEffect(() => { getEmailSettings().then((rows) => setMailboxes(rows || [])).catch(() => {}); }, []);
 
   const columns = [
     { title: 'KOL', dataIndex: 'kol_name', width: 140 },
     { title: '项目', dataIndex: 'campaign_name', width: 160, render: (v) => v || '-' },
+    { title: '发件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
     { title: '类型', dataIndex: 'kind', width: 100, render: (v) => DRAFT_KIND_LABELS[v] || v || '-' },
     { title: '主题', dataIndex: 'subject', ellipsis: true },
     {
@@ -579,6 +590,8 @@ function ApprovalHistoryTab() {
           options={['sent', 'rejected', 'send_failed', 'send_unknown', 'approved'].map((value) => ({
             value, label: DRAFT_STATUS_LABELS[value]?.text || value
           }))} />
+        <Select allowClear placeholder="全部邮箱" style={{ width: 180 }} value={mailboxId} onChange={setMailboxId}
+          options={mailboxes.map((m) => ({ value: m.id, label: m.label || m.username }))} />
         <Button icon={<ReloadOutlined />} onClick={fetchHistory}>刷新</Button>
       </Space>
       <Table rowKey="id" loading={loading} columns={columns} dataSource={drafts} />
@@ -621,15 +634,17 @@ function RepliesTab() {
   const [blockScope, setBlockScope] = useState('sender');
   const [blockSaving, setBlockSaving] = useState(false);
   const prevCountRef = useRef(null);
+  const [mailboxes, setMailboxes] = useState([]);
+  const [mailboxId, setMailboxId] = useState();
 
   const fetchReplies = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
       const rows = viewMode === 'unmatched'
-        ? await getUnmatchedReplies()
+        ? await getUnmatchedReplies(mailboxId)
         : (viewMode === 'blocked'
-          ? await getBlockedReplies()
-          : (viewMode === 'system' ? await getSystemEmails() : await getReplyTodos()));
+          ? await getBlockedReplies(mailboxId)
+          : (viewMode === 'system' ? await getSystemEmails(mailboxId) : await getReplyTodos(mailboxId)));
       if (viewMode === 'pending' && prevCountRef.current !== null && rows.length > prevCountRef.current) {
         message.info(`收到 ${rows.length - prevCountRef.current} 条新回复`);
       }
@@ -640,9 +655,10 @@ function RepliesTab() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [viewMode]);
+  }, [viewMode, mailboxId]);
 
   useEffect(() => { fetchReplies(); }, [fetchReplies]);
+  useEffect(() => { getEmailSettings().then((rows) => setMailboxes(rows || [])).catch(() => {}); }, []);
 
   // 邮件中心打开时每 10 秒静默刷新（准实时收信的页面侧配套，第一轮不上 SSE）
   useEffect(() => {
@@ -779,6 +795,7 @@ function RepliesTab() {
   const pendingColumns = [
     { title: 'KOL', dataIndex: 'kol_name', width: 140 },
     { title: '项目', dataIndex: 'campaign_name', width: 160 },
+    { title: '收件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
     { title: '回复时间', dataIndex: 'received_at', width: 160,
       render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
     { title: '主题', dataIndex: 'subject', width: 180, ellipsis: true,
@@ -836,6 +853,7 @@ function RepliesTab() {
 
   const unmatchedColumns = [
     { title: '发件人', dataIndex: 'from_address', width: 220, render: (v) => v || '-' },
+    { title: '收件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
     { title: '收到时间', dataIndex: 'received_at', width: 160,
       render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
     { title: '主题', dataIndex: 'subject', width: 220, ellipsis: true },
@@ -854,6 +872,7 @@ function RepliesTab() {
 
   const blockedColumns = [
     { title: '发件人', dataIndex: 'from_address', width: 220, render: (v) => v || '-' },
+    { title: '收件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
     { title: '收到时间', dataIndex: 'received_at', width: 170,
       render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
     { title: '主题', dataIndex: 'subject', ellipsis: true },
@@ -878,6 +897,7 @@ function RepliesTab() {
       return <Tag>系统邮件</Tag>;
     } },
     { title: '发件人', dataIndex: 'from_address', width: 220, ellipsis: true },
+    { title: '收件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
     { title: '原收件人', dataIndex: 'bounce_recipient', width: 220, render: (value) => value || '-' },
     { title: '项目', dataIndex: 'campaign_name', width: 160, render: (value) => value || '-' },
     { title: '收到时间', dataIndex: 'received_at', width: 170,
@@ -909,6 +929,8 @@ function RepliesTab() {
           ]}
           optionType="button"
         />
+        <Select allowClear placeholder="全部邮箱" style={{ width: 180 }} value={mailboxId} onChange={setMailboxId}
+          options={mailboxes.map((m) => ({ value: m.id, label: m.label || m.username }))} />
         <Button icon={<ReloadOutlined />} onClick={() => fetchReplies()}>刷新</Button>
       </Space>
       <Table

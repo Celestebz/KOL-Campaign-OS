@@ -172,13 +172,13 @@ export async function getEmailReplies(confirmStatus) {
   return res.data.data || [];
 }
 
-export async function getReplyTodos() {
-  const res = await axios.get('/api/emails/replies', { params: { scope: 'needs_reply' } });
+export async function getReplyTodos(mailboxId) {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'needs_reply', ...(mailboxId ? { mailbox_id: mailboxId } : {}) } });
   return res.data.data || [];
 }
 
-export async function getUnmatchedReplies() {
-  const res = await axios.get('/api/emails/replies', { params: { scope: 'unmatched' } });
+export async function getUnmatchedReplies(mailboxId) {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'unmatched', ...(mailboxId ? { mailbox_id: mailboxId } : {}) } });
   return res.data.data || [];
 }
 
@@ -199,13 +199,13 @@ export async function confirmReply(id, summary, intent) {
   await axios.post(`/api/emails/replies/${id}/confirm`, { summary, intent });
 }
 
-export async function getBlockedReplies() {
-  const res = await axios.get('/api/emails/replies', { params: { scope: 'blocked' } });
+export async function getBlockedReplies(mailboxId) {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'blocked', ...(mailboxId ? { mailbox_id: mailboxId } : {}) } });
   return res.data.data || [];
 }
 
-export async function getSystemEmails() {
-  const res = await axios.get('/api/emails/replies', { params: { scope: 'system' } });
+export async function getSystemEmails(mailboxId) {
+  const res = await axios.get('/api/emails/replies', { params: { scope: 'system', ...(mailboxId ? { mailbox_id: mailboxId } : {}) } });
   return res.data.data || [];
 }
 

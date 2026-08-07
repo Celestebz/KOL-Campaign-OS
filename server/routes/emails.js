@@ -283,17 +283,19 @@ router.delete('/templates/:id', async (req, res) => {
 
 router.get('/records', async (req, res) => {
   try {
-    const { status, campaign_id } = req.query || {};
+    const { status, campaign_id, mailbox_id } = req.query || {};
     const conditions = [];
     const params = [];
     if (status) { conditions.push('er.status = ?'); params.push(status); }
     if (campaign_id) { conditions.push('er.campaign_id = ?'); params.push(campaign_id); }
+    if (mailbox_id) { conditions.push('er.mailbox_id = ?'); params.push(Number(mailbox_id)); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const totalRow = await dbOperations.get(`SELECT COUNT(*) AS total FROM email_records er ${where}`, params);
     const records = await dbOperations.query(
-      `SELECT er.*, d.id AS draft_exists
+      `SELECT er.*, d.id AS draft_exists, ms.label AS mailbox_label, ms.username AS mailbox_username
        FROM email_records er
        LEFT JOIN email_drafts d ON d.id = er.draft_id
+       LEFT JOIN email_settings ms ON ms.id = er.mailbox_id
        ${where}
        ORDER BY er.created_at DESC
        LIMIT 200`,
@@ -386,16 +388,17 @@ router.post('/drafts/generate', async (req, res) => {
 
 router.get('/drafts', async (req, res) => {
   try {
-    const { status, kind, risk_level, campaign_id } = req.query || {};
+    const { status, kind, risk_level, campaign_id, mailbox_id } = req.query || {};
     const conditions = [];
     const params = [];
     if (status) { conditions.push('d.status = ?'); params.push(status); }
     if (kind) { conditions.push('d.kind = ?'); params.push(kind); }
     if (risk_level) { conditions.push('d.risk_level = ?'); params.push(risk_level); }
     if (campaign_id) { conditions.push('d.campaign_id = ?'); params.push(campaign_id); }
+    if (mailbox_id) { conditions.push('d.mailbox_id = ?'); params.push(Number(mailbox_id)); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const drafts = (await dbOperations.query(
-      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name,
+      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name, ms.label AS mailbox_label, ms.username AS mailbox_username,
         (SELECT er.to_address FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS sent_to_address,
         (SELECT er.status FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS delivery_status,
         (SELECT er.error FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS delivery_error,
@@ -403,6 +406,7 @@ router.get('/drafts', async (req, res) => {
        FROM email_drafts d
        LEFT JOIN customers k ON k.id = d.customer_id
        LEFT JOIN campaigns c ON c.id = d.campaign_id
+       LEFT JOIN email_settings ms ON ms.id = d.mailbox_id
        ${where}
        ORDER BY d.generated_at DESC
        LIMIT 200`,
@@ -574,7 +578,7 @@ router.post('/drafts/:id/confirm-not-sent', async (req, res) => {
 
 router.get('/replies', async (req, res) => {
   try {
-    const { confirm_status, scope, campaign_id } = req.query || {};
+    const { confirm_status, scope, campaign_id, mailbox_id } = req.query || {};
     const conditions = [];
     const params = [];
     if (scope === 'blocked') conditions.push("er.classification = 'spam'");
@@ -598,10 +602,11 @@ router.get('/replies', async (req, res) => {
         ORDER BY er2.received_at DESC, er2.id DESC LIMIT 1
       )`);
     }
+    if (mailbox_id) { conditions.push('er.mailbox_id = ?'); params.push(Number(mailbox_id)); }
     if (confirm_status) { conditions.push('er.confirm_status = ?'); params.push(confirm_status); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const replies = await dbOperations.query(
-      `SELECT er.*, k.name AS kol_name, c.name AS campaign_name,
+      `SELECT er.*, k.name AS kol_name, c.name AS campaign_name, ms.label AS mailbox_label, ms.username AS mailbox_username,
          eb.bounce_type, eb.recipient AS bounce_recipient, eb.status_code AS bounce_status_code,
          eb.reason AS bounce_reason, eb.email_record_id AS bounce_email_record_id
        FROM email_replies er
@@ -609,6 +614,7 @@ router.get('/replies', async (req, res) => {
        LEFT JOIN campaigns c ON c.id = er.campaign_id
        LEFT JOIN campaign_kols ck ON ck.campaign_id = er.campaign_id AND ck.customer_id = er.customer_id
        LEFT JOIN email_bounces eb ON eb.email_reply_id = er.id
+       LEFT JOIN email_settings ms ON ms.id = er.mailbox_id
        ${where}
        ORDER BY er.received_at DESC
        LIMIT 200`,

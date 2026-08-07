@@ -201,6 +201,58 @@ test('GET /records joins draft kol name and filters status', async () => {
   });
 });
 
+test('GET /drafts joins mailbox label and filters by mailbox_id', async () => {
+  await withPatchedDb({
+    query: async (sql, params = []) => {
+      if (String(sql).includes('FROM email_drafts')) {
+        assert.ok(String(sql).includes('LEFT JOIN email_settings ms ON ms.id = d.mailbox_id'), '草稿查询应 JOIN 邮箱表');
+        assert.ok(String(sql).includes('d.mailbox_id = ?'), '应按 mailbox_id 过滤');
+        assert.deepEqual(params, [2]);
+        return [{ id: 1, subject: 'Hi', mailbox_label: 'B 业务', mailbox_username: 'b@x.com' }];
+      }
+      return [];
+    }
+  }, async () => {
+    const res = await callHandler(findHandler(require('./emails'), 'get', '/drafts'), { query: { mailbox_id: '2' } });
+    assert.equal(res.payload.data.drafts[0].mailbox_label, 'B 业务');
+  });
+});
+
+test('GET /records joins mailbox label and filters by mailbox_id', async () => {
+  await withPatchedDb({
+    get: async () => ({ total: 1 }),
+    query: async (sql, params = []) => {
+      if (String(sql).includes('FROM email_records')) {
+        assert.ok(String(sql).includes('LEFT JOIN email_settings ms ON ms.id = er.mailbox_id'), '记录查询应 JOIN 邮箱表');
+        assert.ok(String(sql).includes('er.mailbox_id = ?'), '应按 mailbox_id 过滤');
+        assert.deepEqual(params, [2]);
+        return [{ id: 1, mailbox_label: 'B 业务', mailbox_username: 'b@x.com' }];
+      }
+      return [];
+    }
+  }, async () => {
+    const res = await callHandler(findHandler(require('./emails'), 'get', '/records'), { query: { mailbox_id: '2' } });
+    assert.equal(res.payload.data.records[0].mailbox_label, 'B 业务');
+  });
+});
+
+test('GET /replies joins mailbox label and filters by mailbox_id', async () => {
+  await withPatchedDb({
+    query: async (sql, params = []) => {
+      if (String(sql).includes('FROM email_replies')) {
+        assert.ok(String(sql).includes('LEFT JOIN email_settings ms ON ms.id = er.mailbox_id'), '回复查询应 JOIN 邮箱表');
+        assert.ok(String(sql).includes('er.mailbox_id = ?'), '应按 mailbox_id 过滤');
+        assert.deepEqual(params, [2]);
+        return [{ id: 1, mailbox_label: 'B 业务', mailbox_username: 'b@x.com', body_text: '' }];
+      }
+      return [];
+    }
+  }, async () => {
+    const res = await callHandler(findHandler(require('./emails'), 'get', '/replies'), { query: { mailbox_id: '2' } });
+    assert.equal(res.payload.data[0].mailbox_label, 'B 业务');
+  });
+});
+
 test('POST /drafts/:id/send returns 409 when draft not approved', async () => {
   await withPatchedDb({
     get: async (sql) => {

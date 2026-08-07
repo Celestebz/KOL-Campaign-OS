@@ -33,7 +33,7 @@ function mockApi() {
     if (url === '/api/emails/replies') {
       if (config?.params?.scope === 'unmatched') {
         return Promise.resolve({
-          data: { data: [{ id: 9, from_address: 'ad@x.com', subject: '促销邮件', received_at: '2026-07-27T06:00:00Z', body_text: '' }] }
+          data: { data: [{ id: 9, from_address: 'ad@x.com', subject: '促销邮件', received_at: '2026-07-27T06:00:00Z', body_text: '', mailbox_label: '默认邮箱' }] }
         });
       }
       return Promise.resolve({
@@ -41,7 +41,7 @@ function mockApi() {
           data: [{
             id: 5, kol_name: 'Alice', campaign_name: 'TMB-1401｜Finishing Mower',
             subject: 'Re: 合作', received_at: '2026-07-27T06:00:00Z',
-            ai_status: 'success', ai_summary: '对合作有意向', ai_intent: 'interested', confirm_status: 'pending'
+            ai_status: 'success', ai_summary: '对合作有意向', ai_intent: 'interested', confirm_status: 'pending', mailbox_label: '默认邮箱'
           }]
         }
       });
@@ -247,11 +247,32 @@ test('审批台指标接口失败时不影响审批列表，三张卡显示 —'
 test('审批记录的状态筛选保留已发送/已批准/发送失败等选项', async () => {
   render(<Emails />);
   await userEvent.click(await screen.findByRole('tab', { name: '审批记录' }));
-  // 状态筛选在审批记录页（审批台只保留 类型/风险 两个 Select）；最后一个 combobox 即“全部状态”
+  // 状态筛选在审批记录页，第一个 combobox 即“全部状态”（后一个为“全部邮箱”）
   const comboboxes = await screen.findAllByRole('combobox');
-  await userEvent.click(comboboxes[comboboxes.length - 1]);
+  await userEvent.click(comboboxes[0]);
   expect(await screen.findByText('已发送')).toBeInTheDocument();
   expect(screen.getByText('已批准')).toBeInTheDocument();
   expect(screen.getByText('已驳回')).toBeInTheDocument();
   expect(screen.getByText('发送失败')).toBeInTheDocument();
+});
+
+test('审批台提供邮箱筛选，审批记录展示发件邮箱', async () => {
+  axios.get.mockImplementation((url) => {
+    if (url === '/api/emails/drafts') {
+      return Promise.resolve({
+        data: {
+          data: {
+            drafts: [{ id: 3, status: 'sent', kind: 'first_touch', kol_name: 'Bob', campaign_name: 'TMB-1', mailbox_label: '默认邮箱', subject: 'Hi' }],
+            counts: { pending_review: 0, high_risk: 0, approved: 0 }
+          }
+        }
+      });
+    }
+    return Promise.resolve({ data: { data: [] } });
+  });
+  render(<Emails />);
+  expect(await screen.findByText('全部邮箱')).toBeInTheDocument();
+  await userEvent.click(await screen.findByRole('tab', { name: '审批记录' }));
+  expect(await screen.findByText('默认邮箱')).toBeInTheDocument();
+  expect((await screen.findAllByText('Bob')).length).toBeGreaterThanOrEqual(1);
 });

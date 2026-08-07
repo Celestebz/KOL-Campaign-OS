@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Button, Form, Input, message, Modal, Select, Table, Tag } from 'antd';
 import { EditOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import { getEmailSettings } from './emailApi';
 
 const { TextArea } = Input;
 
@@ -18,6 +19,7 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [mailboxes, setMailboxes] = useState([]);
 
   const loadData = async () => {
     setLoading(true);
@@ -39,6 +41,11 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
     if (open) loadData();
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    getEmailSettings().then((rows) => setMailboxes((rows || []).filter((m) => m.enabled))).catch(() => {});
+  }, [open]);
+
   const openEditor = async (campaign) => {
     setLoading(true);
     try {
@@ -50,6 +57,7 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
         name: (detail.campaign || campaign).name,
         brand: (detail.campaign || campaign).brand || primary?.product?.brand || '',
         period: (detail.campaign || campaign).period || '',
+        mailbox_id: (detail.campaign || campaign).mailbox_id ?? undefined,
         product_id: primary?.product?.id,
         campaign_brief: primary?.campaign_brief || ''
       });
@@ -74,7 +82,8 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
         name: values.name.trim(),
         brand: values.brand?.trim() || '',
         product: selectedProduct.name,
-        period: values.period?.trim() || ''
+        period: values.period?.trim() || '',
+        mailbox_id: values.mailbox_id ?? null
       });
 
       const currentPrimary = editing.primary;
@@ -169,6 +178,13 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
           </Form.Item>
           <Form.Item label="项目周期" name="period">
             <Input placeholder="例如：2026 Q3 或 2026-08-01 至 2026-09-30" />
+          </Form.Item>
+          <Form.Item label="发件邮箱" name="mailbox_id" tooltip="不选则使用默认邮箱">
+            <Select
+              allowClear
+              placeholder="默认邮箱"
+              options={mailboxes.map((m) => ({ value: m.id, label: `${m.label || m.username}（${m.username}）` }))}
+            />
           </Form.Item>
           <Form.Item label="项目 Brief" name="campaign_brief">
             <TextArea rows={4} />

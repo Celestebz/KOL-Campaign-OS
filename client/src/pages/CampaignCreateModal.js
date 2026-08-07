@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Form, Input, message, Modal, Select } from 'antd';
 import axios from 'axios';
+import { getEmailSettings } from './emailApi';
 
 const { TextArea } = Input;
 
@@ -9,6 +10,7 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [mailboxes, setMailboxes] = useState([]);
 
   useEffect(() => {
     if (!open) return;
@@ -25,6 +27,11 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
       .finally(() => setLoadingProducts(false));
   }, [form, open]);
 
+  useEffect(() => {
+    if (!open) return;
+    getEmailSettings().then((rows) => setMailboxes((rows || []).filter((m) => m.enabled))).catch(() => {});
+  }, [open]);
+
   const handleSubmit = async () => {
     const values = await form.validateFields();
     const product = products.find((item) => item.id === values.product_id);
@@ -39,7 +46,8 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
         name: values.name.trim(),
         brand: product.brand || '',
         product: product.name,
-        period: values.period?.trim() || ''
+        period: values.period?.trim() || '',
+        mailbox_id: values.mailbox_id || null
       });
       const campaign = campaignResponse.data.data;
 
@@ -102,6 +110,13 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
         </Form.Item>
         <Form.Item label="项目周期" name="period">
           <Input placeholder="例如：2026 Q3 或 2026-08-01 至 2026-09-30" />
+        </Form.Item>
+        <Form.Item label="发件邮箱" name="mailbox_id" tooltip="不选则使用默认邮箱">
+          <Select
+            allowClear
+            placeholder="默认邮箱"
+            options={mailboxes.map((m) => ({ value: m.id, label: `${m.label || m.username}（${m.username}）` }))}
+          />
         </Form.Item>
         <Form.Item label="项目 Brief" name="campaign_brief">
           <TextArea rows={4} placeholder="填写本项目的目标、内容要求或补充说明" />
