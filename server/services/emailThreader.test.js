@@ -193,3 +193,36 @@ test('reassignReply 回复不存在抛 404', async () => {
     (error) => error.statusCode === 404
   );
 });
+
+// ---- 多邮箱会话归属 ----
+
+test('assignReplyThread backfills thread mailbox_id from the reply', async () => {
+  const db = makeDb([
+    { match: REPLY_BY_ID, get: { thread_id: null } },
+    { match: 'SELECT mailbox_id FROM email_replies WHERE id = ?', get: { mailbox_id: 9 } }
+  ]);
+  const result = await emailThreader.assignReplyThread({
+    replyId: 1, subject: 'Re: Hi', customerId: 3, campaignId: 2, receivedAt: '2026-07-30T00:00:00Z'
+  }, db);
+  assert.equal(result.threadId, 100);
+  const backfill = db.calls.run.find((c) => c.sql.includes('UPDATE email_threads SET mailbox_id'));
+  assert.ok(backfill, 'should backfill thread mailbox_id');
+  assert.ok(backfill.sql.includes('AND mailbox_id IS NULL'), 'only fills empty mailbox_id');
+  assert.deepEqual(backfill.params, [9, 100]);
+});
+
+test('assignRecordThread backfills thread mailbox_id from the record', async () => {
+  const db = makeDb([
+    {
+      match: 'SELECT id, thread_id, draft_id, campaign_id, customer_id, subject, in_reply_to, references_json, created_at FROM email_records WHERE id = ?',
+      get: { id: 5, thread_id: null, draft_id: null, campaign_id: 2, customer_id: 7, subject: 'Re: Hi', in_reply_to: null, references_json: null, created_at: '2026-07-30T00:00:00Z' }
+    },
+    { match: 'SELECT mailbox_id FROM email_records WHERE id = ?', get: { mailbox_id: 9 } }
+  ]);
+  const result = await emailThreader.assignRecordThread(5, db);
+  assert.equal(result.threadId, 100);
+  const backfill = db.calls.run.find((c) => c.sql.includes('UPDATE email_threads SET mailbox_id'));
+  assert.ok(backfill, 'should backfill thread mailbox_id');
+  assert.ok(backfill.sql.includes('AND mailbox_id IS NULL'), 'only fills empty mailbox_id');
+  assert.deepEqual(backfill.params, [9, 100]);
+});

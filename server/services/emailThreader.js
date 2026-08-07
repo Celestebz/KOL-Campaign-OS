@@ -189,6 +189,12 @@ async function assignReplyThread(params, db = dbOperations, opts = {}) {
       [threadId, replyToMessageId, replyId]
     );
     await bumpThread(db, threadId, messageAt);
+    // 多邮箱：会话归属到首封邮件所在邮箱（只补空，不覆盖）
+    const replyMailbox = await db.get('SELECT mailbox_id FROM email_replies WHERE id = ?', [replyId]);
+    if (replyMailbox?.mailbox_id && threadId) {
+      await db.run('UPDATE email_threads SET mailbox_id = ? WHERE id = ? AND mailbox_id IS NULL',
+        [replyMailbox.mailbox_id, threadId]);
+    }
   }
   return { threadId, ambiguous: false, matchedBy };
 }
@@ -257,6 +263,12 @@ async function assignRecordThread(recordId, db = dbOperations, opts = {}) {
   if (!dryRun) {
     await db.run('UPDATE email_records SET thread_id = ? WHERE id = ?', [threadId, recordId]);
     await bumpThread(db, threadId, messageAt);
+    // 多邮箱：会话归属到发送记录所在邮箱（只补空，不覆盖）
+    const recordMailbox = await db.get('SELECT mailbox_id FROM email_records WHERE id = ?', [recordId]);
+    if (recordMailbox?.mailbox_id && threadId) {
+      await db.run('UPDATE email_threads SET mailbox_id = ? WHERE id = ? AND mailbox_id IS NULL',
+        [recordMailbox.mailbox_id, threadId]);
+    }
   }
   return { threadId, matchedBy };
 }
