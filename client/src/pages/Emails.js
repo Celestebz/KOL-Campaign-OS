@@ -1149,7 +1149,6 @@ const SYNC_STATUS_LABELS = {
 
 const SYNC_MODE_LABELS = { idle: '实时监听（推荐）', poll: '定时轮询', off: '关闭回复同步' };
 
-const formatSyncTime = (value) => (value ? new Date(value).toLocaleString('zh-CN') : '-');
 
 function SettingsTab() {
   const [form] = Form.useForm();
