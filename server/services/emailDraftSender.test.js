@@ -415,3 +415,46 @@ test('sendApprovedDraft degrades gracefully when the source reply has no message
   assert.equal(recordInsert.params[9], null);
   assert.equal(recordInsert.params[10], null);
 });
+test('sendApprovedDraft sends via the draft bound mailbox and records its mailbox_id', async () => {
+  const writes = [];
+  dbOperations.run = async (sql, params) => { writes.push({ sql, params }); return { id: 902, changes: 1 }; };
+  dbOperations.get = async (sql) => {
+    if (sql.includes('FROM email_drafts')) {
+      return { id: 7, status: 'sending', campaign_id: 2, customer_id: 3, subject: 'Hello', body_text: 'Body', mailbox_id: 9 };
+    }
+    if (sql.includes('FROM email_settings WHERE id = ?')) return { id: 9, username: 'b@x.com', default_cc: '', enabled: 1 };
+    if (sql.includes('FROM customers')) return { id: 3, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  let sentOptions = null;
+  mailer.sendMail = async (options) => { sentOptions = options; return { messageId: 'message-1' }; };
+
+  const result = await emailDraftSender.sendApprovedDraft(7);
+
+  assert.equal(sentOptions.settings.username, 'b@x.com', '发件用草稿绑定的邮箱');
+  const record = writes.find(({ sql }) => sql.includes('INSERT INTO email_records') && sql.includes("'success'"));
+  assert.equal(record.params.at(-1), 9, 'email_records 落 mailbox_id');
+});
+
+test('sendApprovedDraft falls back to the default mailbox when the bound one is disabled', async () => {
+  const writes = [];
+  dbOperations.run = async (sql, params) => { writes.push({ sql, params }); return { id: 902, changes: 1 }; };
+  dbOperations.get = async (sql) => {
+    if (sql.includes('FROM email_drafts')) {
+      return { id: 7, status: 'sending', campaign_id: 2, customer_id: 3, subject: 'Hello', body_text: 'Body', mailbox_id: 9 };
+    }
+    if (sql.includes('FROM email_settings WHERE id = ?')) return { id: 9, username: 'b@x.com', enabled: 0 };
+    if (sql.includes('WHERE is_default = 1')) return { id: 1, username: 'a@x.com', default_cc: '', enabled: 1 };
+    if (sql.includes('FROM customers')) return { id: 3, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  let sentOptions = null;
+  mailer.sendMail = async (options) => { sentOptions = options; return { messageId: 'message-1' }; };
+
+  const result = await emailDraftSender.sendApprovedDraft(7);
+
+  assert.equal(sentOptions.settings.username, 'a@x.com', '绑定邮箱停用时回退默认邮箱');
+  assert.match(result.warning || '', /已改用默认邮箱/, '回退时返回 warning 供审批台提示');
+  const record = writes.find(({ sql }) => sql.includes('INSERT INTO email_records') && sql.includes("'success'"));
+  assert.equal(record.params.at(-1), 1);
+});

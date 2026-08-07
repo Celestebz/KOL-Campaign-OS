@@ -3,6 +3,7 @@
 // 证据直接取 finder_video_evidence（Finder 发现时已沉淀）。
 const { dbOperations } = require('../database');
 const aiClient = require('./aiClient');
+const emailMailboxes = require('./emailMailboxes');
 const { evaluateDraft } = require('./emailRiskRules');
 const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
@@ -261,8 +262,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
     const styleGuide = await dbOperations.get(
       "SELECT * FROM email_templates WHERE kind = 'style_guide' ORDER BY id LIMIT 1"
     );
-    const emailSettings = await dbOperations.get('SELECT sender_name FROM email_settings ORDER BY id LIMIT 1');
-
+    
     // kind='reply'：有 thread 走会话上下文；旧数据无 thread 回退单封来信上下文（截断在构建阶段做）。
     // feedback 仅承载人工修改意见，不再混入邮件原文。
     let sourceReply = null;
@@ -281,11 +281,14 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       }
     }
 
+    // 多邮箱：回复继承来信邮箱 → Campaign 绑定 → 默认邮箱
+    const mailbox = await emailMailboxes.resolveMailboxForDraft({ campaignId, sourceReplyId });
+
     const userPrompt = buildUserPrompt({
       customer, campaign, strategy,
       styleGuide: styleGuide?.body_html || '',
       videos, feedback, platform, followers, kind,
-      senderName: emailSettings?.sender_name || '',
+      senderName: mailbox?.sender_name || '',
       threadContext, replyFallback
     });
     const { parsed, model } = await aiClient.callActiveAi(SYSTEM_PROMPT, userPrompt);
@@ -346,12 +349,12 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
         result = await dbOperations.run(
         `INSERT INTO email_drafts
          (campaign_id, customer_id, kind, subject, body_text, status, risk_level, risk_reasons, evidence,
-          source_reply_id, template_id, prompt_version, ai_model, dedupe_key,
+          source_reply_id, template_id, prompt_version, ai_model, dedupe_key, mailbox_id,
           thread_id, reply_to_message_id, context_message_ids, context_summary_snapshot,
           generated_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
         [campaignId, customerId, kind, subject, bodyText, riskLevel, JSON.stringify(riskReasons), evidence,
-         sourceReplyId, styleGuide?.id || null, PROMPT_VERSION, model || null, dedupeKey,
+         sourceReplyId, styleGuide?.id || null, PROMPT_VERSION, model || null, dedupeKey, mailbox?.id || null,
          draftThreadId, replyToMessageId, contextMessageIds, contextSummarySnapshot]
         );
       } catch (error) {

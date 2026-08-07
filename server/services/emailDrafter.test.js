@@ -335,10 +335,10 @@ test('reply 起草：有 thread 时走会话上下文并落库新列', async () 
   const insert = draftInsert(fake.statements);
   assert.equal((insert.sql.match(/\?/g) || []).length, insert.params.length, 'INSERT 占位符与参数数量一致');
   assert.equal(insert.params[10], 'p2.0', 'prompt_version 升级');
-  assert.equal(insert.params[13], 33, 'thread_id');
-  assert.equal(insert.params[14], '<r2@x>', 'reply_to_message_id 为最新来信');
-  assert.deepEqual(JSON.parse(insert.params[15]), ['<r1@x>', '<r2@x>'], 'context_message_ids');
-  assert.equal(insert.params[16], '滚动摘要文本', 'context_summary_snapshot');
+  assert.equal(insert.params[14], 33, 'thread_id');
+  assert.equal(insert.params[15], '<r2@x>', 'reply_to_message_id 为最新来信');
+  assert.deepEqual(JSON.parse(insert.params[16]), ['<r1@x>', '<r2@x>'], 'context_message_ids');
+  assert.equal(insert.params[17], '滚动摘要文本', 'context_summary_snapshot');
 });
 
 test('reply 起草：旧数据无 thread 回退单邮件上下文，不报错', async () => {
@@ -364,8 +364,37 @@ test('reply 起草：旧数据无 thread 回退单邮件上下文，不报错', 
   assert.ok(seenPrompt.includes('<<<EMAIL>>>'), '回退内容同样按不可信内容包裹');
 
   const insert = draftInsert(fake.statements);
-  assert.equal(insert.params[13], null, '无 thread 时 thread_id 为 NULL');
-  assert.equal(insert.params[14], '<r9@x>', 'reply_to_message_id 回退为该来信 message_id');
-  assert.equal(insert.params[15], null);
+  assert.equal(insert.params[14], null, '无 thread 时 thread_id 为 NULL');
+  assert.equal(insert.params[15], '<r9@x>', 'reply_to_message_id 回退为该来信 message_id');
+  assert.equal(insert.params[17], null);
   assert.equal(insert.params[16], null);
+});
+
+test('draft insert stores the resolved mailbox_id from campaign binding', async () => {
+  const fake = createFakeDb({
+    finderVideos: [{ video_id: 'V1', title: 'Reel', play_count: 100, published_at: daysAgo(3) }]
+  });
+  const originalGet = fake.get;
+  fake.get = async (sql, params) => {
+    if (/FROM campaigns WHERE id = \?/.test(sql)) return { id: 5, name: 'Everglow', product: 'Tree collar', mailbox_id: 4 };
+    if (/FROM email_settings WHERE id = \?/.test(sql)) return { id: 4, enabled: 1, sender_name: 'B Team' };
+    return originalGet(sql, params);
+  };
+  const result = await runDraft(fake);
+  assert.equal(result.ok, true);
+  assert.equal(draftInsert(fake.statements).params[13], 4, '草稿落 Campaign 绑定的 mailbox_id');
+});
+
+test('reply draft inherits the source reply mailbox_id', async () => {
+  const fake = withReplyFakeDb(createFakeDb({
+    finderVideos: [{ video_id: 'V1', title: 'Reel', play_count: 100, published_at: daysAgo(3) }]
+  }), { id: 5, thread_id: null, message_id: '<r7@x>', mailbox_id: 9, body_text: 'x', clean_body_text: null });
+  const originalGet = fake.get;
+  fake.get = async (sql, params) => {
+    if (/FROM email_settings WHERE id = \?/.test(sql)) return { id: 9, enabled: 1, sender_name: 'Inbound Team' };
+    return originalGet(sql, params);
+  };
+  const result = await runDraft(fake, { kind: 'reply', sourceReplyId: 5 });
+  assert.equal(result.ok, true);
+  assert.equal(draftInsert(fake.statements).params[13], 9, '回复草稿继承来信邮箱');
 });

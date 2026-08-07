@@ -1,5 +1,6 @@
 const { dbOperations } = require('../database');
 const mailer = require('./mailer');
+const emailMailboxes = require('./emailMailboxes');
 const emailThreader = require('./emailThreader');
 const { normalizeReplySubject, buildTextQuote, buildHtmlQuote } = require('./emailReplyQuote');
 
@@ -116,11 +117,19 @@ async function sendApprovedDraft(draftId) {
   }
 
   const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [draftId]);
-  const settings = await dbOperations.get('SELECT * FROM email_settings ORDER BY id LIMIT 1');
+  // 多邮箱：草稿绑定的邮箱优先；绑定邮箱不存在或已停用时回退默认邮箱
+  const bound = draft.mailbox_id ? await emailMailboxes.getMailboxById(draft.mailbox_id) : null;
+  const fallbackToDefault = Boolean(draft.mailbox_id && !(bound && bound.enabled));
+  const settings = bound && bound.enabled ? bound : await emailMailboxes.getDefaultMailbox();
   if (!settings) {
     await markFailed(draft.id);
     throw actionError('请先配置邮箱设置', 400);
   }
+  const mailboxId = settings.id || null;
+  // 回退默认邮箱时给审批人可见的警告（路由层 data 透传 result，前端据此弹提示）
+  const sendWarning = fallbackToDefault
+    ? `草稿绑定的邮箱已停用或不存在，已改用默认邮箱 ${settings.username} 发送`
+    : null;
 
   const customer = await dbOperations.get(
     'SELECT id, name, email FROM customers WHERE id = ?',
@@ -155,10 +164,10 @@ async function sendApprovedDraft(draftId) {
     const ambiguous = isAmbiguousSendError(sendError);
     await dbOperations.run(
       `INSERT INTO email_records
-       (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, NOW())`,
+       (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, mailbox_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, NOW())`,
       [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
-       draft.subject, draft.body_text, sendError.message]
+       draft.subject, draft.body_text, sendError.message, mailboxId]
     );
     if (ambiguous) {
       await markUnknown(draft.id);
@@ -171,12 +180,13 @@ async function sendApprovedDraft(draftId) {
   // SMTP 已接受邮件后不再把草稿标成可重试，避免数据库回写异常导致重复外发。
   const recordInsert = await dbOperations.run(
       `INSERT INTO email_records
-       (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, in_reply_to, references_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, NOW())`,
+       (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, in_reply_to, references_json, mailbox_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, NOW())`,
     [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
      cc.join(',') || null, subject, text, messageId,
      replyCtx ? replyCtx.inReplyTo : null,
-     replyCtx && replyCtx.references.length ? JSON.stringify(replyCtx.references) : null]
+     replyCtx && replyCtx.references.length ? JSON.stringify(replyCtx.references) : null,
+     mailboxId]
   );
   // 发送记录挂会话：按 In-Reply-To/References 命中来信复用 thread，失败仅记日志不影响发送结果
   if (recordInsert.id) {
@@ -192,7 +202,7 @@ async function sendApprovedDraft(draftId) {
     [draft.id]
   );
   await markOutreachAfterSend(draft);
-  const result = { draft_id: draft.id, message_id: messageId, to: customer.email };
+  const result = { draft_id: draft.id, message_id: messageId, to: customer.email, warning: sendWarning };
   if (replyCtx && replyCtx.threadingMissing) result.threading_missing = true;
   return result;
 }
@@ -218,10 +228,10 @@ async function confirmManuallySent(draftId) {
 
   const manualInsert = await dbOperations.run(
     `INSERT INTO email_records
-     (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, NOW())`,
+     (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, mailbox_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NOW())`,
     [draft.id, draft.campaign_id, draft.customer_id, customer?.name || null, customer?.email || null,
-     draft.subject, draft.body_text, note]
+     draft.subject, draft.body_text, note, draft.mailbox_id || null]
   );
   // 人工确认的记录也尽量补会话归属（无回复头，按主题+窗口匹配），失败仅记日志
   if (manualInsert.id) {
