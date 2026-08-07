@@ -34,9 +34,18 @@ const MATON_SEARCH_CACHE_TTL_DAYS = 7;
 const MATON_DISCOVERY_REQUEST_BUDGET = 6;
 const MATON_EXTERNAL_REQUEST_BUDGET = 32;
 const SC_FINDER_REQUEST_BUDGET = 200;
-// Seasonal Instagram/TikTok discovery changes quickly; one day avoids duplicate spend
-// without hiding newly published creators for a full week.
-const PLATFORM_SEARCH_CACHE_TTL_DAYS = 1;
+const WATCH_NEXT_LIMITS = {
+  MAX_SEED_QUERIES: 12,
+  MAX_SEED_VIDEOS: 12,
+  MAX_WATCH_NEXT_PER_SEED: 20,
+  MAX_DEPTH_2_SEEDS: 10,
+  MAX_ENRICHED_CHANNELS: 120
+};
+// Seasonal Instagram/TikTok discovery changes quickly; three days avoids duplicate
+// spend across consecutive-day re-runs without hiding new creators for a full week.
+// Same TTL covers cached YouTube channel details/videos (stats drift is acceptable
+// for discovery; fresh numbers are fetched again after expiry).
+const PLATFORM_SEARCH_CACHE_TTL_DAYS = 3;
 const MIN_NEW_CREATOR_YIELD = 0.1;
 const LOW_YIELD_STREAK_LIMIT = 2;
 const TIKTOK_MAX_PAGES_PER_QUERY = 2;
@@ -351,6 +360,20 @@ function searchSourceForPlatformProvider(platform, provider) {
   if (platform === 'instagram') return 'instagram_search';
   if (platform === 'tiktok') return 'tiktok_search';
   return '';
+}
+
+const SEARCH_SOURCES_BY_PLATFORM = {
+  youtube: ['maton_agent', 'google_web', 'youtube_search', 'scrapecreators_youtube', 'youtube_watch_next_expansion'],
+  instagram: ['instagram_search'],
+  tiktok: ['tiktok_search']
+};
+
+function validateSearchSource(platform, source) {
+  const allowed = SEARCH_SOURCES_BY_PLATFORM[platform] || [];
+  if (!allowed.includes(source)) {
+    throw new Error(`search_source ${source} is not available for platform ${platform}`);
+  }
+  return source;
 }
 
 async function preferredSearchSourceForTargetPlatform(platform) {
@@ -1293,13 +1316,13 @@ async function youtubeMatonGatewayAdapter(request, setting, baseUrl) {
   };
 }
 
-async function recordScYoutubeQueryLedger({ taskId, query, pageToken, cacheHit, returned, excluded, newChannels, requestCost, status = 'success', error = '' }) {
+async function recordScYoutubeQueryLedger({ taskId, query, pageToken, cacheHit, returned, excluded, newChannels, requestCost, status = 'success', error = '', provider = 'scrapecreators_youtube' }) {
   await dbOperations.run(
     `INSERT INTO finder_query_ledger
      (finder_task_id, provider, platform, query_text, query_hash, page_token, cache_hit,
       returned_count, excluded_count, new_channel_count, request_cost, status, error_message, created_at)
-     VALUES (?, 'scrapecreators_youtube', 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-    [taskId || null, clean(query), finderQueryHash(query), clean(pageToken), cacheHit ? 1 : 0,
+     VALUES (?, ?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    [taskId || null, provider, clean(query), finderQueryHash(query), clean(pageToken), cacheHit ? 1 : 0,
       Number(returned || 0), Number(excluded || 0), Number(newChannels || 0), Number(requestCost || 0), status, clean(error)]
   );
 }
@@ -1356,16 +1379,23 @@ async function youtubeScrapeCreatorsAdapter(request) {
       const channels = {};
       let channelRequestCost = 0;
       for (const item of items) {
-        if (externalRequestCount >= SC_FINDER_REQUEST_BUDGET) break;
         const channelId = item.snippet.channelId;
-        try {
-          const channelData = await scYoutube.channel(setting, { channelId });
-          externalRequestCount += 1;
-          channelRequestCost += 1;
-          channels[channelId] = scYt.toV3ChannelItem(channelData);
-        } catch (error) {
-          // 单个频道富化失败不阻断整批
+        const channelCacheQuery = `channel:${channelId}`;
+        let channelData = await getCachedPlatformSearch('scrapecreators', 'youtube', channelCacheQuery);
+        if (channelData) {
+          cacheHitCount += 1;
+        } else {
+          if (externalRequestCount >= SC_FINDER_REQUEST_BUDGET) break;
+          try {
+            channelData = await scYoutube.channel(setting, { channelId });
+            externalRequestCount += 1;
+            channelRequestCost += 1;
+            await savePlatformSearchCache('scrapecreators', 'youtube', channelCacheQuery, channelData);
+          } catch (error) {
+            continue; // 单个频道富化失败不阻断整批（留空 channel，由后续 gate 处理）
+          }
         }
+        channels[channelId] = scYt.toV3ChannelItem(channelData);
       }
       candidates.push(...youtubeItemsToCandidates(items, channels, { ...request, discovery: { ...request.discovery, keywords: query } }, `Matched ScrapeCreators YouTube search: ${query}`));
       await recordScYoutubeQueryLedger({
@@ -1425,14 +1455,19 @@ async function preflightScYoutubeCandidates(candidates, request, setting, reques
     }
     let videos = [];
     const channelId = youtubeChannelIdentity(candidate.profile_url).channelId;
-    if (requestCount < requestBudget && channelId) {
-      try {
-        const data = await scYoutube.channelVideos(setting, { channelId });
-        requestCount += 1;
-        videos = scYt.toV3VideoItems(data);
-      } catch (error) {
-        videos = [];
+    if (channelId) {
+      const videosCacheQuery = `channel_videos:${channelId}`;
+      let data = await getCachedPlatformSearch('scrapecreators', 'youtube', videosCacheQuery);
+      if (!data && requestCount < requestBudget) {
+        try {
+          data = await scYoutube.channelVideos(setting, { channelId });
+          requestCount += 1;
+          await savePlatformSearchCache('scrapecreators', 'youtube', videosCacheQuery, data);
+        } catch (error) {
+          data = null;
+        }
       }
+      if (data) videos = scYt.toV3VideoItems(data);
     }
     const result = evaluateYoutubePreflight(candidate, videos, config);
     const enriched = {
@@ -1444,6 +1479,286 @@ async function preflightScYoutubeCandidates(candidates, request, setting, reques
     else rejected.push({ kol_name: candidate.kol_name, profile_url: candidate.profile_url, ...result });
   }
   return { candidates: passed, rejected, requestCount };
+}
+
+// ---- 关联推荐扩展发现路线（youtube_watch_next_expansion） ----
+// 关键词产种子 → watchNextVideos 一跳 → 廉价预过滤 → 富化+preflight → 二跳（按频道去重）。
+// 设计：docs/superpowers/specs/2026-08-06-youtube-watch-next-expansion-design.md
+
+function videoIdFromWatchUrl(url) {
+  return String(url || '').match(/[?&]v=([^&#]+)/)?.[1] || '';
+}
+
+async function youtubeWatchNextAdapter(request) {
+  const setting = await scYoutube.getYoutubeScrapeCreatorsSetting();
+  if (!setting?.api_key) throw new Error('ScrapeCreators API Key 未配置');
+
+  const config = youtubePreflightConfig(request);
+  const effectiveMinSeconds = config.minimumLongSeconds > 0 ? config.minimumLongSeconds : 181;
+  const minRecommendedViews = Math.max(1000, Math.floor((config.minimumMedianViews || 0) * 0.25));
+  const targetQualifiedCount = Math.max(1, Math.min(Number(request.limit || 10), 50));
+  const maxScannedChannels = finderScanLimit(request, targetQualifiedCount);
+  const exclusions = await loadYoutubeExclusionSet();
+  const handoff = request.strategy?.finder_handoff || {};
+  const exclusionTerms = parseList(handoff.exclusion_keywords).map((t) => String(t).toLowerCase());
+
+  // checkpoint 状态（重跑幂等）：已展开种子 + 已富化频道
+  const task = request.finder_task_id
+    ? await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [request.finder_task_id])
+    : null;
+  const checkpoint = task ? readTaskCheckpoint(task) : {};
+  const wnState = checkpoint.watch_next || {};
+  const expandedSeedIds = new Set(wnState.expanded_seed_ids || []);
+  const enrichedChannelIds = new Set(wnState.enriched_channel_ids || []);
+  const persistState = async () => {
+    if (!task) return;
+    await saveTaskCheckpoint(task.id, {
+      ...checkpoint,
+      watch_next: { expanded_seed_ids: [...expandedSeedIds], enriched_channel_ids: [...enrichedChannelIds] }
+    });
+  };
+
+  let externalRequestCount = 0;
+  let cacheHitCount = 0;
+  let lastEndpoint = '';
+  const budgetLeft = () => SC_FINDER_REQUEST_BUDGET - externalRequestCount;
+  const ledger = (entry) => recordScYoutubeQueryLedger({ taskId: request.finder_task_id, provider: 'youtube_watch_next_expansion', ...entry });
+
+  const cachedSearch = async (query) => {
+    const cached = await getCachedPlatformSearch('scrapecreators', 'youtube', query, '', 'seed-search');
+    if (cached) { cacheHitCount += 1; return cached; }
+    const data = await scYoutube.search(setting, query);
+    externalRequestCount += 1;
+    await savePlatformSearchCache('scrapecreators', 'youtube', query, data, '', 'seed-search');
+    await ledger({ query: `seed-search:${query}`, requestCost: 1, returned: scYt.toV3SearchItems(data).length });
+    return data;
+  };
+  const cachedVideoDetail = async (videoId) => {
+    const cached = await getCachedPlatformSearch('scrapecreators', 'youtube', videoId, '', 'watchnext');
+    if (cached) { cacheHitCount += 1; return cached; }
+    const data = await scYoutube.video(setting, `https://www.youtube.com/watch?v=${videoId}`);
+    externalRequestCount += 1;
+    await savePlatformSearchCache('scrapecreators', 'youtube', videoId, data, '', 'watchnext');
+    await ledger({ query: `seed:${videoId}`, requestCost: 1 });
+    return data;
+  };
+
+  // ---- 种子查询词：required 优先、competitor 补足 ----
+  const handoffKeywords = [...parseList(handoff.required_keywords), ...parseList(handoff.competitor_keywords)].filter(Boolean);
+  let seedQueries = [...new Set(handoffKeywords.length ? handoffKeywords : keywordQueries(request))];
+  seedQueries = (await rankedKeywordQueries({ ...request, discovery: { ...request.discovery, keywords: seedQueries.join(', ') } }))
+    .slice(0, WATCH_NEXT_LIMITS.MAX_SEED_QUERIES);
+
+  // ---- 聚合状态 ----
+  const videoSignals = new Map();   // videoId -> { id, title, videoUrl, views, lengthSeconds, channelId, seedIds, positions, depth }
+  const channelSignals = new Map(); // channelId -> { channelId, title, handle, seedIds, videoIds, positions, depths, sampleVideoUrl, sampleVideoTitle }
+  const seenChannelIds = new Set([...enrichedChannelIds]); // 含未富化（本任务内已出现过的频道）
+  const candidates = [];
+  const preflightRejected = [];
+  let noNewStreak = 0;
+  let stopDepth = false;
+
+  const recordRecommendation = (item, seedId, position, depth) => {
+    const cid = item.channel.id;
+    let vs = videoSignals.get(item.id);
+    if (!vs) {
+      vs = { id: item.id, title: item.title, videoUrl: item.videoUrl, views: item.views, lengthSeconds: item.lengthSeconds, channelId: cid, seedIds: new Set(), positions: [], depth };
+      videoSignals.set(item.id, vs);
+    }
+    vs.seedIds.add(seedId);
+    vs.positions.push(position);
+    let cs = channelSignals.get(cid);
+    if (!cs) {
+      cs = { channelId: cid, title: item.channel.title, handle: item.channel.handle, seedIds: new Set(), videoIds: new Set(), positions: [], depths: new Set(), sampleVideoUrl: item.videoUrl, sampleVideoTitle: item.title };
+      channelSignals.set(cid, cs);
+    }
+    cs.seedIds.add(seedId);
+    cs.videoIds.add(item.id);
+    cs.positions.push(position);
+    cs.depths.add(depth);
+  };
+
+  const graphSignalFor = (cs) => ({
+    channel_seed_count: cs.seedIds.size,
+    recommended_video_count: cs.videoIds.size,
+    best_position: cs.positions.length ? Math.min(...cs.positions) : null,
+    position_score: scYt.graphScore(cs.positions),
+    depths: [...cs.depths].sort()
+  });
+
+  // 富化 + preflight（逐频道，维护连续无新增计数）
+  const enrichChannel = async (cid) => {
+    if (enrichedChannelIds.has(cid)) return;
+    if (budgetLeft() <= 0 || enrichedChannelIds.size >= WATCH_NEXT_LIMITS.MAX_ENRICHED_CHANNELS) return;
+    enrichedChannelIds.add(cid);
+    const cs = channelSignals.get(cid);
+    if (!cs) return;
+    let channelData = null;
+    try {
+      channelData = await scYoutube.channel(setting, { channelId: cid });
+      externalRequestCount += 1;
+      await ledger({ query: `enrich:${cid}`, requestCost: 1 });
+    } catch (error) {
+      await ledger({ query: `enrich:${cid}`, status: 'failed', error: error.message, requestCost: 1 });
+      noNewStreak += 1;
+      if (noNewStreak >= 20) stopDepth = true;
+      return;
+    }
+    const channelItem = scYt.toV3ChannelItem(channelData);
+    const v3Item = {
+      id: { videoId: videoIdFromWatchUrl(cs.sampleVideoUrl), kind: 'youtube#video' },
+      snippet: { channelId: cid, channelTitle: cs.title, title: cs.sampleVideoTitle, description: '', publishedAt: '' }
+    };
+    const [candidate] = youtubeItemsToCandidates([v3Item], { [cid]: channelItem }, { ...request, discovery: { ...request.discovery, keywords: 'watch-next 关联扩展' } }, 'Matched watchNext expansion');
+    const g = graphSignalFor(cs);
+    candidate.raw_data = { ...(candidate.raw_data || {}), graph_signal: g };
+    candidate.reason = `${candidate.reason || ''} 该频道共有 ${g.recommended_video_count} 条视频进入关联推荐结果，来自 ${g.channel_seed_count} 条不同种子，最高推荐位第 ${g.best_position} 位。`.trim();
+    const preflight = await preflightScYoutubeCandidates([candidate], request, setting, Math.max(0, budgetLeft()));
+    externalRequestCount += preflight.requestCount;
+    if (preflight.candidates.length) {
+      candidates.push(...preflight.candidates);
+      noNewStreak = 0;
+    } else {
+      preflightRejected.push(...preflight.rejected);
+      noNewStreak += 1;
+      if (noNewStreak >= 20) stopDepth = true;
+    }
+    await persistState();
+  };
+
+  // 展开一条种子：拉 watchNext → 先聚合全部推荐关系 → 预过滤收集新频道到 pendingChannels。
+  // 富化不在此处进行——同一 depth 的全部种子展开完成后统一富化，
+  // 保证候选的 graph_signal 聚合到该 depth 的全部推荐关系（先聚合后富化）。
+  const expandSeed = async (seed, depth, pendingChannels) => {
+    if (expandedSeedIds.has(seed.videoId) || budgetLeft() <= 0) return { stopSeed: false };
+    let detail;
+    try {
+      detail = await cachedVideoDetail(seed.videoId);
+    } catch (error) {
+      await ledger({ query: `seed:${seed.videoId}`, status: 'failed', error: error.message, requestCost: 1 });
+      return { stopSeed: false };
+    }
+    expandedSeedIds.add(seed.videoId);
+    await persistState();
+    const recs = scYt.extractWatchNext(detail).slice(0, WATCH_NEXT_LIMITS.MAX_WATCH_NEXT_PER_SEED);
+    recs.forEach((item, idx) => recordRecommendation(item, seed.videoId, idx + 1, depth));
+    let batchValid = 0;
+    let batchDup = 0;
+    for (const item of recs) {
+      const cid = item.channel.id;
+      if (!cid) continue;
+      batchValid += 1;
+      if (seenChannelIds.has(cid)) { batchDup += 1; continue; }
+      seenChannelIds.add(cid);
+      if ((item.lengthSeconds || 0) < effectiveMinSeconds) continue;
+      const title = String(item.title || '').toLowerCase();
+      if (exclusionTerms.some((t) => title.includes(t))) continue;
+      if (isExcludedYoutubeCreator(exclusions, cid, item.channel.title)) continue;
+      if (item.views != null && item.views < minRecommendedViews) continue;
+      pendingChannels.add(cid);
+    }
+    const stopSeed = batchValid >= 10 && batchDup / batchValid > 0.7;
+    return { stopSeed };
+  };
+
+  const enrichPending = async (pendingChannels) => {
+    for (const cid of pendingChannels) {
+      if (stopDepth || budgetLeft() <= 0) break;
+      await enrichChannel(cid);
+    }
+    pendingChannels.clear();
+  };
+
+  // ---- 种子生成：每词最多 1 条，全局频道去重回补 ----
+  const seeds = [];
+  const seedChannelIds = new Set();
+  for (const query of seedQueries) {
+    if (seeds.length >= WATCH_NEXT_LIMITS.MAX_SEED_VIDEOS || budgetLeft() <= 0) break;
+    let data;
+    try {
+      data = await cachedSearch(query);
+    } catch (error) {
+      await ledger({ query: `seed-search:${query}`, status: 'failed', error: error.message, requestCost: 1 });
+      continue;
+    }
+    lastEndpoint = scYt.buildYoutubeSearchUrl(setting.base_url, query, '');
+    const eligible = [...(data.videos || []), ...(data.shorts || []), ...(data.lives || [])]
+      .filter((v) => v && v.id && v.channel && v.channel.id)
+      .filter((v) => (v.lengthSeconds || 0) >= effectiveMinSeconds)
+      .filter((v) => !exclusionTerms.some((t) => String(v.title || '').toLowerCase().includes(t)))
+      .filter((v) => !isExcludedYoutubeCreator(exclusions, v.channel.id, v.channel.title))
+      .sort((a, b) => (b.viewCountInt || 0) - (a.viewCountInt || 0));
+    for (const v of eligible) {
+      const cid = v.channel.id;
+      if (seedChannelIds.has(cid)) continue;
+      seedChannelIds.add(cid);
+      seeds.push({ videoId: v.id, url: v.url || `https://www.youtube.com/watch?v=${v.id}`, title: v.title, channelId: cid, channelTitle: v.channel.title, query });
+      break;
+    }
+  }
+  if (!seeds.length) throw new Error('关联扩展：关键词搜索未产出可用种子；请检查策略关键词。');
+
+  // 种子频道自身注册为候选来源（depth 0）
+  for (const seed of seeds) {
+    channelSignals.set(seed.channelId, {
+      channelId: seed.channelId, title: seed.channelTitle, handle: '',
+      seedIds: new Set([seed.videoId]), videoIds: new Set([seed.videoId]), positions: [1], depths: new Set([0]),
+      sampleVideoUrl: seed.url, sampleVideoTitle: seed.title
+    });
+    seenChannelIds.add(seed.channelId);
+  }
+  for (const seed of seeds) {
+    if (stopDepth || budgetLeft() <= 0) break;
+    await enrichChannel(seed.channelId);
+  }
+
+  // ---- 一跳：先展开全部种子聚合推荐关系，再统一富化 ----
+  const depth1Pending = new Set();
+  for (const seed of seeds) {
+    if (stopDepth || budgetLeft() <= 0) break;
+    await expandSeed(seed, 1, depth1Pending); // stopSeed 仅影响该种子自身，主循环继续
+  }
+  await enrichPending(depth1Pending);
+
+  // ---- 二跳：一跳视频按分数排序、每频道限 1 条、不足回补 ----
+  if (!stopDepth && budgetLeft() > 0) {
+    const hop1Videos = [...videoSignals.values()].filter((v) => v.depth === 1 && !expandedSeedIds.has(v.id));
+    hop1Videos.sort((a, b) => {
+      const d = scYt.graphScore(b.positions) - scYt.graphScore(a.positions);
+      if (d) return d;
+      const s = b.seedIds.size - a.seedIds.size;
+      if (s) return s;
+      return (b.views || 0) - (a.views || 0);
+    });
+    const hop2Seeds = [];
+    const hop2Channels = new Set();
+    for (const v of hop1Videos) {
+      if (hop2Channels.has(v.channelId)) continue;
+      hop2Channels.add(v.channelId);
+      hop2Seeds.push({ videoId: v.id, url: v.videoUrl, title: v.title, channelId: v.channelId, channelTitle: '' });
+      if (hop2Seeds.length >= WATCH_NEXT_LIMITS.MAX_DEPTH_2_SEEDS) break;
+    }
+    noNewStreak = 0; // depth 切换清零
+    stopDepth = false;
+    const depth2Pending = new Set();
+    for (const seed of hop2Seeds) {
+      if (stopDepth || budgetLeft() <= 0) break;
+      await expandSeed(seed, 2, depth2Pending);
+    }
+    await enrichPending(depth2Pending);
+  }
+
+  return {
+    provider: 'youtube_watch_next_expansion',
+    endpoint: lastEndpoint,
+    candidates: candidates.slice(0, targetQualifiedCount),
+    preflight_rejected: preflightRejected,
+    scanned_channel_count: seenChannelIds.size,
+    target_qualified_count: targetQualifiedCount,
+    max_scanned_channels: maxScannedChannels,
+    external_request_count: externalRequestCount,
+    cache_hit_count: cacheHitCount
+  };
 }
 
 function parseYoutubeDurationSeconds(value) {
@@ -2337,7 +2652,12 @@ async function runProvider(request, allowFallback) {
       throw new Error(`${PROVIDER_LABELS[request.discovery_route] || request.discovery_route} is an External Agent route. Use the Agent Brief/API import flow; Instagram native search is not used by default.`);
     }
     let maton = null;
-    if (source === 'maton_agent' || source === 'google_web') {
+    if (source === 'youtube_watch_next_expansion') {
+      if (request.target_platform !== 'youtube') {
+        throw new Error('youtube_watch_next_expansion is only available for target_platform=youtube');
+      }
+      maton = await youtubeWatchNextAdapter(request);
+    } else if (source === 'maton_agent' || source === 'google_web') {
       maton = await matonFinderAdapter(request);
     } else if (source === 'youtube_search') {
       maton = await youtubeSearchAdapter(request);
@@ -2715,7 +3035,9 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   const targetPlatform = clean(rawRequest.target_platform || options.targetPlatform || task.platform);
   const limit = Math.max(1, Math.min(Number(rawRequest.limit || options.limit || 10), 50));
   const keywords = discoveryKeywords(strategy);
-  const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
+  // 优先使用任务创建时确定的发现路线（search_sources 首项），缺省回退到当前数据源设置
+  const storedSource = parseJson(task.search_sources, [])[0];
+  const searchSource = clean(storedSource) || await preferredSearchSourceForTargetPlatform(targetPlatform);
   const request = buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetPlatform, limit);
   request.finder_task_id = task.id;
   if (['instagram', 'tiktok'].includes(targetPlatform)) {
@@ -3478,12 +3800,15 @@ router.get('/:id', async (req, res) => {
 
 // 创建 Finder 任务：Ready Strategy 绑定校验（requireActiveProduct）+ 事务插入 + 后台启动搜索。
 // 供 POST / 路由与工作台自动编排（workflowOrchestrator，策略批准后自动建任务）共用同一条创建路径。
-async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes = '' } = {}) {
+async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes = '', searchSource = '' } = {}) {
   if (!TARGET_PLATFORMS.includes(targetPlatform)) {
     throw new Error('Finder requires exactly one target_platform: youtube, instagram, or tiktok');
   }
   const safeLimit = Math.max(1, Math.min(Number(limit || 10), 50));
-  const searchSource = await preferredSearchSourceForTargetPlatform(targetPlatform);
+  // 显式 searchSource 需过白名单；缺省跟随系统数据源设置
+  const resolvedSearchSource = searchSource
+    ? validateSearchSource(targetPlatform, searchSource)
+    : await preferredSearchSourceForTargetPlatform(targetPlatform);
   const task = await sequelize.transaction(async (transaction) => {
     const strategy = await getReadyStrategy(strategyId, {
       requireActiveProduct: true,
@@ -3494,7 +3819,8 @@ async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes 
       strategy_id: strategy.id,
       campaign_product_id: strategy.campaign_product_id,
       target_platform: targetPlatform,
-      limit: safeLimit
+      limit: safeLimit,
+      search_source: resolvedSearchSource
     };
     const result = await scopedRun(
       'INSERT INTO finder_tasks ' +
@@ -3509,7 +3835,7 @@ async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes 
         targetPlatform,
         keywords,
         'draft',
-        JSON.stringify([searchSource]),
+        JSON.stringify([resolvedSearchSource]),
         JSON.stringify(['target_platform_first']),
         JSON.stringify(rawRequest),
         clean(notes),
@@ -3553,7 +3879,8 @@ router.post('/', async (req, res) => {
       strategyId: body.strategy_id,
       targetPlatform: clean(body.target_platform),
       limit: body.limit,
-      notes: body.notes
+      notes: body.notes,
+      searchSource: clean(body.search_source)
     });
     res.json({ success: true, data: task, message: 'Video Evidence Finder task started' });
   } catch (error) {
@@ -3582,6 +3909,7 @@ module.exports.creatorSearchIdentity = creatorSearchIdentity;
 module.exports.platformSearchCacheKey = platformSearchCacheKey;
 module.exports.rankedKeywordQueries = rankedKeywordQueries;
 module.exports.youtubeScrapeCreatorsAdapter = youtubeScrapeCreatorsAdapter;
+module.exports.youtubeWatchNextAdapter = youtubeWatchNextAdapter;
 module.exports.evaluateYoutubePreflight = evaluateYoutubePreflight;
 module.exports.normalizeCandidate = normalizeCandidate;
 module.exports.applyFinderGates = applyFinderGates;
@@ -3589,3 +3917,4 @@ module.exports.youtubePreflightConfig = youtubePreflightConfig;
 module.exports.finderScanLimit = finderScanLimit;
 module.exports.createFinderTask = createFinderTask;
 module.exports.markInterruptedFinderTasks = markInterruptedFinderTasks;
+module.exports.validateSearchSource = validateSearchSource;
