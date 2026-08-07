@@ -303,3 +303,71 @@ test('GET / 默认只返回进行中的当前项目，历史项目需显式 scop
     assert.match(captured[3], /active_project/, 'unknown scope falls back to active projects');
   });
 });
+
+// ---- 多邮箱：Campaign 绑定发件邮箱 ----
+
+test('POST /campaigns persists mailbox_id and rejects unknown mailbox', async () => {
+  const writes = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      const text = String(sql);
+      if (text.includes('FROM campaigns WHERE name = ?')) return null;
+      if (text.includes('FROM email_settings WHERE id = ?')) return { id: 3 };
+      if (text.includes('FROM campaigns WHERE id = ?')) return { id: 8, name: 'P', mailbox_id: 3 };
+      return null;
+    },
+    run: async (sql, params) => { writes.push({ sql: String(sql), params }); return { id: 8, changes: 1 }; }
+  }, async () => {
+    const res = await callHandler(findHandler(require('./campaigns'), 'post', '/'), {
+      body: { name: 'P', product: 'X', mailbox_id: 3 }
+    });
+    assert.equal(res.payload.success, true);
+    const insert = writes.find(({ sql }) => sql.includes('INSERT INTO campaigns'));
+    assert.ok(insert.sql.includes('mailbox_id'), 'INSERT should include mailbox_id column');
+    assert.equal(insert.params.at(-1), 3, 'mailbox_id persisted');
+  });
+
+  await withPatchedDb({
+    get: async (sql) => {
+      const text = String(sql);
+      if (text.includes('FROM campaigns WHERE name = ?')) return null;
+      if (text.includes('FROM email_settings WHERE id = ?')) return null;
+      return null;
+    }
+  }, async () => {
+    const res = await callHandler(findHandler(require('./campaigns'), 'post', '/'), {
+      body: { name: 'P2', product: 'X', mailbox_id: 999 }
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.payload.error, new RegExp('\u53d1\u4ef6\u90ae\u7bb1\u4e0d\u5b58\u5728'));
+  });
+});
+
+test('PUT /campaigns/:id can bind and clear mailbox_id', async () => {
+  const writes = [];
+  const existing = { id: 5, name: 'P', mailbox_id: 3 };
+  await withPatchedDb({
+    get: async (sql) => {
+      const text = String(sql);
+      if (text.includes('FROM campaigns WHERE id = ?')) return existing;
+      if (text.includes('WHERE name = ? AND id != ?')) return null;
+      if (text.includes('FROM email_settings WHERE id = ?')) return { id: 7 };
+      return null;
+    },
+    run: async (sql, params) => { writes.push({ sql: String(sql), params }); return { id: 0, changes: 1 }; }
+  }, async () => {
+    await callHandler(findHandler(require('./campaigns'), 'put', '/:id'), {
+      params: { id: '5' }, body: { name: 'P', mailbox_id: 7 }
+    });
+    let update = writes.find(({ sql }) => sql.includes('UPDATE campaigns SET'));
+    assert.equal(update.sql.split('mailbox_id = ?').length - 1, 1, 'UPDATE should assign mailbox_id directly');
+    assert.equal(update.params[7], 7, 'mailbox_id param sits after negative_keywords');
+
+    writes.length = 0;
+    await callHandler(findHandler(require('./campaigns'), 'put', '/:id'), {
+      params: { id: '5' }, body: { name: 'P', mailbox_id: null }
+    });
+    update = writes.find(({ sql }) => sql.includes('UPDATE campaigns SET'));
+    assert.equal(update.params[7], null, 'explicit null clears the binding');
+  });
+});

@@ -2,6 +2,12 @@ const express = require('express');
 const { dbOperations } = require('../database');
 
 const router = express.Router();
+async function mailboxExists(id) {
+  if (!id) return true;
+  const row = await dbOperations.get('SELECT id FROM email_settings WHERE id = ?', [id]);
+  return Boolean(row);
+}
+
 
 const CAMPAIGN_PRODUCT_ROLES = new Set(['hero', 'secondary', 'test']);
 const CAMPAIGN_PRODUCT_STATUSES = new Set(['planned', 'active', 'paused', 'completed', 'archived']);
@@ -519,7 +525,7 @@ router.post('/:campaignId/products/:campaignProductId/archive', async (req, res)
 router.post('/', async (req, res) => {
   try {
     const {
-      name, brand, product, period, brand_keywords, purchase_keywords, negative_keywords
+      name, brand, product, period, brand_keywords, purchase_keywords, negative_keywords, mailbox_id
     } = req.body;
     if (!name) {
       return res.status(400).json({ success: false, error: '产品/活动名称为必填字段' });
@@ -530,14 +536,19 @@ router.post('/', async (req, res) => {
       return res.json({ success: true, data: existing, message: '产品/活动已存在' });
     }
 
+    if (!(await mailboxExists(mailbox_id))) {
+      return res.status(400).json({ success: false, error: '发件邮箱不存在' });
+    }
+
     const result = await dbOperations.run(
       `INSERT INTO campaigns
         (name, brand, product, campaign_type, status, period,
-         brand_keywords, purchase_keywords, negative_keywords)
-       VALUES (?, ?, ?, 'active_project', 'active', ?, ?, ?, ?)`,
+         brand_keywords, purchase_keywords, negative_keywords, mailbox_id)
+       VALUES (?, ?, ?, 'active_project', 'active', ?, ?, ?, ?, ?)`,
       [
         name.trim(), brand || '', product || '', period || '',
-        brand_keywords || '', purchase_keywords || '', negative_keywords || ''
+        brand_keywords || '', purchase_keywords || '', negative_keywords || '',
+        mailbox_id || null
       ]
     );
     const created = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [result.id]);
@@ -550,7 +561,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name, brand, product, period, brand_keywords, purchase_keywords, negative_keywords } = req.body;
+    const { name, brand, product, period, brand_keywords, purchase_keywords, negative_keywords, mailbox_id } = req.body;
     const cleanName = String(name || '').trim();
 
     if (!cleanName) {
@@ -567,6 +578,10 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: '已存在同名产品/活动' });
     }
 
+    if (!(await mailboxExists(mailbox_id))) {
+      return res.status(400).json({ success: false, error: '发件邮箱不存在' });
+    }
+
     await dbOperations.run(
       `UPDATE campaigns SET
        name = ?,
@@ -576,6 +591,7 @@ router.put('/:id', async (req, res) => {
        brand_keywords = COALESCE(?, brand_keywords),
        purchase_keywords = COALESCE(?, purchase_keywords),
        negative_keywords = COALESCE(?, negative_keywords),
+       mailbox_id = ?,
        updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
@@ -586,6 +602,7 @@ router.put('/:id', async (req, res) => {
         brand_keywords ?? null,
         purchase_keywords ?? null,
         negative_keywords ?? null,
+        mailbox_id === undefined ? campaign.mailbox_id : (mailbox_id || null),
         id
       ]
     );
