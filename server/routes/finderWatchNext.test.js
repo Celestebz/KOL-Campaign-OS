@@ -5,7 +5,8 @@ require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '.env') });
 require('dotenv').config();
 
 process.env.NODE_ENV = 'test';
-process.env.DB_NAME = process.env.DB_NAME_TEST || 'kol_campaign_os_test';
+// 独立的测试库名：避免与 finderTasks.test.js 等并行运行时互相 DROP 同一个库
+process.env.DB_NAME = 'kol_campaign_os_test_wn';
 
 const { Sequelize } = require('sequelize');
 const { initDatabase, dbOperations } = require('../database');
