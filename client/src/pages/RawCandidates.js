@@ -189,6 +189,7 @@ const RawCandidates = ({ view = 'candidates' }) => {
   const [globalRiskRecord, setGlobalRiskRecord] = useState(null);
   const [riskForm] = Form.useForm();
   const [taskForm] = Form.useForm();
+  const watchedTaskPlatform = Form.useWatch('target_platform', taskForm);
 
   const campaignOptions = useMemo(() => campaigns.map((item) => ({
     value: item.id,
@@ -394,7 +395,8 @@ const RawCandidates = ({ view = 'candidates' }) => {
       await axios.post('/api/finder-tasks', buildFinderTaskRequest({
         strategyId: selectedStrategy.id,
         targetPlatform: values.target_platform,
-        limit: values.limit
+        limit: values.limit,
+        searchSource: values.search_source
       }));
       message.success('视频证据寻找任务已启动');
       setTaskModalOpen(false);
@@ -753,6 +755,11 @@ const RawCandidates = ({ view = 'candidates' }) => {
           <Form.Item label="目标平台" name="target_platform" rules={[{ required: true, message: '请选择一个目标平台' }]}>
             <Select options={platformOptions} />
           </Form.Item>
+          {watchedTaskPlatform === 'youtube' ? (
+            <Form.Item label="发现方式" name="search_source" tooltip="默认跟随系统数据源设置；关联推荐扩展会沿优质视频的推荐位挖掘相似频道">
+              <Select allowClear placeholder="默认（跟随数据源设置）" options={[{ value: 'youtube_watch_next_expansion', label: '关联推荐扩展（YouTube）' }]} />
+            </Form.Item>
+          ) : null}
           <Form.Item label="视频数量上限" name="limit" rules={[{ required: true, message: '请输入视频数量上限' }]}>
             <InputNumber min={1} max={50} style={{ width: '100%' }} />
           </Form.Item>

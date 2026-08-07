@@ -23,3 +23,7 @@ test('Finder and Strategy pages contain no legacy Cycle controls', () => {
 
   expect(pages).not.toMatch(/\bcycle|search_strategy|search_intensity|execution_mode|target_platforms|limit_per_platform/i);
 });
+test('buildFinderTaskRequest 仅在显式给出时携带 search_source', () => {
+  expect(buildFinderTaskRequest({ strategyId: 1, targetPlatform: 'youtube' })).not.toHaveProperty('search_source');
+  expect(buildFinderTaskRequest({ strategyId: 1, targetPlatform: 'youtube', searchSource: 'youtube_watch_next_expansion' }).search_source).toBe('youtube_watch_next_expansion');
+});

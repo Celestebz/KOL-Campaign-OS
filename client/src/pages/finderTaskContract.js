@@ -8,10 +8,11 @@ export const evidenceSignalLabels = {
   community: '社区'
 };
 
-export const buildFinderTaskRequest = ({ strategyId, targetPlatform, limit = 10 }) => ({
+export const buildFinderTaskRequest = ({ strategyId, targetPlatform, limit = 10, searchSource = '' }) => ({
   strategy_id: strategyId,
   target_platform: targetPlatform,
-  limit
+  limit,
+  ...(searchSource ? { search_source: searchSource } : {})
 });
 
 export const normalizeEvidenceSignals = (value) => {
