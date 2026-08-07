@@ -5,6 +5,7 @@
 // 注：imapflow / aiClient 通过模块对象引用（非解构），便于测试 monkey-patch。
 const imapflow = require('imapflow');
 const { dbOperations } = require('../database');
+const emailMailboxes = require('./emailMailboxes');
 const emailReplyPoller = require('./emailReplyPoller');
 const emailFilterService = require('./emailFilterService');
 const emailBounceService = require('./emailBounceService');
@@ -22,27 +23,31 @@ const RECONNECT_DELAYS_MS = [5000, 15000, 30000, 60000];
 const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 const SYNC_MODES = new Set(['idle', 'poll', 'off']);
 
-const state = {
-  mode: 'off',
-  status: 'off', // connecting | connected | reconnecting | failed | off
-  lastMailAt: null,
-  lastFullSyncAt: null,
-  lastError: null,
-  reconnectAttempts: 0,
-  connectedSince: null
-};
-
-let client = null;
-let idleTask = null;
-let pollTimer = null;
+// 多邮箱：每个启用邮箱一个 worker（IDLE 长连接或定时轮询），各自维护 last_uid 游标
+const workers = new Map(); // mailboxId -> worker
 let fullScanTimer = null;
-let stopping = false;
-let fetching = false;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function getSettings() {
-  return dbOperations.get('SELECT * FROM email_settings ORDER BY id LIMIT 1');
+function makeWorker(settings) {
+  return {
+    mailboxId: settings.id,
+    settings,
+    client: null,
+    idleTask: null,
+    pollTimer: null,
+    stopping: false,
+    fetching: false,
+    state: {
+      mode: 'off',
+      status: 'off', // connecting | connected | reconnecting | failed | off
+      lastMailAt: null,
+      lastFullSyncAt: null,
+      lastError: null,
+      reconnectAttempts: 0,
+      connectedSince: null
+    }
+  };
 }
 
 function makeClient(settings) {
@@ -69,7 +74,7 @@ async function assignThreadSafely(params) {
 }
 
 // 处理一封已抓取的邮件：幂等去重 → MIME 解析（失败回退旧解析器）→ 匹配 → 入库 → 会话归属 → AI 摘要（仅已匹配）
-async function processFetchedMessage(message) {
+async function processFetchedMessage(message, mailboxId) {
   const uid = message.uid;
   const messageId = message.envelope?.messageId || `uid-${uid}`;
   const existing = await dbOperations.get('SELECT id FROM email_replies WHERE message_id = ? LIMIT 1', [messageId]);
@@ -100,13 +105,14 @@ async function processFetchedMessage(message) {
     const result = await dbOperations.run(
       `INSERT INTO email_replies
        (email_record_id, campaign_id, customer_id, from_address, message_id, subject, body_text, received_at,
+        mailbox_id,
         ai_status, confirm_status, classification, classification_source, classification_reason, classified_at,
         created_at, updated_at,
         in_reply_to, references_json, clean_body_text, body_html, quoted_body_text, signature_text,
         raw_source, parse_status, parse_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
-       subject, bodyText, receivedAt, confirmStatus,
+       subject, bodyText, receivedAt, mailboxId || null, confirmStatus,
        classification, classificationSource, classificationReason,
        parseOk ? toStoredMessageId(parsed.inReplyTo) : null,
        parseOk ? JSON.stringify((parsed.references || []).map(toStoredMessageId)) : null,
@@ -147,12 +153,11 @@ async function processFetchedMessage(message) {
 }
 
 // UID 增量抓取：只处理 uid > last_uid 的邮件并推进游标（逐封持久化，崩溃不重复）
-async function fetchNew(activeClient) {
-  if (fetching) return { fetched: 0, matched: 0, unmatched: 0, busy: true };
-  fetching = true;
+async function fetchNew(worker, activeClient = worker.client) {
+  if (worker.fetching) return { fetched: 0, matched: 0, unmatched: 0, busy: true };
+  worker.fetching = true;
+  const settings = worker.settings;
   try {
-    const settings = await getSettings();
-    if (!settings) return { fetched: 0, matched: 0, unmatched: 0 };
     let lastUid = Number(settings.last_uid) || 0;
     if (!lastUid) {
       // 首次初始化：只收启用之后的新邮件，历史邮件由一次性导入补齐
@@ -167,68 +172,64 @@ async function fetchNew(activeClient) {
     const range = `${lastUid + 1}:*`;
     for await (const message of activeClient.fetch(range, { envelope: true, bodyParts: ['text'], source: true }, { uid: true })) {
       if (!message?.uid || message.uid <= lastUid) continue;
-      const outcome = await processFetchedMessage(message);
+      const outcome = await processFetchedMessage(message, settings.id);
       fetched += 1;
       if (outcome.duplicate) { /* 不计入 */ } else if (outcome.matched) matched += 1;
       else unmatched += 1;
       lastUid = message.uid;
-      state.lastMailAt = new Date();
+      settings.last_uid = lastUid;
+      worker.state.lastMailAt = new Date();
       await dbOperations.run('UPDATE email_settings SET last_uid = ? WHERE id = ?', [lastUid, settings.id]);
     }
     return { fetched, matched, unmatched };
   } finally {
-    fetching = false;
+    worker.fetching = false;
   }
 }
 
-async function fetchNewSafe(activeClient) {
+async function fetchNewSafe(worker, activeClient) {
   try {
-    return await fetchNew(activeClient);
+    return await fetchNew(worker, activeClient);
   } catch (error) {
-    state.lastError = error.message;
+    worker.state.lastError = error.message;
     return { fetched: 0, matched: 0, unmatched: 0, error: error.message };
   }
 }
 
-async function runIdleLoop() {
+async function runIdleLoop(worker) {
+  const settings = worker.settings;
   let attempt = 0;
-  while (!stopping) {
-    const settings = await getSettings();
-    if (!settings?.imap_host || !settings?.username || !settings?.password) {
-      state.status = 'failed';
-      state.lastError = 'IMAP 未配置完整';
-      return;
-    }
+  while (!worker.stopping) {
     try {
-      state.status = attempt ? 'reconnecting' : 'connecting';
-      state.reconnectAttempts = attempt;
-      client = makeClient(settings);
-      await client.connect();
-      await client.mailboxOpen('INBOX');
+      worker.state.status = attempt ? 'reconnecting' : 'connecting';
+      worker.state.reconnectAttempts = attempt;
+      worker.client = makeClient(settings);
+      await worker.client.connect();
+      await worker.client.mailboxOpen('INBOX');
       attempt = 0;
-      state.status = 'connected';
-      state.connectedSince = new Date();
-      state.lastError = null;
-      state.reconnectAttempts = 0;
+      worker.state.status = 'connected';
+      worker.state.connectedSince = new Date();
+      worker.state.lastError = null;
+      worker.state.reconnectAttempts = 0;
       // 连接/重连后立即补扫，覆盖断线窗口
-      const catchUp = await fetchNewSafe(client);
-      if (!catchUp.busy && !catchUp.error) state.lastFullSyncAt = new Date();
-      client.on('exists', () => { fetchNewSafe(client); });
-      client.on('error', () => {});
-      while (!stopping && client.usable) {
-        await client.idle();
-        await fetchNewSafe(client);
+      const catchUp = await fetchNewSafe(worker);
+      if (!catchUp.busy && !catchUp.error) worker.state.lastFullSyncAt = new Date();
+      worker.client.on('exists', () => { fetchNewSafe(worker); });
+      worker.client.on('error', () => {});
+      while (!worker.stopping && worker.client.usable) {
+        await worker.client.idle();
+        await fetchNewSafe(worker);
       }
-      if (stopping) break;
+      if (worker.stopping) break;
       throw new Error('IDLE 连接已断开');
     } catch (error) {
-      state.lastError = error.message;
-      state.status = 'reconnecting';
-      state.reconnectAttempts = attempt + 1;
-      console.error(`[email] IDLE 连接异常（第 ${attempt + 1} 次重连）:`, error.message);
-      try { await client?.logout(); } catch { /* ignore */ }
-      client = null;
-      if (stopping) break;
+      worker.state.lastError = error.message;
+      worker.state.status = 'reconnecting';
+      worker.state.reconnectAttempts = attempt + 1;
+      console.error(`[email] IDLE 连接异常（邮箱 ${settings.username}，第 ${attempt + 1} 次重连）:`, error.message);
+      try { await worker.client?.logout(); } catch { /* ignore */ }
+      worker.client = null;
+      if (worker.stopping) break;
       const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)];
       attempt += 1;
       await sleep(delay);
@@ -236,95 +237,136 @@ async function runIdleLoop() {
   }
 }
 
-async function pollOnceLive() {
-  const settings = await getSettings();
-  if (!settings?.imap_host || !settings?.username || !settings?.password) return;
-  const pollClient = makeClient(settings);
+// poll 模式：一次性连接补扫后断开
+async function pollOnceLive(worker) {
+  const oneShot = makeClient(worker.settings);
   try {
-    await pollClient.connect();
-    await pollClient.mailboxOpen('INBOX');
-    const result = await fetchNewSafe(pollClient);
-    if (!result.error) state.lastFullSyncAt = new Date();
-    await pollClient.logout();
+    await oneShot.connect();
+    await oneShot.mailboxOpen('INBOX');
+    const result = await fetchNewSafe(worker, oneShot);
+    if (!result.error && !result.busy) worker.state.lastFullSyncAt = new Date();
+    await oneShot.logout();
   } catch (error) {
-    state.lastError = error.message;
-    try { await pollClient.logout(); } catch { /* ignore */ }
+    worker.state.lastError = error.message;
+    worker.state.status = 'failed';
+    try { await oneShot.logout(); } catch { /* ignore */ }
   }
 }
 
+function startWorker(settings) {
+  const mode = SYNC_MODES.has(settings?.sync_mode) ? settings.sync_mode : 'idle';
+  const worker = makeWorker(settings);
+  worker.state.mode = mode;
+  workers.set(settings.id, worker);
+
+  if (mode === 'off' || !settings?.imap_host || !settings?.username || !settings?.password) {
+    worker.state.status = 'off';
+    return worker;
+  }
+  if (mode === 'poll') {
+    const minutes = Number(settings.poll_interval_minutes) || 5;
+    worker.state.status = 'connected';
+    console.log(`[email] 回复追踪（${settings.username}）：定时轮询模式，每 ${minutes} 分钟一次。`);
+    worker.pollTimer = setInterval(() => pollOnceLive(worker), minutes * 60 * 1000);
+    worker.pollTimer.unref();
+    return worker;
+  }
+  console.log(`[email] 回复追踪（${settings.username}）：实时监听模式（IMAP IDLE）。`);
+  worker.idleTask = runIdleLoop(worker);
+  return worker;
+}
+
+async function stopWorker(worker) {
+  worker.stopping = true;
+  if (worker.pollTimer) { clearInterval(worker.pollTimer); worker.pollTimer = null; }
+  try { await worker.client?.logout(); } catch { /* ignore */ }
+  worker.client = null;
+  if (worker.idleTask) { await worker.idleTask.catch(() => {}); worker.idleTask = null; }
+}
+
 async function stopMachinery() {
-  stopping = true;
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (fullScanTimer) { clearInterval(fullScanTimer); fullScanTimer = null; }
-  try { await client?.logout(); } catch { /* ignore */ }
-  client = null;
-  if (idleTask) { await idleTask.catch(() => {}); idleTask = null; }
+  for (const worker of workers.values()) await stopWorker(worker);
+  workers.clear();
 }
 
 async function startEmailSync() {
   // 测试环境不建立真实连接（node --test 默认 NODE_ENV=test）
-  if (process.env.NODE_ENV === 'test') {
-    state.mode = 'off';
-    state.status = 'off';
-    return;
-  }
+  if (process.env.NODE_ENV === 'test') return;
   await stopMachinery();
-  stopping = false;
   const backfilled = await emailBounceService.backfillSystemMails().catch((error) => {
     console.error('[email] 历史系统邮件整理失败:', error.message);
     return 0;
   });
-  if (backfilled > 0) console.log(`[email] 已整理 ${backfilled} 封历史系统邮件/退信。`);
-  const settings = await getSettings();
-  const mode = SYNC_MODES.has(settings?.sync_mode) ? settings.sync_mode : 'idle';
-  state.mode = mode;
+  if (backfilled > 0) console.log(`[email] 已整理 ${backfilled} 封历史系统邮件（退信）。`);
 
-  if (mode === 'off' || !settings?.imap_host) {
-    state.status = 'off';
-    console.log('[email] 回复同步已关闭（收信模式 off 或未配置 IMAP）。');
+  const rows = await emailMailboxes.listMailboxes({ enabledOnly: true });
+  for (const settings of rows) startWorker(settings);
+  if (!rows.length) {
+    console.log('[email] 回复同步已关闭（无启用的邮箱）。');
     return;
   }
-  if (mode === 'poll') {
-    const minutes = Number(settings.poll_interval_minutes) || 5;
-    state.status = 'connected';
-    console.log(`[email] 回复追踪：定时轮询模式，每 ${minutes} 分钟一次。`);
-    pollTimer = setInterval(() => pollOnceLive(), minutes * 60 * 1000);
-    pollTimer.unref();
-    return;
-  }
-  console.log('[email] 回复追踪：实时监听模式（IMAP IDLE），15 分钟补偿扫描。');
-  idleTask = runIdleLoop();
+  // 15 分钟补偿扫描：遍历所有已连接的 worker
   fullScanTimer = setInterval(async () => {
-    if (client && state.status === 'connected') {
-      const result = await fetchNewSafe(client);
-      if (!result.error && !result.busy) state.lastFullSyncAt = new Date();
+    for (const worker of workers.values()) {
+      if (worker.client && worker.state.status === 'connected') {
+        const result = await fetchNewSafe(worker);
+        if (!result.error && !result.busy) worker.state.lastFullSyncAt = new Date();
+      }
     }
   }, FULL_SCAN_INTERVAL_MS);
   fullScanTimer.unref();
 }
 
-async function restartEmailSync() {
-  await stopMachinery();
-  await startEmailSync();
+async function restartEmailSync(mailboxId = null) {
+  if (process.env.NODE_ENV === 'test') return;
+  if (!mailboxId) {
+    await startEmailSync();
+    return;
+  }
+  const id = Number(mailboxId);
+  const worker = workers.get(id);
+  if (worker) {
+    await stopWorker(worker);
+    workers.delete(id);
+  }
+  const settings = await emailMailboxes.getMailboxById(id);
+  if (settings && settings.enabled) startWorker(settings);
 }
 
-// 「立即同步一次」：IDLE 模式复用长连接，其他模式一次性连接补扫
-async function syncNow() {
-  if (state.mode === 'idle' && client && state.status === 'connected') {
-    const result = await fetchNew(client);
-    if (!result.error) state.lastFullSyncAt = new Date();
+// “立即同步一次”：带 id 只同步该邮箱；不带 id 聚合所有启用邮箱
+async function syncNow(mailboxId = null) {
+  const targets = mailboxId
+    ? [await emailMailboxes.getMailboxById(Number(mailboxId))].filter(Boolean)
+    : await emailMailboxes.listMailboxes({ enabledOnly: true });
+  const total = { fetched: 0, matched: 0, unmatched: 0 };
+  for (const settings of targets) {
+    const result = await syncMailboxNow(settings);
+    total.fetched += result.fetched;
+    total.matched += result.matched;
+    total.unmatched += result.unmatched;
+  }
+  return total;
+}
+
+async function syncMailboxNow(settings) {
+  const worker = workers.get(settings.id);
+  // IDLE 模式复用长连接，其他模式一次性连接补扫
+  if (worker?.state.mode === 'idle' && worker.client && worker.state.status === 'connected') {
+    const result = await fetchNew(worker);
+    if (!result.error) worker.state.lastFullSyncAt = new Date();
     return result;
   }
-  const settings = await getSettings();
   if (!settings?.imap_host || !settings?.username || !settings?.password) {
-    throw new Error('IMAP 未配置完整');
+    throw new Error(`邮箱 ${settings?.username || settings?.id} 的 IMAP 未配置完整`);
   }
   const oneShot = makeClient(settings);
   try {
     await oneShot.connect();
     await oneShot.mailboxOpen('INBOX');
-    const result = await fetchNew(oneShot);
-    state.lastFullSyncAt = new Date();
+    const tempWorker = makeWorker(settings);
+    const result = await fetchNew(tempWorker, oneShot);
+    if (worker) worker.state.lastFullSyncAt = new Date();
     await oneShot.logout();
     return result;
   } catch (error) {
@@ -333,8 +375,10 @@ async function syncNow() {
   }
 }
 
-async function testImapConnection() {
-  const settings = await getSettings();
+async function testImapConnection(mailboxId = null) {
+  const settings = mailboxId
+    ? await emailMailboxes.getMailboxById(Number(mailboxId))
+    : await emailMailboxes.getDefaultMailbox();
   if (!settings?.imap_host || !settings?.username || !settings?.password) {
     throw new Error('IMAP 未配置完整');
   }
@@ -351,16 +395,23 @@ async function testImapConnection() {
   }
 }
 
-function getEmailSyncStatus() {
-  return {
-    mode: state.mode,
-    status: state.status,
-    last_mail_at: state.lastMailAt,
-    last_full_sync_at: state.lastFullSyncAt,
-    last_error: state.lastError,
-    reconnect_attempts: state.reconnectAttempts,
-    connected_since: state.connectedSince
-  };
+async function getEmailSyncStatus() {
+  const rows = await emailMailboxes.listMailboxes();
+  return rows.map((row) => {
+    const worker = workers.get(row.id);
+    return {
+      mailbox_id: row.id,
+      username: row.username,
+      label: row.label,
+      mode: worker?.state.mode || row.sync_mode || 'off',
+      status: worker?.state.status || 'off',
+      last_mail_at: worker?.state.lastMailAt || null,
+      last_full_sync_at: worker?.state.lastFullSyncAt || null,
+      last_error: worker?.state.lastError || null,
+      reconnect_attempts: worker?.state.reconnectAttempts || 0,
+      connected_since: worker?.state.connectedSince || null
+    };
+  });
 }
 
 module.exports = {

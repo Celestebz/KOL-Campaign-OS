@@ -168,7 +168,7 @@ router.post("/settings/:id/default", async (req, res) => {
 // GET /api/emails/settings/sync-status
 router.get("/settings/sync-status", async (req, res) => {
   try {
-    res.json({ success: true, data: emailLiveSync.getEmailSyncStatus() });
+    res.json({ success: true, data: await emailLiveSync.getEmailSyncStatus() });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
