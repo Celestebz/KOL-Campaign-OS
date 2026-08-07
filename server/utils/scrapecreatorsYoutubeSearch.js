@@ -176,6 +176,41 @@ function scCommentsToNormalized(data = {}, limit = 100) {
   }));
 }
 
+// 关联推荐扩展（watchNextVideos）纯函数。position 由调用方按下标（1 起）赋。
+function extractWatchNext(data = {}) {
+  const list = Array.isArray(data?.watchNextVideos) ? data.watchNextVideos : [];
+  const out = [];
+  for (const entry of list) {
+    if (!entry?.id || !entry?.channel?.id) continue;
+    out.push({
+      id: entry.id,
+      title: clean(entry.title),
+      views: entry.viewCountInt != null ? Number(entry.viewCountInt) : null,
+      lengthSeconds: Number(entry.lengthInSeconds ?? entry.lengthSeconds) || 0,
+      publishedTime: clean(entry.publishedTime),
+      channel: {
+        id: clean(entry.channel.id),
+        title: clean(entry.channel.title),
+        handle: clean(entry.channel.handle).replace(/^@/, '')
+      },
+      videoUrl: clean(entry.videoUrl) || `https://www.youtube.com/watch?v=${entry.id}`
+    });
+  }
+  return out;
+}
+
+function positionWeight(position) {
+  const p = Number(position) || 0;
+  if (p >= 1 && p <= 5) return 20;
+  if (p >= 6 && p <= 10) return 12;
+  if (p >= 11 && p <= 20) return 5;
+  return 0;
+}
+
+function graphScore(positions) {
+  return (Array.isArray(positions) ? positions : []).reduce((sum, p) => sum + positionWeight(p), 0);
+}
+
 module.exports = {
   buildYoutubeSearchUrl,
   buildYoutubeChannelUrl,
@@ -188,5 +223,8 @@ module.exports = {
   toV3ChannelItem,
   toV3VideoItems,
   scVideoDetailToNormalized,
-  scCommentsToNormalized
+  scCommentsToNormalized,
+  extractWatchNext,
+  positionWeight,
+  graphScore
 };

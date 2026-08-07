@@ -123,3 +123,38 @@ test('scCommentsToNormalized 截取前 100 条并映射作者/点赞', () => {
     like_count: 1, commented_at: '2026-01-01T00:00:00Z', raw: out[1].raw
   });
 });
+
+const { extractWatchNext, positionWeight, graphScore } = require('./scrapecreatorsYoutubeSearch');
+
+test('extractWatchNext 提取关联视频并兜底空值', () => {
+  const out = extractWatchNext({
+    watchNextVideos: [
+      { id: 'a', title: 'T1', viewCountInt: 1000, lengthInSeconds: 300, publishedTime: '2026-01-01T00:00:00Z', channel: { id: 'UC1', title: 'C1', handle: 'c1' }, videoUrl: 'https://www.youtube.com/watch?v=a' },
+      { id: 'b', title: 'T2', channel: { id: 'UC2' } },
+      { title: 'no id' },
+      { id: 'c', title: 'no channel' }
+    ]
+  });
+  assert.equal(out.length, 2);
+  assert.deepEqual(out[0], { id: 'a', title: 'T1', views: 1000, lengthSeconds: 300, publishedTime: '2026-01-01T00:00:00Z', channel: { id: 'UC1', title: 'C1', handle: 'c1' }, videoUrl: 'https://www.youtube.com/watch?v=a' });
+  assert.deepEqual(out[1], { id: 'b', title: 'T2', views: null, lengthSeconds: 0, publishedTime: '', channel: { id: 'UC2', title: '', handle: '' }, videoUrl: 'https://www.youtube.com/watch?v=b' });
+  assert.deepEqual(extractWatchNext({}), []);
+  assert.deepEqual(extractWatchNext(null), []);
+});
+
+test('positionWeight 分段', () => {
+  assert.equal(positionWeight(1), 20);
+  assert.equal(positionWeight(5), 20);
+  assert.equal(positionWeight(6), 12);
+  assert.equal(positionWeight(10), 12);
+  assert.equal(positionWeight(11), 5);
+  assert.equal(positionWeight(20), 5);
+  assert.equal(positionWeight(21), 0);
+});
+
+test('graphScore 纯位置权重求和（不乘种子数）', () => {
+  assert.equal(graphScore([3, 8]), 32);
+  assert.equal(graphScore([1]), 20);
+  assert.equal(graphScore([]), 0);
+  assert.equal(graphScore([1, 1, 1]), 60);
+});
