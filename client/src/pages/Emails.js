@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import axios from 'axios';
 import {
-  getEmailSettings, saveEmailSettings, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
+  getEmailSettings, createEmailMailbox, saveEmailSettings, deleteEmailMailbox, setDefaultEmailMailbox, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
   getReplyTodos, getUnmatchedReplies, getBlockedReplies, getSystemEmails, bindReply, confirmReply, ignoreReply,
@@ -1131,29 +1131,31 @@ const formatSyncTime = (value) => (value ? new Date(value).toLocaleString('zh-CN
 
 function SettingsTab() {
   const [form] = Form.useForm();
-  const [loading, setLoading] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testingImap, setTestingImap] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState(null);
+  const [mailboxes, setMailboxes] = useState([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [syncStatuses, setSyncStatuses] = useState([]);
+  const [editing, setEditing] = useState(null); // null=关闭弹窗；{}=新增；row=编辑
+  const [saving, setSaving] = useState(false);
   const [filterRules, setFilterRules] = useState([]);
   const [rulesLoading, setRulesLoading] = useState(false);
   const [newRuleType, setNewRuleType] = useState('sender');
   const [newRuleValue, setNewRuleValue] = useState('');
   const syncMode = Form.useWatch('sync_mode', form);
 
-  const fetchSettings = useCallback(async () => {
+  const fetchMailboxes = useCallback(async () => {
+    setListLoading(true);
     try {
-      const data = await getEmailSettings();
-      if (data) form.setFieldsValue(data);
+      setMailboxes(await getEmailSettings());
     } catch (error) {
-      message.error('获取邮箱设置失败');
+      message.error('获取邮箱列表失败');
+    } finally {
+      setListLoading(false);
     }
-  }, [form]);
+  }, []);
 
   const fetchSyncStatus = useCallback(async () => {
     try {
-      setSyncStatus(await getEmailSyncStatus());
+      setSyncStatuses(await getEmailSyncStatus());
     } catch (error) {
       // 状态接口失败不影响配置页
     }
@@ -1170,7 +1172,7 @@ function SettingsTab() {
     }
   }, []);
 
-  useEffect(() => { fetchSettings(); fetchSyncStatus(); fetchFilterRules(); }, [fetchSettings, fetchSyncStatus, fetchFilterRules]);
+  useEffect(() => { fetchMailboxes(); fetchSyncStatus(); fetchFilterRules(); }, [fetchMailboxes, fetchSyncStatus, fetchFilterRules]);
 
   // 收信状态每 15 秒刷新一次
   useEffect(() => {
@@ -1178,54 +1180,86 @@ function SettingsTab() {
     return () => clearInterval(timer);
   }, [fetchSyncStatus]);
 
+  const openEditor = (row) => {
+    setEditing(row || {});
+    form.resetFields();
+    if (row) form.setFieldsValue(row);
+  };
+
   const handleSave = async () => {
     const values = await form.validateFields();
-    setLoading(true);
+    setSaving(true);
     try {
-      await saveEmailSettings(values);
+      if (editing?.id) await saveEmailSettings(editing.id, values);
+      else await createEmailMailbox(values);
       message.success('邮箱设置已保存，收信监听已重启');
+      setEditing(null);
+      fetchMailboxes();
       setTimeout(fetchSyncStatus, 1500);
     } catch (error) {
       message.error(error.response?.data?.error || '保存失败');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
-  const handleTest = async () => {
-    setTesting(true);
+  const handleToggleEnabled = async (row, enabled) => {
     try {
-      const msg = await testEmailSettings();
+      await saveEmailSettings(row.id, { ...row, enabled });
+      message.success(enabled ? '邮箱已启用' : '邮箱已停用');
+      fetchMailboxes();
+      setTimeout(fetchSyncStatus, 1500);
+    } catch (error) {
+      message.error(error.response?.data?.error || '操作失败');
+    }
+  };
+
+  const handleSetDefault = async (row) => {
+    try {
+      await setDefaultEmailMailbox(row.id);
+      message.success('已设为默认邮箱');
+      fetchMailboxes();
+    } catch (error) {
+      message.error(error.response?.data?.error || '操作失败');
+    }
+  };
+
+  const handleDelete = async (row) => {
+    try {
+      await deleteEmailMailbox(row.id);
+      message.success('邮箱已删除');
+      fetchMailboxes();
+      fetchSyncStatus();
+    } catch (error) {
+      message.error(error.response?.data?.error || '删除失败');
+    }
+  };
+
+  const handleTest = async (row) => {
+    try {
+      const msg = await testEmailSettings(row.id);
       message.success(msg || 'SMTP 连接成功');
     } catch (error) {
       message.error(error.response?.data?.error || '连接失败');
-    } finally {
-      setTesting(false);
     }
   };
 
-  const handleTestImap = async () => {
-    setTestingImap(true);
+  const handleTestImap = async (row) => {
     try {
-      const msg = await testImapSettings();
+      const msg = await testImapSettings(row.id);
       message.success(msg || 'IMAP 连接成功');
     } catch (error) {
       message.error(error.response?.data?.error || 'IMAP 连接失败');
-    } finally {
-      setTestingImap(false);
     }
   };
 
-  const handleSyncNow = async () => {
-    setSyncing(true);
+  const handleSyncNow = async (row) => {
     try {
-      const msg = await syncEmailNow();
+      const msg = await syncEmailNow(row.id);
       message.success(msg || '同步完成');
       fetchSyncStatus();
     } catch (error) {
       message.error(error.response?.data?.error || '同步失败');
-    } finally {
-      setSyncing(false);
     }
   };
 
@@ -1263,12 +1297,69 @@ function SettingsTab() {
     }
   };
 
-  const statusLabel = SYNC_STATUS_LABELS[syncStatus?.status] || { text: syncStatus?.status || '-', color: 'default' };
+  const statusByMailbox = new Map(syncStatuses.map((s) => [s.mailbox_id, s]));
 
   return (
-    <div style={{ maxWidth: 760 }}>
-      <Card title="企业邮箱配置">
+    <div style={{ maxWidth: 960 }}>
+      <Card
+        title="邮箱配置"
+        extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor(null)}>添加邮箱</Button>}
+      >
+        <Table
+          size="small"
+          rowKey="id"
+          loading={listLoading}
+          pagination={false}
+          dataSource={mailboxes}
+          columns={[
+            { title: '别名', dataIndex: 'label', width: 140, render: (v, row) => (
+              <Space size={4}>
+                <span>{v || '-'}</span>
+                {row.is_default ? <Tag color="blue">默认</Tag> : null}
+              </Space>
+            ) },
+            { title: '邮箱账号', dataIndex: 'username', width: 200 },
+            { title: '发件人', dataIndex: 'sender_name', width: 130, render: (v) => v || '-' },
+            { title: '收信模式', dataIndex: 'sync_mode', width: 110, render: (v) => SYNC_MODE_LABELS[v] || v || '-' },
+            { title: '收信状态', width: 110, render: (_, row) => {
+              const st = statusByMailbox.get(row.id);
+              const label = SYNC_STATUS_LABELS[st?.status] || { text: st?.status || '-', color: 'default' };
+              return <Tag color={label.color}>{label.text}</Tag>;
+            } },
+            { title: '启用', dataIndex: 'enabled', width: 70, render: (v, row) => (
+              <Switch size="small" checked={Boolean(v)} onChange={(checked) => handleToggleEnabled(row, checked)} />
+            ) },
+            { title: '操作', render: (_, row) => (
+              <Space size={0} wrap>
+                <Button type="link" size="small" onClick={() => openEditor(row)}>编辑</Button>
+                {!row.is_default && <Button type="link" size="small" onClick={() => handleSetDefault(row)}>设默认</Button>}
+                <Button type="link" size="small" onClick={() => handleTest(row)}>测试 SMTP</Button>
+                <Button type="link" size="small" onClick={() => handleTestImap(row)}>测试 IMAP</Button>
+                <Button type="link" size="small" onClick={() => handleSyncNow(row)}>立即同步</Button>
+                {!row.is_default && (
+                  <Popconfirm title="删除该邮箱？有历史数据时将被拒绝" onConfirm={() => handleDelete(row)}>
+                    <Button type="link" size="small" danger>删除</Button>
+                  </Popconfirm>
+                )}
+              </Space>
+            ) }
+          ]}
+        />
+      </Card>
+
+      <Modal
+        title={editing?.id ? '编辑邮箱' : '添加邮箱'}
+        open={editing !== null}
+        onOk={handleSave}
+        onCancel={() => setEditing(null)}
+        confirmLoading={saving}
+        destroyOnClose
+        width={640}
+      >
         <Form form={form} layout="vertical">
+          <Form.Item name="label" label="邮箱别名" rules={[{ required: true, message: '必填' }]}>
+            <Input placeholder="如：龙虾公司-企业邮" />
+          </Form.Item>
           <Form.Item name="smtp_host" label="SMTP 服务器" rules={[{ required: true, message: '必填' }]}>
             <Input placeholder="如 smtp.qiye.aliyun.com" />
           </Form.Item>
@@ -1315,30 +1406,9 @@ function SettingsTab() {
           <Form.Item name="default_cc" label="默认抄送">
             <TextArea rows={2} placeholder="多个地址用逗号/分号/换行分隔" />
           </Form.Item>
-          <Space wrap>
-            <Button type="primary" loading={loading} onClick={handleSave}>保存</Button>
-            <Button loading={testing} onClick={handleTest}>测试 SMTP 连接</Button>
-            <Button loading={testingImap} onClick={handleTestImap}>测试 IMAP</Button>
-            <Button loading={syncing} onClick={handleSyncNow}>立即同步一次</Button>
-          </Space>
         </Form>
-      </Card>
-      <Card title="收信状态" size="small" style={{ marginTop: 16 }}>
-        <Descriptions column={1} size="small">
-          <Descriptions.Item label="收信模式">{SYNC_MODE_LABELS[syncStatus?.mode] || syncStatus?.mode || '-'}</Descriptions.Item>
-          <Descriptions.Item label="连接状态">
-            <Tag color={statusLabel.color}>{statusLabel.text}</Tag>
-            {syncStatus?.reconnect_attempts > 0 && <span>（第 {syncStatus.reconnect_attempts} 次重连）</span>}
-          </Descriptions.Item>
-          <Descriptions.Item label="最后收到邮件">{formatSyncTime(syncStatus?.last_mail_at)}</Descriptions.Item>
-          <Descriptions.Item label="最后补偿同步">{formatSyncTime(syncStatus?.last_full_sync_at)}</Descriptions.Item>
-          {syncStatus?.last_error && (
-            <Descriptions.Item label="最近错误">
-              <span style={{ color: '#cf1322' }}>{syncStatus.last_error}</span>
-            </Descriptions.Item>
-          )}
-        </Descriptions>
-      </Card>
+      </Modal>
+
       <Card title="屏蔽规则" size="small" style={{ marginTop: 16 }}>
         <Alert
           type="info"

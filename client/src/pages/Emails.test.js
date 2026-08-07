@@ -48,17 +48,24 @@ function mockApi() {
     }
     if (url === '/api/emails/settings') {
       return Promise.resolve({
-        data: { data: { smtp_host: 'smtp.x.com', username: 'u@x.com', sync_mode: 'idle', poll_interval_minutes: 5 } }
+        data: {
+          data: [
+            { id: 1, label: '默认邮箱', username: 'u@x.com', smtp_host: 'smtp.x.com', sync_mode: 'idle', poll_interval_minutes: 5, is_default: 1, enabled: 1, password: '••••••••' }
+          ]
+        }
       });
     }
     if (url === '/api/emails/settings/sync-status') {
       return Promise.resolve({
         data: {
-          data: {
-            mode: 'idle', status: 'connected',
-            last_mail_at: '2026-07-27T06:00:00Z', last_full_sync_at: '2026-07-27T06:10:00Z',
-            last_error: null, reconnect_attempts: 0, connected_since: '2026-07-27T05:00:00Z'
-          }
+          data: [
+            {
+              mailbox_id: 1, username: 'u@x.com', label: '默认邮箱',
+              mode: 'idle', status: 'connected',
+              last_mail_at: '2026-07-27T06:00:00Z', last_full_sync_at: '2026-07-27T06:10:00Z',
+              last_error: null, reconnect_attempts: 0, connected_since: '2026-07-27T05:00:00Z'
+            }
+          ]
         }
       });
     }
@@ -127,25 +134,24 @@ test('未识别回复列表支持绑定 KOL', async () => {
   await waitFor(() => expect(message.success).toHaveBeenCalledWith('已绑定 KOL，AI 摘要生成中'));
 }, 30000);
 
-test('邮箱配置显示收信模式与连接状态，支持测试 IMAP 和立即同步', async () => {
+test('邮箱配置以列表展示邮箱，支持测试 IMAP 和立即同步', async () => {
   render(<Emails />);
   await userEvent.click(await screen.findByText('邮箱配置'));
 
-  expect((await screen.findAllByText('收信模式')).length).toBeGreaterThan(0);
-  expect(await screen.findByText('已连接')).toBeInTheDocument();
-  expect(screen.getByText('最后收到邮件')).toBeInTheDocument();
-  expect(screen.getByText('最后补偿同步')).toBeInTheDocument();
+  expect(await screen.findByText('默认邮箱')).toBeInTheDocument();
+  expect(screen.getByText('u@x.com')).toBeInTheDocument();
+  expect(screen.getByText('已连接')).toBeInTheDocument();
 
   axios.post.mockResolvedValue({ data: { success: true, message: 'IMAP 连接成功（收件箱 261 封邮件）' } });
   await userEvent.click(screen.getByRole('button', { name: '测试 IMAP' }));
-  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/emails/settings/test-imap'));
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/emails/settings/test-imap', { id: 1 }));
   await waitFor(() => expect(message.success).toHaveBeenCalledWith('IMAP 连接成功（收件箱 261 封邮件）'));
 
   axios.post.mockResolvedValue({ data: { success: true, message: '同步完成：新收 2，匹配 1，未识别 1' } });
-  await userEvent.click(screen.getByRole('button', { name: '立即同步一次' }));
-  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/emails/settings/sync-now'));
+  await userEvent.click(screen.getByRole('button', { name: '立即同步' }));
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/emails/settings/sync-now', { id: 1 }));
   await waitFor(() => expect(message.success).toHaveBeenCalledWith('同步完成：新收 2，匹配 1，未识别 1'));
-});
+}, 30000);
 
 // ---- 审批台顶部三张新指标卡 ----
 

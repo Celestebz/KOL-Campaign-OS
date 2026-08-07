@@ -2,35 +2,49 @@ import axios from 'axios';
 
 // 邮件中心前端 API 封装：全部走真实后端接口（/api/emails/*）。
 
-// ---- 邮箱配置 ----
+// ---- 邮箱配置（多邮箱）----
 
 export async function getEmailSettings() {
   const res = await axios.get('/api/emails/settings');
-  return res.data.data;
+  return res.data.data || [];
 }
 
-export async function saveEmailSettings(values) {
-  await axios.put('/api/emails/settings', values);
+export async function createEmailMailbox(values) {
+  await axios.post('/api/emails/settings', values);
 }
 
-export async function testEmailSettings() {
-  const res = await axios.post('/api/emails/settings/test');
+// id 为空时走兼容端点（操作默认邮箱）
+export async function saveEmailSettings(id, values) {
+  if (id) await axios.put(`/api/emails/settings/${id}`, values);
+  else await axios.put('/api/emails/settings', values);
+}
+
+export async function deleteEmailMailbox(id) {
+  await axios.delete(`/api/emails/settings/${id}`);
+}
+
+export async function setDefaultEmailMailbox(id) {
+  await axios.post(`/api/emails/settings/${id}/default`);
+}
+
+export async function testEmailSettings(id) {
+  const res = await axios.post('/api/emails/settings/test', id ? { id } : {});
   return res.data.message;
 }
 
-export async function testImapSettings() {
-  const res = await axios.post('/api/emails/settings/test-imap');
+export async function testImapSettings(id) {
+  const res = await axios.post('/api/emails/settings/test-imap', id ? { id } : {});
   return res.data.message;
 }
 
-export async function syncEmailNow() {
-  const res = await axios.post('/api/emails/settings/sync-now');
+export async function syncEmailNow(id) {
+  const res = await axios.post('/api/emails/settings/sync-now', id ? { id } : {});
   return res.data.message;
 }
 
 export async function getEmailSyncStatus() {
   const res = await axios.get('/api/emails/settings/sync-status');
-  return res.data.data;
+  return res.data.data || [];
 }
 
 // ---- 模板与口径 ----
@@ -282,7 +296,8 @@ export async function previewEmail({ kol, template }) {
   let senderName = '';
   try {
     const settings = await getEmailSettings();
-    senderName = settings?.sender_name || '';
+    const mailbox = settings.find((m) => m.is_default) || settings[0];
+    senderName = mailbox?.sender_name || '';
   } catch (error) {
     senderName = '';
   }
