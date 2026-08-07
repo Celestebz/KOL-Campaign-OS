@@ -134,4 +134,4 @@ KOL 策略 -> KOL 寻找/Subagent 任务 -> 候选池 -> 人工通过
 
 KOL 寻找已支持 System Provider 和 Subagent Hybrid 两种模式。Subagent Hybrid 会生成 YouTube / Google Web / Reddit / Seed / Instagram small batch 子任务和可复制 Prompt，由 Codex / WorkBuddy / 外部 agent 搜索后把 JSON 导入候选池。
 
-Outreach、HTML 报告、完整自动网页登录搜索暂不在本版实现。
+Outreach 已支持（多邮箱 SMTP 发送 + IMAP 回复追踪：邮件中心可配置多个邮箱，项目可绑定发件邮箱，审批台与邮件待办按邮箱标识和筛选）；HTML 报告、完整自动网页登录搜索暂不在本版实现。
