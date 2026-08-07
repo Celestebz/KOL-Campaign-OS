@@ -32,28 +32,145 @@ function withPatchedDb(patch, fn) {
     for (const key of Object.keys(originals)) dbOperations[key] = originals[key];
   });
 }
+const M = '\u2022'.repeat(8);
+const z1 = '\u4e0d\u80fd\u5220\u9664\u9ed8\u8ba4\u90ae\u7bb1';
+const z2 = '\u8bf7\u5148\u505c\u7528';
 
-test('GET /settings masks stored password', async () => {
+
+test('GET /settings returns mailbox list with masked passwords', async () => {
   await withPatchedDb({
-    get: async () => ({ id: 1, smtp_host: 'smtp.qiye.aliyun.com', username: 'u@x.com', password: 'secret' })
+    query: async () => [
+      { id: 1, smtp_host: 'smtp.qiye.aliyun.com', username: 'u@x.com', password: 'secret', is_default: 1, enabled: 1 },
+      { id: 2, smtp_host: 'smtp.qiye.aliyun.com', username: 'v@x.com', password: 'secret2', is_default: 0, enabled: 1 }
+    ]
   }, async () => {
     const handler = findHandler(require('./emails'), 'get', '/settings');
     const response = await callHandler(handler);
-    assert.equal(response.payload.data.password, '••••••••');
+    assert.equal(response.payload.success, true);
+    assert.equal(response.payload.data.length, 2);
+    assert.equal(response.payload.data[0].password, M);
+    assert.equal(response.payload.data[1].password, M);
   });
 });
 
-test('PUT /settings keeps stored password when masked value submitted', async () => {
+test('POST /settings creates a mailbox and makes the first one default', async () => {
   const statements = [];
   await withPatchedDb({
-    get: async () => ({ id: 1, password: 'real-secret' }),
-    run: async (sql, params) => { statements.push({ sql, params }); return { id: 0, changes: 1 }; }
+    query: async () => [],
+    run: async (sql, params) => { statements.push({ sql, params }); return { id: 7, changes: 1 }; },
+    get: async (sql) => {
+      if (/FROM email_settings WHERE id/.test(sql)) return { id: 7, username: 'new@x.com', is_default: 1, enabled: 1 };
+      return null;
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/settings');
+    const response = await callHandler(handler, { body: { smtp_host: 'smtp.qiye.aliyun.com', username: 'new@x.com', label: 'B' } });
+    assert.equal(response.payload.success, true);
+    const insert = statements.find((s) => /INSERT INTO email_settings/.test(s.sql));
+    assert.ok(insert, 'should insert a new mailbox row');
+    assert.ok(insert.params.includes('new@x.com'));
+    assert.equal(insert.params[insert.params.length - 2], 1, 'first mailbox should be default');
+  });
+});
+
+test('PUT /settings/:id updates the specified mailbox and restarts listener', async () => {
+  const emailLiveSync = require('../services/emailLiveSync');
+  const original = emailLiveSync.restartEmailSync;
+  let restartedWith = null;
+  emailLiveSync.restartEmailSync = async (id) => { restartedWith = id; };
+  const statements = [];
+  try {
+    await withPatchedDb({
+      get: async () => ({ id: 2, password: 'real-secret', sync_mode: 'poll', label: 'A' }),
+      run: async (sql, params) => { statements.push({ sql, params }); return { changes: 1 }; }
+    }, async () => {
+      const handler = findHandler(require('./emails'), 'put', '/settings/:id');
+      const response = await callHandler(handler, { params: { id: 2 }, body: { username: 'v@x.com', sync_mode: 'idle' } });
+      assert.equal(response.payload.success, true);
+      const update = statements.find((s) => /UPDATE email_settings/.test(s.sql));
+      assert.ok(update, 'should update existing row');
+      assert.ok(update.params.includes('v@x.com'));
+      assert.ok(update.params.includes('idle'), 'sync_mode written to settings');
+    });
+  } finally {
+    emailLiveSync.restartEmailSync = original;
+  }
+  assert.equal(restartedWith, 2, 'restarts listener for the updated mailbox id');
+});
+
+test('PUT /settings without id keeps stored password via default mailbox compat path', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/WHERE is_default = 1/.test(sql)) return { id: 1, password: 'real-secret', sync_mode: 'poll' };
+      if (/FROM email_settings WHERE id/.test(sql)) return { id: 1, password: 'real-secret', sync_mode: 'poll' };
+      return null;
+    },
+    run: async (sql, params) => { statements.push({ sql, params }); return { changes: 1 }; }
   }, async () => {
     const handler = findHandler(require('./emails'), 'put', '/settings');
-    await callHandler(handler, { body: { smtp_host: 'smtp.qiye.aliyun.com', username: 'u@x.com', password: '••••••••' } });
+    await callHandler(handler, { body: { smtp_host: 'smtp.qiye.aliyun.com', username: 'u@x.com', password: M } });
     const update = statements.find((s) => /UPDATE email_settings/.test(s.sql));
     assert.ok(update, 'should update existing row');
     assert.ok(update.params.includes('real-secret'));
+  });
+});
+
+test('DELETE /settings/:id rejects deleting the default mailbox', async () => {
+  await withPatchedDb({
+    get: async () => ({ id: 1, is_default: 1 })
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'delete', '/settings/:id');
+    const response = await callHandler(handler, { params: { id: 1 } });
+    assert.equal(response.statusCode, 409);
+    assert.match(response.payload.error, new RegExp(z1));
+  });
+});
+
+test('DELETE /settings/:id rejects deleting a mailbox with records', async () => {
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/FROM email_settings WHERE id/.test(sql)) return { id: 2, is_default: 0 };
+      return { id: 9 };
+    }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'delete', '/settings/:id');
+    const response = await callHandler(handler, { params: { id: 2 } });
+    assert.equal(response.statusCode, 409);
+    assert.match(response.payload.error, new RegExp(z2));
+  });
+});
+
+test('DELETE /settings/:id deletes a mailbox without records', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async (sql) => {
+      if (/FROM email_settings WHERE id/.test(sql)) return { id: 3, is_default: 0 };
+      return null;
+    },
+    run: async (sql, params) => { statements.push({ sql, params }); return { changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'delete', '/settings/:id');
+    const response = await callHandler(handler, { params: { id: 3 } });
+    assert.equal(response.payload.success, true);
+    const del = statements.find((s) => /DELETE FROM email_settings/.test(s.sql));
+    assert.ok(del, 'should delete the mailbox row');
+  });
+});
+
+test('POST /settings/:id/default clears other defaults and sets the target', async () => {
+  const statements = [];
+  await withPatchedDb({
+    get: async () => ({ id: 2, is_default: 0 }),
+    run: async (sql, params) => { statements.push({ sql, params }); return { changes: 1 }; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'post', '/settings/:id/default');
+    const response = await callHandler(handler, { params: { id: 2 } });
+    assert.equal(response.payload.success, true);
+    const clears = statements.filter((s) => /UPDATE email_settings SET is_default = 0/.test(s.sql));
+    assert.equal(clears.length, 1, 'clears all defaults first');
+    const sets = statements.find((s) => /is_default = 1 WHERE id/.test(s.sql));
+    assert.ok(sets, 'sets the target as default');
   });
 });
 
@@ -451,66 +568,71 @@ test('GET /records without campaign_id keeps unfiltered query', async () => {
 
 // ---- 准实时收信：收信模式 / 连接状态 / 立即同步 / 未识别回复绑定 ----
 
-test('PUT /settings persists sync_mode and restarts the listener', async () => {
+test('GET /settings/sync-status returns per-mailbox state array', async () => {
   const emailLiveSync = require('../services/emailLiveSync');
-  let restarted = 0;
-  const original = emailLiveSync.restartEmailSync;
-  emailLiveSync.restartEmailSync = async () => { restarted += 1; };
-  const statements = [];
+  const original = emailLiveSync.getEmailSyncStatus;
+  emailLiveSync.getEmailSyncStatus = () => [{ mailbox_id: 1, status: 'connected' }];
   try {
-    await withPatchedDb({
-      get: async () => ({ id: 1, password: 'real-secret', sync_mode: 'poll' }),
-      run: async (sql, params) => { statements.push({ sql, params }); return { changes: 1 }; }
-    }, async () => {
-      const handler = findHandler(require('./emails'), 'put', '/settings');
-      const response = await callHandler(handler, { body: { username: 'u@x.com', sync_mode: 'idle' } });
-      assert.equal(response.payload.success, true);
-      assert.match(response.payload.message, /收信监听已重启/);
-      const update = statements.find((s) => /UPDATE email_settings/.test(s.sql));
-      assert.ok(update.params.includes('idle'), 'sync_mode written to settings');
-    });
+    const handler = findHandler(require('./emails'), 'get', '/settings/sync-status');
+    const response = await callHandler(handler);
+    assert.equal(response.payload.success, true);
+    assert.ok(Array.isArray(response.payload.data));
+    assert.equal(response.payload.data[0].mailbox_id, 1);
   } finally {
-    emailLiveSync.restartEmailSync = original;
+    emailLiveSync.getEmailSyncStatus = original;
   }
-  assert.equal(restarted, 1, 'listener restarts after settings change');
 });
 
-test('GET /settings/sync-status returns the live sync state', async () => {
-  const handler = findHandler(require('./emails'), 'get', '/settings/sync-status');
-  const response = await callHandler(handler);
-  assert.equal(response.payload.success, true);
-  assert.ok('mode' in response.payload.data);
-  assert.ok('status' in response.payload.data);
-  assert.ok('last_error' in response.payload.data);
-});
-
-test('POST /settings/sync-now reports fetch counts', async () => {
+test('POST /settings/sync-now with id syncs the specified mailbox', async () => {
   const emailLiveSync = require('../services/emailLiveSync');
   const original = emailLiveSync.syncNow;
-  emailLiveSync.syncNow = async () => ({ fetched: 3, matched: 2, unmatched: 1 });
+  let syncedWith = null;
+  emailLiveSync.syncNow = async (id) => { syncedWith = id; return { fetched: 3, matched: 2, unmatched: 1 }; };
+  try {
+    await withPatchedDb({ get: async () => ({ id: 2 }) }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/settings/sync-now');
+      const response = await callHandler(handler, { body: { id: 2 } });
+      assert.equal(response.payload.success, true);
+      assert.equal(response.payload.data.fetched, 3);
+    });
+  } finally {
+    emailLiveSync.syncNow = original;
+  }
+  assert.equal(syncedWith, 2, 'syncs the requested mailbox');
+});
+
+test('POST /settings/sync-now without id syncs all enabled mailboxes', async () => {
+  const emailLiveSync = require('../services/emailLiveSync');
+  const original = emailLiveSync.syncNow;
+  let calledWithoutId = false;
+  emailLiveSync.syncNow = async () => { calledWithoutId = true; return { fetched: 3, matched: 2, unmatched: 1 }; };
   try {
     const handler = findHandler(require('./emails'), 'post', '/settings/sync-now');
     const response = await callHandler(handler);
     assert.equal(response.payload.success, true);
-    assert.match(response.payload.message, /新收 3，匹配 2，未识别 1/);
   } finally {
     emailLiveSync.syncNow = original;
   }
+  assert.equal(calledWithoutId, true, 'syncs all when no id supplied');
 });
 
-test('POST /settings/test-imap reports mailbox info', async () => {
+test('POST /settings/test-imap with id tests the specified mailbox', async () => {
   const emailLiveSync = require('../services/emailLiveSync');
   const original = emailLiveSync.testImapConnection;
-  emailLiveSync.testImapConnection = async () => ({ exists: 261, uidNext: 262 });
+  let testedSettings = null;
+  emailLiveSync.testImapConnection = async (settings) => { testedSettings = settings; return { exists: 261, uidNext: 262 }; };
   try {
-    const handler = findHandler(require('./emails'), 'post', '/settings/test-imap');
-    const response = await callHandler(handler);
-    assert.equal(response.payload.success, true);
-    assert.match(response.payload.message, /IMAP 连接成功/);
-    assert.equal(response.payload.data.exists, 261);
+    await withPatchedDb({ get: async () => ({ id: 2, username: 'v@x.com' }) }, async () => {
+      const handler = findHandler(require('./emails'), 'post', '/settings/test-imap');
+      const response = await callHandler(handler, { body: { id: 2 } });
+      assert.equal(response.payload.success, true);
+      assert.match(response.payload.message, /IMAP/);
+      assert.equal(response.payload.data.exists, 261);
+    });
   } finally {
     emailLiveSync.testImapConnection = original;
   }
+  assert.equal(testedSettings.username, 'v@x.com', 'tests the specified mailbox');
 });
 
 test('GET /replies scope=unmatched filters replies without a KOL', async () => {
@@ -928,3 +1050,4 @@ test('POST /threads/:id/context/refresh falls back to stored summary when AI fai
     builder.generateThreadSummary = original;
   }
 });
+

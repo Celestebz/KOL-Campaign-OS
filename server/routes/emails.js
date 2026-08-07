@@ -5,6 +5,7 @@ const emailDrafter = require('../services/emailDrafter');
 const emailReviewActions = require('../services/emailReviewActions');
 const emailDraftSender = require('../services/emailDraftSender');
 const emailLiveSync = require('../services/emailLiveSync');
+const emailMailboxes = require('../services/emailMailboxes');
 const emailDashboardSummary = require('../services/emailDashboardSummary');
 const emailFilterService = require('../services/emailFilterService');
 const automationRuns = require('../services/automationRuns');
@@ -19,77 +20,153 @@ function sendActionError(res, error) {
   return res.status(error.statusCode || 500).json({ success: false, error: error.message });
 }
 
-const MASKED_SECRET = '••••••••';
+// ---- 邮箱配置（多邮箱） ----
+
+const MASKED_SECRET = "••••••••";
 const TEMPLATE_KINDS = new Set(['style_guide', 'fixed']);
 
-const VARIABLE_LABELS = {
-  kol_name: 'KOL名称',
-  contact_name: '联系人姓名',
-  campaign_name: '项目名称',
-  product_names: '合作产品',
-  cooperation_type: '合作方式',
-  sender_name: '发件人署名'
-};
 
-async function getEmailSettings() {
-  return dbOperations.get('SELECT * FROM email_settings ORDER BY id LIMIT 1');
-}
-
-// ---- 邮箱配置 ----
-
-router.get('/settings', async (req, res) => {
+// GET /api/emails/settings — 返回邮箱列表
+router.get("/settings", async (req, res) => {
   try {
-    const settings = await getEmailSettings();
-    if (!settings) return res.json({ success: true, data: null });
-    res.json({ success: true, data: { ...settings, password: settings.password ? MASKED_SECRET : '' } });
+    const mailboxes = await emailMailboxes.listMailboxes();
+    const data = mailboxes.map(m => ({
+      ...m,
+      password: m.password ? MASKED_SECRET : ""
+    }));
+    res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-router.put('/settings', async (req, res) => {
+// POST /api/emails/settings — 新增邮箱
+router.post("/settings", async (req, res) => {
   try {
     const body = req.body || {};
-    const existing = await getEmailSettings();
-    const password = body.password === MASKED_SECRET || body.password === undefined
-      ? (existing?.password || null)
-      : body.password;
-    const syncMode = ['idle', 'poll', 'off'].includes(body.sync_mode) ? body.sync_mode : (existing?.sync_mode || 'idle');
-    const values = [
-      body.smtp_host || null, Number(body.smtp_port) || 465, body.smtp_secure === undefined ? 1 : (body.smtp_secure ? 1 : 0),
-      body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure === undefined ? 1 : (body.imap_secure ? 1 : 0),
-      body.username || null, password,
-      body.sender_name || null, body.default_cc || null,
-      Number(body.poll_interval_minutes ?? 5),
-      syncMode
-    ];
-    if (existing) {
-      await dbOperations.run(
-        `UPDATE email_settings SET smtp_host=?, smtp_port=?, smtp_secure=?, imap_host=?, imap_port=?, imap_secure=?,
-         username=?, password=?, sender_name=?, default_cc=?, poll_interval_minutes=?, sync_mode=?, updated_at=NOW() WHERE id=?`,
-        [...values, existing.id]
-      );
-    } else {
-      await dbOperations.run(
-        `INSERT INTO email_settings (smtp_host, smtp_port, smtp_secure, imap_host, imap_port, imap_secure,
-         username, password, sender_name, default_cc, poll_interval_minutes, sync_mode, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-        values
-      );
+    if (!body.username || !body.smtp_host) {
+      return res.status(400).json({ success: false, error: "邮箱账号和 SMTP 服务器为必填" });
     }
-    // 修改邮箱配置后自动重启监听，无须重启整个系统
-    try {
-      await emailLiveSync.restartEmailSync();
-    } catch (error) {
-      console.error('[email] 重启收信监听失败:', error.message);
+    const all = await emailMailboxes.listMailboxes();
+    const isFirst = all.length === 0;
+    const result = await dbOperations.run(
+      `INSERT INTO email_settings
+       (smtp_host, smtp_port, smtp_secure, imap_host, imap_port, imap_secure,
+        username, password, sender_name, default_cc, poll_interval_minutes, sync_mode,
+        label, is_default, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [
+        body.smtp_host, Number(body.smtp_port) || 465, body.smtp_secure ? 1 : 0,
+        body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure ? 1 : 0,
+        body.username, body.password || null,
+        body.sender_name || null, body.default_cc || null,
+        Number(body.poll_interval_minutes ?? 5),
+        ["idle", "poll", "off"].includes(body.sync_mode) ? body.sync_mode : "idle",
+        body.label || null,
+        isFirst ? 1 : 0,
+        1
+      ]
+    );
+    const mailbox = await emailMailboxes.getMailboxById(result.id);
+    if (mailbox && mailbox.enabled && mailbox.imap_host && mailbox.sync_mode !== "off") {
+      try { await emailLiveSync.restartEmailSync(); } catch (e) { /* ignore */ }
     }
-    res.json({ success: true, message: '邮箱设置已保存，收信监听已重启' });
+    res.json({ success: true, data: { ...mailbox, password: MASKED_SECRET } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-router.get('/settings/sync-status', async (req, res) => {
+// 共享的更新逻辑：保持密码未变时不覆盖，同时写入 label/enabled
+async function updateMailboxRow(id, body) {
+  const existing = await emailMailboxes.getMailboxById(id);
+  if (!existing) throw Object.assign(new Error('邮箱不存在'), { statusCode: 404 });
+  const password = body.password === MASKED_SECRET || body.password === undefined
+    ? (existing.password || null)
+    : body.password;
+  const syncMode = ['idle', 'poll', 'off'].includes(body.sync_mode) ? body.sync_mode : (existing.sync_mode || 'idle');
+  await dbOperations.run(
+    `UPDATE email_settings SET smtp_host=?, smtp_port=?, smtp_secure=?, imap_host=?, imap_port=?, imap_secure=?,
+     username=?, password=?, sender_name=?, default_cc=?, poll_interval_minutes=?, sync_mode=?,
+     label=?, enabled=?, updated_at=NOW() WHERE id=?`,
+    [
+      body.smtp_host || null, Number(body.smtp_port) || 465, body.smtp_secure ? 1 : 0,
+      body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure ? 1 : 0,
+      body.username || null, password,
+      body.sender_name || null, body.default_cc || null,
+      Number(body.poll_interval_minutes ?? 5), syncMode,
+      body.label !== undefined ? body.label : existing.label,
+      body.enabled !== undefined ? (body.enabled ? 1 : 0) : existing.enabled,
+      id
+    ]
+  );
+}
+
+// PUT /api/emails/settings/:id — 更新指定邮箱
+router.put('/settings/:id', async (req, res) => {
+  try {
+    await updateMailboxRow(Number(req.params.id), req.body || {});
+    try { await emailLiveSync.restartEmailSync(Number(req.params.id)); } catch (e) { /* ignore */ }
+    res.json({ success: true, message: '邮箱设置已保存，收信监听已重启' });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+// PUT /api/emails/settings（无 id，兼容旧接口）— 操作默认邮箱
+router.put('/settings', async (req, res) => {
+  try {
+    const setting = await emailMailboxes.getDefaultMailbox();
+    if (!setting) return res.status(400).json({ success: false, error: '请先配置邮箱设置' });
+    await updateMailboxRow(setting.id, req.body || {});
+    try { await emailLiveSync.restartEmailSync(setting.id); } catch (e) { /* ignore */ }
+    res.json({ success: true, message: '邮箱设置已保存，收信监听已重启' });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /api/emails/settings/:id — 删除邮箱
+router.delete("/settings/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await emailMailboxes.getMailboxById(id);
+    if (!row) return res.status(404).json({ success: false, error: "邮箱不存在" });
+    if (row.is_default) return res.status(409).json({ success: false, error: "不能删除默认邮箱，请先另设默认" });
+
+    for (const table of ["email_drafts", "email_records", "email_replies", "email_threads"]) {
+      const existing = await dbOperations.get(
+        `SELECT id FROM ${table} WHERE mailbox_id = ? LIMIT 1`, [id]
+      );
+      if (existing) {
+        return res.status(409).json({ success: false, error: "该邮箱有关联记录，请先停用而非删除" });
+      }
+    }
+
+    await dbOperations.run("DELETE FROM email_settings WHERE id = ?", [id]);
+    try { await emailLiveSync.restartEmailSync(); } catch (e) { /* ignore */ }
+    res.json({ success: true, message: "邮箱已删除" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/emails/settings/:id/default — 设为默认邮箱
+router.post("/settings/:id/default", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await emailMailboxes.getMailboxById(id);
+    if (!row) return res.status(404).json({ success: false, error: "邮箱不存在" });
+    await dbOperations.run("UPDATE email_settings SET is_default = 0");
+    await dbOperations.run("UPDATE email_settings SET is_default = 1 WHERE id = ?", [id]);
+    res.json({ success: true, message: "已设为默认邮箱" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/emails/settings/sync-status
+router.get("/settings/sync-status", async (req, res) => {
   try {
     res.json({ success: true, data: emailLiveSync.getEmailSyncStatus() });
   } catch (error) {
@@ -97,34 +174,45 @@ router.get('/settings/sync-status', async (req, res) => {
   }
 });
 
-router.post('/settings/test-imap', async (req, res) => {
+// POST /api/emails/settings/test-imap
+router.post("/settings/test-imap", async (req, res) => {
   try {
-    const info = await emailLiveSync.testImapConnection();
-    res.json({ success: true, message: `IMAP 连接成功（收件箱 ${info.exists} 封邮件）`, data: info });
+    const id = req.body?.id;
+    const settings = id ? await emailMailboxes.getMailboxById(id) : await emailMailboxes.getDefaultMailbox();
+    if (!settings) return res.status(400).json({ success: false, error: "请先配置邮箱设置" });
+    const info = await emailLiveSync.testImapConnection(settings);
+    res.json({ success: true, message: "IMAP 连接成功（收件箱 " + info.exists + " 封邮件）", data: info });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-router.post('/settings/sync-now', async (req, res) => {
+// POST /api/emails/settings/sync-now
+router.post("/settings/sync-now", async (req, res) => {
   try {
-    const result = await emailLiveSync.syncNow();
-    res.json({
-      success: true,
-      message: `同步完成：新收 ${result.fetched}，匹配 ${result.matched}，未识别 ${result.unmatched}`,
-      data: result
-    });
+    const id = req.body?.id;
+    if (id) {
+      const settings = await emailMailboxes.getMailboxById(id);
+      if (!settings) return res.status(400).json({ success: false, error: "邮箱不存在" });
+      const result = await emailLiveSync.syncNow(id);
+      res.json({ success: true, message: "同步完成", data: result });
+    } else {
+      const result = await emailLiveSync.syncNow();
+      res.json({ success: true, message: "同步完成", data: result });
+    }
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-router.post('/settings/test', async (req, res) => {
+// POST /api/emails/settings/test
+router.post("/settings/test", async (req, res) => {
   try {
-    const settings = await getEmailSettings();
-    if (!settings) return res.status(400).json({ success: false, error: '请先配置邮箱设置' });
+    const id = req.body?.id;
+    const settings = id ? await emailMailboxes.getMailboxById(id) : await emailMailboxes.getDefaultMailbox();
+    if (!settings) return res.status(400).json({ success: false, error: "请先配置邮箱设置" });
     await mailer.verifySettings(settings);
-    res.json({ success: true, message: 'SMTP 连接成功' });
+    res.json({ success: true, message: "SMTP 连接成功" });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
