@@ -3,6 +3,22 @@ const assert = require('node:assert/strict');
 
 const customersRoute = require('./customers');
 
+test('smart import link headers map without breaking legacy columns', () => {
+  assert.deepEqual(customersRoute.mapRow({
+    链接: 'https://instagram.com/demo',
+    分组: 'Lifestyle',
+    备注: 'priority'
+  }), {
+    source_url: 'https://instagram.com/demo',
+    group_name: 'Lifestyle',
+    notes: 'priority'
+  });
+  assert.deepEqual(customersRoute.mapRow({ KOL: 'Legacy', YouTube: 'https://youtube.com/@legacy' }), {
+    name: 'Legacy',
+    youtube_url: 'https://youtube.com/@legacy'
+  });
+});
+
 test('normalized platform accounts take precedence and legacy fills missing platforms', () => {
   const customer = {
     id: 7,

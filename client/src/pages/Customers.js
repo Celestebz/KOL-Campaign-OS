@@ -59,6 +59,8 @@ const Customers = () => {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [linkImportOpen, setLinkImportOpen] = useState(false);
+  const [linkImportValue, setLinkImportValue] = useState('');
   const [pulling, setPulling] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [initializingFields, setInitializingFields] = useState(false);
@@ -392,6 +394,35 @@ const Customers = () => {
     return false;
   };
 
+  const handleLinkImport = async () => {
+    const links = linkImportValue.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean);
+    if (!links.length) {
+      message.warning('请至少粘贴一个 KOL 主页链接');
+      return;
+    }
+    setImporting(true);
+    try {
+      const response = await axios.post('/api/customers/import-links', { links });
+      const result = response.data.data;
+      message.success(response.data.message || '导入完成');
+      if (result?.errors?.length) {
+        Modal.warning({
+          title: '部分链接导入失败',
+          width: 720,
+          content: <div style={{ maxHeight: 260, overflow: 'auto' }}>{result.errors.map((item) => <div key={item}>{item}</div>)}</div>
+        });
+      }
+      setLinkImportOpen(false);
+      setLinkImportValue('');
+      await Promise.all([fetchKols(), fetchGroups()]);
+    } catch (error) {
+      const detail = error.response?.data?.error || error.response?.data?.message;
+      message.error(detail ? `链接导入失败：${detail}` : '链接导入失败，请检查服务是否已重启');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const accountLinks = (accounts = []) => accounts.length ? (
     <Space wrap size={[4, 4]}>{accounts.map((account, index) => (
       account.profile_url
@@ -555,6 +586,7 @@ const Customers = () => {
             style={{ width: 160 }} options={filterOptions.countries.map((value) => ({ value, label: value }))} />
           <Button onClick={clearFilters}>清空筛选</Button>
           <Button icon={<ReloadOutlined />} onClick={fetchKols}>刷新</Button>
+          <Button type="primary" icon={<UploadOutlined />} onClick={() => setLinkImportOpen(true)}>粘贴链接导入</Button>
           <Button icon={<DownloadOutlined />} onClick={handleDownloadTemplate}>下载模板</Button>
           <Upload accept=".xlsx,.xls,.csv" showUploadList={false} beforeUpload={handleImport}>
             <Button icon={<UploadOutlined />} loading={importing}>批量导入</Button>
@@ -567,6 +599,30 @@ const Customers = () => {
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>新增 KOL</Button>
         </Space>
       </Card>
+
+      <Modal
+        title="粘贴 KOL 主页链接"
+        open={linkImportOpen}
+        onOk={handleLinkImport}
+        onCancel={() => setLinkImportOpen(false)}
+        okText="开始导入"
+        cancelText="取消"
+        confirmLoading={importing}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="系统会自动识别平台和 KOL 名称"
+          description="支持 YouTube、Instagram、TikTok 主页链接；每行一个，也可以用逗号分隔。重复链接会更新已有 KOL。"
+          style={{ marginBottom: 16 }}
+        />
+        <TextArea
+          rows={9}
+          value={linkImportValue}
+          onChange={(event) => setLinkImportValue(event.target.value)}
+          placeholder={'https://www.youtube.com/@creator\nhttps://www.instagram.com/creator/\nhttps://www.tiktok.com/@creator'}
+        />
+      </Modal>
 
       {selectedRowKeys.length > 0 && <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>

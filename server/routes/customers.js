@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { dbOperations } = require('../database');
 const { runYoutubeIntakeSnapshot } = require('../services/youtubeIntakeSnapshot');
+const { parseKolProfileUrl } = require('../utils/kolProfileUrl');
 
 const router = express.Router();
 
@@ -279,6 +280,13 @@ const TEMPLATE_HEADERS = [
 ];
 
 const FIELD_MAP = {
+  链接: 'source_url',
+  主页链接: 'source_url',
+  平台链接: 'source_url',
+  Link: 'source_url',
+  link: 'source_url',
+  URL: 'source_url',
+  url: 'source_url',
   KOL: 'name',
   'KOL名称': 'name',
   'KOL 名称': 'name',
@@ -322,6 +330,9 @@ const FIELD_MAP = {
 const CUSTOMER_FIELDS = [
   'name',
   'contact_name',
+  'creator_id',
+  'platform',
+  'profile_url',
   'youtube_url',
   'youtube_followers',
   'instagram_url',
@@ -416,6 +427,31 @@ async function getOrCreateGroupId(groupName) {
 }
 
 async function findExistingKol(data, idToExclude) {
+  const identity = data._identity;
+  if (identity) {
+    const accountParams = idToExclude
+      ? [identity.platform, identity.profileUrlHash, identity.canonicalUrl, idToExclude]
+      : [identity.platform, identity.profileUrlHash, identity.canonicalUrl];
+    const account = await dbOperations.get(
+      `SELECT customer_id id FROM kol_platform_accounts
+       WHERE LOWER(platform) = ? AND (profile_url_hash = ? OR profile_url = ?)
+       ${idToExclude ? 'AND customer_id != ?' : ''} LIMIT 1`,
+      accountParams
+    );
+    if (account) return account;
+
+    const legacyField = `${identity.platform}_url`;
+    const legacyParams = idToExclude
+      ? [identity.canonicalUrl, identity.canonicalUrl, idToExclude]
+      : [identity.canonicalUrl, identity.canonicalUrl];
+    const legacy = await dbOperations.get(
+      `SELECT id FROM customers WHERE (profile_url = ? OR ${legacyField} = ?)
+       ${idToExclude ? 'AND id != ?' : ''} LIMIT 1`,
+      legacyParams
+    );
+    if (legacy) return legacy;
+  }
+
   if (data.email) {
     const params = idToExclude ? [data.email, idToExclude] : [data.email];
     const sql = idToExclude
@@ -425,7 +461,7 @@ async function findExistingKol(data, idToExclude) {
     if (existing) return existing;
   }
 
-  if (data.name) {
+  if (data.name && !identity) {
     const params = idToExclude ? [data.name, idToExclude] : [data.name];
     const sql = idToExclude
       ? 'SELECT id FROM customers WHERE name = ? AND id != ?'
@@ -434,6 +470,40 @@ async function findExistingKol(data, idToExclude) {
   }
 
   return null;
+}
+
+async function updateKolFromImport(id, data) {
+  const writable = CUSTOMER_FIELDS.filter((field) => normalizeValue(data[field]));
+  if (!writable.length) return;
+  const assignments = writable.map((field) => `${field} = ?`).join(', ');
+  await dbOperations.run(
+    `UPDATE customers SET ${assignments}, sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [...writable.map((field) => data[field]), id]
+  );
+}
+
+async function upsertPlatformAccount(customerId, identity) {
+  if (!identity) return;
+  const existing = await dbOperations.get(
+    `SELECT id FROM kol_platform_accounts
+     WHERE customer_id = ? AND LOWER(platform) = ?
+       AND (profile_url_hash = ? OR profile_url = ?) LIMIT 1`,
+    [customerId, identity.platform, identity.profileUrlHash, identity.canonicalUrl]
+  );
+  if (existing) {
+    await dbOperations.run(
+      `UPDATE kol_platform_accounts SET username = ?, profile_url = ?, profile_url_hash = ?,
+       updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [identity.username, identity.canonicalUrl, identity.profileUrlHash, existing.id]
+    );
+    return;
+  }
+  await dbOperations.run(
+    `INSERT INTO kol_platform_accounts
+     (customer_id, platform, username, profile_url, profile_url_hash, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [customerId, identity.platform, identity.username, identity.canonicalUrl, identity.profileUrlHash]
+  );
 }
 
 async function insertKol(data) {
@@ -485,6 +555,20 @@ async function updateKol(id, data) {
       [id]
     );
   }
+}
+
+function buildSmartTemplateWorkbook() {
+  const rows = [{
+    链接: 'https://www.youtube.com/@sample',
+    分组: '',
+    备注: ''
+  }];
+  const worksheet = xlsx.utils.json_to_sheet(rows, { header: ['链接', '分组', '备注'] });
+  worksheet['!cols'] = [{ wch: 48 }, { wch: 18 }, { wch: 36 }];
+  worksheet['!freeze'] = { xSplit: 0, ySplit: 1 };
+  const workbook = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(workbook, worksheet, '链接导入');
+  return workbook;
 }
 
 function buildTemplateWorkbook() {
@@ -623,12 +707,83 @@ router.get('/filter-options', async (req, res) => {
 
 router.get('/template/download', async (req, res) => {
   try {
-    const workbook = buildTemplateWorkbook();
+    const workbook = buildSmartTemplateWorkbook();
     const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     const filename = encodeURIComponent('KOL导入模板.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
     res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+async function importMappedRows(rows) {
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const [index, row] of rows.entries()) {
+    const data = mapRow(row);
+    if (data.source_url) {
+      try {
+        const identity = parseKolProfileUrl(data.source_url);
+        data._identity = identity;
+        data.name = data.name || identity.displayName;
+        data.creator_id = data.creator_id || identity.username;
+        data.platform = identity.platform;
+        data.profile_url = identity.canonicalUrl;
+        data[`${identity.platform}_url`] = identity.canonicalUrl;
+      } catch (error) {
+        errors.push(`第 ${index + 1} 条：${error.message}`);
+        continue;
+      }
+    }
+    data.group_id = await getOrCreateGroupId(data.group_name);
+
+    if (!data.name && !data.email && !data.youtube_url && !data.instagram_url && !data.tiktok_url) {
+      skipped++;
+      continue;
+    }
+    if (!data.name) {
+      errors.push(`第 ${index + 1} 条：缺少 KOL 名称`);
+      continue;
+    }
+
+    try {
+      const existing = await findExistingKol(data);
+      let customerId;
+      if (existing) {
+        customerId = existing.id;
+        await updateKolFromImport(customerId, data);
+        updated++;
+      } else {
+        customerId = await insertKol(data);
+        inserted++;
+      }
+      await upsertPlatformAccount(customerId, data._identity);
+    } catch (error) {
+      errors.push(`第 ${index + 1} 条：${error.message}`);
+    }
+  }
+  return { inserted, updated, skipped, failed: errors.length, errors: errors.slice(0, 20) };
+}
+
+router.post('/import-links', async (req, res) => {
+  try {
+    const links = Array.isArray(req.body.links)
+      ? req.body.links.map(normalizeValue).filter(Boolean)
+      : String(req.body.links || '').split(/[\r\n,]+/).map(normalizeValue).filter(Boolean);
+    if (!links.length) return res.status(400).json({ success: false, error: '请至少粘贴一个 KOL 主页链接' });
+    if (links.length > 500) return res.status(400).json({ success: false, error: '单次最多导入 500 个链接' });
+
+    const result = await importMappedRows(links.map((link) => ({ 链接: link })));
+    res.json({
+      success: true,
+      message: `导入完成：新增 ${result.inserted} 条，更新 ${result.updated} 条，失败 ${result.failed} 条`,
+      data: result
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -660,6 +815,20 @@ router.post('/import', upload.single('file'), async (req, res) => {
 
     for (const [index, row] of rows.entries()) {
       const data = mapRow(row);
+      if (data.source_url) {
+        try {
+          const identity = parseKolProfileUrl(data.source_url);
+          data._identity = identity;
+          data.name = data.name || identity.displayName;
+          data.creator_id = data.creator_id || identity.username;
+          data.platform = identity.platform;
+          data.profile_url = identity.canonicalUrl;
+          data[`${identity.platform}_url`] = identity.canonicalUrl;
+        } catch (error) {
+          errors.push(`第 ${index + 2} 行：${error.message}`);
+          continue;
+        }
+      }
       data.group_id = await getOrCreateGroupId(data.group_name);
 
       if (!data.name && !data.email && !data.youtube_url && !data.instagram_url && !data.tiktok_url) {
@@ -674,13 +843,16 @@ router.post('/import', upload.single('file'), async (req, res) => {
 
       try {
         const existing = await findExistingKol(data);
+        let customerId;
         if (existing) {
-          await updateKol(existing.id, data);
+          customerId = existing.id;
+          await updateKolFromImport(customerId, data);
           updated++;
         } else {
-          await insertKol(data);
+          customerId = await insertKol(data);
           inserted++;
         }
+        await upsertPlatformAccount(customerId, data._identity);
       } catch (error) {
         errors.push(`第 ${index + 2} 行：${error.message}`);
       }
@@ -976,3 +1148,7 @@ module.exports.isActiveProject = isActiveProject;
 module.exports.projectStatusLabel = projectStatusLabel;
 module.exports.selectBestFit = selectBestFit;
 module.exports.creatorGrade = creatorGrade;
+module.exports.mapRow = mapRow;
+module.exports.findExistingKol = findExistingKol;
+module.exports.buildSmartTemplateWorkbook = buildSmartTemplateWorkbook;
+module.exports.importMappedRows = importMappedRows;
