@@ -417,6 +417,11 @@ function ApprovalTab() {
                   </Button>
                 )}
               />
+              <Input
+                addonBefore="发件邮箱"
+                value={selected.mailbox_label || selected.mailbox_username || '-'}
+                readOnly
+              />
               <Input addonBefore="主题" value={editSubject}
                 disabled={selected.status !== 'pending_review'}
                 onChange={(e) => setEditSubject(e.target.value)} />
@@ -1422,7 +1427,7 @@ function SettingsTab() {
             <Input.Password placeholder="阿里邮箱建议填三方客户端安全密码" />
           </Form.Item>
           <Form.Item name="sender_name" label="发件人显示名">
-            <Input placeholder="如 MOOER Marketing" />
+            <Input placeholder="如 Marketing" />
           </Form.Item>
           <Form.Item name="default_cc" label="默认抄送">
             <TextArea rows={2} placeholder="多个地址用逗号/分号/换行分隔" />

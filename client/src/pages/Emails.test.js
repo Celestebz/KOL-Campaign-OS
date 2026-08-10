@@ -262,8 +262,11 @@ test('审批台提供邮箱筛选，审批记录展示发件邮箱', async () =>
       return Promise.resolve({
         data: {
           data: {
-            drafts: [{ id: 3, status: 'sent', kind: 'first_touch', kol_name: 'Bob', campaign_name: 'TMB-1', mailbox_label: '默认邮箱', subject: 'Hi' }],
-            counts: { pending_review: 0, high_risk: 0, approved: 0 }
+            drafts: [
+              { id: 3, status: 'sent', kind: 'first_touch', kol_name: 'Bob', campaign_name: 'TMB-1', mailbox_label: '默认邮箱', subject: 'Hi' },
+              { id: 4, status: 'pending_review', kind: 'first_touch', kol_name: 'Bob', campaign_name: 'TMB-1', mailbox_label: '默认邮箱', mailbox_username: 'u@x.com', recipient_email: 'bob@x.com', subject: 'Hi', body_text: 'Hello' }
+            ],
+            counts: { pending_review: 1, high_risk: 0, approved: 0 }
           }
         }
       });
@@ -272,6 +275,9 @@ test('审批台提供邮箱筛选，审批记录展示发件邮箱', async () =>
   });
   render(<Emails />);
   expect(await screen.findByText('全部邮箱')).toBeInTheDocument();
+  await userEvent.click((await screen.findAllByText('Bob'))[0]);
+  expect(await screen.findByText('发件邮箱')).toBeInTheDocument();
+  expect(await screen.findByDisplayValue('默认邮箱')).toBeInTheDocument();
   await userEvent.click(await screen.findByRole('tab', { name: '审批记录' }));
   expect(await screen.findByText('默认邮箱')).toBeInTheDocument();
   expect((await screen.findAllByText('Bob')).length).toBeGreaterThanOrEqual(1);
