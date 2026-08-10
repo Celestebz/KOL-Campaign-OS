@@ -671,8 +671,8 @@ test('POST /settings/sync-now without id syncs all enabled mailboxes', async () 
 test('POST /settings/test-imap with id tests the specified mailbox', async () => {
   const emailLiveSync = require('../services/emailLiveSync');
   const original = emailLiveSync.testImapConnection;
-  let testedSettings = null;
-  emailLiveSync.testImapConnection = async (settings) => { testedSettings = settings; return { exists: 261, uidNext: 262 }; };
+  let testedId = null;
+  emailLiveSync.testImapConnection = async (id) => { testedId = id; return { exists: 261, uidNext: 262 }; };
   try {
     await withPatchedDb({ get: async () => ({ id: 2, username: 'v@x.com' }) }, async () => {
       const handler = findHandler(require('./emails'), 'post', '/settings/test-imap');
@@ -684,7 +684,7 @@ test('POST /settings/test-imap with id tests the specified mailbox', async () =>
   } finally {
     emailLiveSync.testImapConnection = original;
   }
-  assert.equal(testedSettings.username, 'v@x.com', 'tests the specified mailbox');
+  assert.equal(testedId, 2, 'tests the specified mailbox');
 });
 
 test('GET /replies scope=unmatched filters replies without a KOL', async () => {

@@ -180,7 +180,7 @@ router.post("/settings/test-imap", async (req, res) => {
     const id = req.body?.id;
     const settings = id ? await emailMailboxes.getMailboxById(id) : await emailMailboxes.getDefaultMailbox();
     if (!settings) return res.status(400).json({ success: false, error: "请先配置邮箱设置" });
-    const info = await emailLiveSync.testImapConnection(settings);
+    const info = await emailLiveSync.testImapConnection(settings.id);
     res.json({ success: true, message: "IMAP 连接成功（收件箱 " + info.exists + " 封邮件）", data: info });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
