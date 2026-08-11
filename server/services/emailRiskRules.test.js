@@ -66,6 +66,18 @@ test('first touch does not require commission or fee terms', () => {
   assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
 
+test('profile-only draft does not require a video reference', () => {
+  const result = evaluateDraft({
+    customer: { country_region: 'US' },
+    strategy: { target_market: 'US' },
+    bodyText: 'Would you be interested in learning more about our product?',
+    citedVideoIds: [], evidenceVideos: [], snapshotDate: null,
+    hasEmail: true, kind: 'first_touch'
+  });
+  assert.equal(result.riskLevel, 'none');
+  assert.ok(!result.riskReasons.some((reason) => reason.code === 'MISSING_VIDEO_REFERENCE'));
+});
+
 test('negated contract and fixed fee language is not a price commitment', () => {
   const result = evaluateDraft({ ...base, kind: 'follow_up', bodyText: 'We offer 5% commission. There is no contract or fixed fee.' });
   assert.ok(!result.riskReasons.some((r) => r.code === 'PRICE_COMMITMENT'));

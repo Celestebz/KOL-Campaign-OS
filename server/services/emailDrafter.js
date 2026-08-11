@@ -9,7 +9,7 @@ const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
 const emailContextBuilder = require('./emailContextBuilder');
 
-const PROMPT_VERSION = 'p2.0';
+const PROMPT_VERSION = 'p2.1';
 const SNAPSHOT_STALE_DAYS = 7;
 // IG/TT 证据没有快照回抓，新鲜度以证据视频最新发布日期衡量，阈值 30 天
 const FINDER_EVIDENCE_STALE_DAYS = 30;
@@ -28,6 +28,12 @@ function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, fee
   ).join('\n');
   const platformLabel = PLATFORM_LABELS[platform] || platform;
   const followerCount = followers ?? customer.youtube_followers;
+  const evidenceRules = videos.length
+    ? `- Cite 1-2 videos from the list above by their exact titles.
+- Only cite video IDs from the list above in cited_video_ids.`
+    : `- No verified videos are available. Do not mention, cite, imply, or invent any creator video, post, title, view count, metric, or content detail.
+- Return an empty cited_video_ids array.
+- Personalize only with verified creator, campaign, product, and platform information provided in this prompt.`;
   const stageRules = kind === 'first_touch'
     ? `This is the first contact. Its only goal is to ask whether the creator is interested in learning more.
 - Do not state or promise shipping, a free unit, commission, fees, a contract, deliverables, or a deadline.
@@ -73,7 +79,7 @@ Stage rules (override any conflicting general style-guide instruction):
 ${stageRules}
 
 Requirements:
-- Cite 1-2 videos from the list above by their exact titles.
+${evidenceRules}
 - Do not infer property conditions, cleanup needs, equipment, or use cases that the cited titles do not explicitly support.
 - Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
 - Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", and "get one shipped your way".
@@ -223,7 +229,13 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
 
     let customer; let videos; let snapshotDate; let staleDays; let metrics; let followers;
     if (platform === 'youtube') {
-      customer = await ensureFreshSnapshot(customerId);
+      // Snapshot refresh is best-effort for creators imported from external sheets.
+      try {
+        customer = await ensureFreshSnapshot(customerId);
+      } catch (snapshotError) {
+        console.warn(`YouTube snapshot unavailable for customer ${customerId}; drafting without video evidence:`, snapshotError.message);
+        customer = baseCustomer;
+      }
       videos = await loadEvidenceVideos(customerId);
       snapshotDate = customer.youtube_snapshot_updated_at;
       staleDays = SNAPSHOT_STALE_DAYS;
@@ -238,9 +250,6 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       // IG/TT：无快照回抓服务，证据直接取 finder_video_evidence
       customer = baseCustomer;
       videos = await loadFinderEvidenceVideos({ customer, campaignKol, platform });
-      if (!videos.length) {
-        return { ok: false, customer_id: customerId, error: `该达人暂无 ${PLATFORM_LABELS[platform]} 视频证据，请先运行 Finder 发现视频` };
-      }
       const profile = platformProfile(customer, campaignKol, platform);
       followers = profile.followers;
       metrics = { followers: profile.followers, ...computeFinderMetrics(videos) };
@@ -320,6 +329,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
         published_at: v.published_at ? new Date(v.published_at).toISOString().slice(0, 10) : null
       })),
       match_reason: parsed?.personalization_note || '',
+      evidence_mode: videos.length ? 'video_backed' : 'profile_only',
       metrics
     });
 

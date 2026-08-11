@@ -93,6 +93,11 @@ function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evide
     push('MISSING_REQUIRED_TERM', '缺少佣金说明或"无固定费"表述');
   }
 
+  if (!evidenceVideos.length) {
+    const missingReferenceIndex = reasons.findIndex((reason) => reason.code === 'MISSING_VIDEO_REFERENCE');
+    if (missingReferenceIndex >= 0) reasons.splice(missingReferenceIndex, 1);
+  }
+
   const riskLevel = reasons.some((r) => RISK_CODES[r.code] === 'high') ? 'high'
     : reasons.length ? 'low' : 'none';
   return { riskLevel, riskReasons: reasons };

@@ -177,12 +177,15 @@ test('Instagram 达人起草成功：证据结构泛化、metrics 由证据视�
   assert.equal(insert.params[5], 'none');
 });
 
-test('无证据视频的 IG 达人起草失败并给出明确原因', async () => {
+test('无证据视频的 IG 达人生成 profile-only 审批草稿', async () => {
   const fake = createFakeDb({ finderVideos: [] });
   const result = await runDraft(fake);
-  assert.equal(result.ok, false);
-  assert.match(result.error, /暂无 Instagram 视频证据/);
-  assert.equal(draftInsert(fake.statements), undefined);
+  assert.equal(result.ok, true);
+  const insert = draftInsert(fake.statements);
+  assert.ok(insert);
+  const evidence = JSON.parse(insert.params[7]);
+  assert.equal(evidence.evidence_mode, 'profile_only');
+  assert.deepEqual(evidence.videos, []);
 });
 
 test('无任何平台主页信息的达人起草失败', async () => {
@@ -334,7 +337,7 @@ test('reply 起草：有 thread 时走会话上下文并落库新列', async () 
 
   const insert = draftInsert(fake.statements);
   assert.equal((insert.sql.match(/\?/g) || []).length, insert.params.length, 'INSERT 占位符与参数数量一致');
-  assert.equal(insert.params[10], 'p2.0', 'prompt_version 升级');
+  assert.equal(insert.params[10], 'p2.1', 'prompt_version 升级');
   assert.equal(insert.params[14], 33, 'thread_id');
   assert.equal(insert.params[15], '<r2@x>', 'reply_to_message_id 为最新来信');
   assert.deepEqual(JSON.parse(insert.params[16]), ['<r1@x>', '<r2@x>'], 'context_message_ids');
@@ -368,6 +371,22 @@ test('reply 起草：旧数据无 thread 回退单邮件上下文，不报错', 
   assert.equal(insert.params[15], '<r9@x>', 'reply_to_message_id 回退为该来信 message_id');
   assert.equal(insert.params[17], null);
   assert.equal(insert.params[16], null);
+});
+
+test('prompt without evidence forbids invented creator content and requires no citations', () => {
+  const prompt = emailDrafter.buildUserPrompt({
+    customer: { name: 'Casey', country_region: 'US' },
+    campaign: { name: 'TRA-0429', product: 'Wood chipper' },
+    strategy: null,
+    styleGuide: 'be brief',
+    videos: [],
+    senderName: 'Celeste',
+    kind: 'first_touch'
+  });
+  assert.match(prompt, /No verified videos are available/);
+  assert.match(prompt, /Do not mention, cite, imply, or invent any creator video/);
+  assert.match(prompt, /Return an empty cited_video_ids array/);
+  assert.doesNotMatch(prompt, /Cite 1-2 videos/);
 });
 
 test('draft insert stores the resolved mailbox_id from campaign binding', async () => {
