@@ -15,6 +15,7 @@ test('mergeSettings preserves nested defaults while accepting server values', ()
   expect(result.platforms.youtube.primary).toBe('maton_gateway');
   expect(result.platforms.instagram.primary).toBe('scrapecreators');
   expect(result.cloudStorage.feishu.base_url).toBe('https://open.feishu.cn');
+  expect(result.cloudStorage.feishu.sync_kol_master).toBe(true);
 });
 
 test('updateAtPath returns a new tree without mutating loaded settings', () => {

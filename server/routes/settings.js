@@ -4,6 +4,7 @@ const { dbOperations } = require('../database');
 
 const SYSTEM_SELECTION_KEY = 'system.provider_selection';
 const FEISHU_PROVIDER_KEY = 'cloud.feishu_bitable';
+const FEISHU_SHEET_PROVIDER_KEY = 'cloud.feishu_sheet';
 const EXTERNAL_AGENT_PROVIDER_KEY = 'agent.external_api';
 const SECRET_MASK = '••••••••';
 
@@ -96,18 +97,26 @@ function cleanProvider(row, provider) {
   };
 }
 
-function cleanFeishu(row) {
+function cleanFeishu(row, sheetRow) {
   const extra = parseJson(row?.extra_config, {});
+  const sheetExtra = parseJson(sheetRow?.extra_config, {});
+  const hasSeparateSheetConfig = Boolean(sheetRow);
   return {
     provider: 'feishu_bitable',
     app_id: extra.app_id || '',
     app_secret: maskSecret(row?.api_key),
     base_url: row?.base_url || extra.base_url || 'https://open.feishu.cn',
     app_token: maskSecret(extra.app_token),
+    sync_kol_master: extra.sync_kol_master !== false,
     kol_table_id: extra.kol_table_id || '',
-    campaign_table_id: extra.campaign_table_id || '',
     campaign_subtable_map: extra.campaign_subtable_map || '',
     campaign_tracking_map: extra.campaign_tracking_map || '',
+    sheet_app_id: hasSeparateSheetConfig ? (sheetExtra.app_id || '') : (extra.app_id || ''),
+    sheet_app_secret: maskSecret(hasSeparateSheetConfig ? sheetRow?.api_key : row?.api_key),
+    sheet_base_url: (hasSeparateSheetConfig ? (sheetRow?.base_url || sheetExtra.base_url) : (row?.base_url || extra.base_url)) || 'https://open.feishu.cn',
+    sheet_wiki_node_token: (hasSeparateSheetConfig ? sheetExtra.sheet_wiki_node_token : extra.sheet_wiki_node_token) || '',
+    sheet_id: (hasSeparateSheetConfig ? sheetExtra.sheet_id : extra.sheet_id) || '',
+    sheet_purpose_map: (hasSeparateSheetConfig ? sheetExtra.sheet_purpose_map : extra.sheet_purpose_map) || '',
     notes: extra.notes || ''
   };
 }
@@ -211,8 +220,8 @@ async function upsertFeishu(row = {}) {
   const extraConfig = {
     app_id: row.app_id || '',
     app_token: preserveSecret(row.app_token, currentExtra.app_token),
+    sync_kol_master: row.sync_kol_master !== false,
     kol_table_id: row.kol_table_id || '',
-    campaign_table_id: row.campaign_table_id || '',
     campaign_subtable_map: row.campaign_subtable_map || '',
     campaign_tracking_map: row.campaign_tracking_map || '',
     notes: row.notes || ''
@@ -230,6 +239,32 @@ async function upsertFeishu(row = {}) {
       FEISHU_PROVIDER_KEY,
       preserveSecret(row.app_secret, current?.api_key),
       row.base_url || 'https://open.feishu.cn',
+      JSON.stringify(extraConfig)
+    ]
+  );
+}
+
+async function upsertFeishuSheet(row = {}) {
+  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ?', [FEISHU_SHEET_PROVIDER_KEY]);
+  const extraConfig = {
+    app_id: row.sheet_app_id || '',
+    sheet_wiki_node_token: row.sheet_wiki_node_token || '',
+    sheet_id: row.sheet_id || '',
+    sheet_purpose_map: row.sheet_purpose_map || ''
+  };
+
+  await dbOperations.run(
+    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, ?, '', ?, CURRENT_TIMESTAMP)
+     ON DUPLICATE KEY UPDATE
+       api_key = VALUES(api_key),
+       base_url = VALUES(base_url),
+       extra_config = VALUES(extra_config),
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      FEISHU_SHEET_PROVIDER_KEY,
+      preserveSecret(row.sheet_app_secret, current?.api_key),
+      row.sheet_base_url || 'https://open.feishu.cn',
       JSON.stringify(extraConfig)
     ]
   );
@@ -267,7 +302,7 @@ router.get('/', async (req, res) => {
       aiModels: { active: selection.aiModels.active, providers: {} },
       cloudStorage: {
         primary: 'feishu_bitable',
-        feishu: cleanFeishu(getRow(rows, FEISHU_PROVIDER_KEY))
+        feishu: cleanFeishu(getRow(rows, FEISHU_PROVIDER_KEY), getRow(rows, FEISHU_SHEET_PROVIDER_KEY))
       },
       externalAgent: cleanExternalAgent(getRow(rows, EXTERNAL_AGENT_PROVIDER_KEY)),
       fallbackStrategy: selection.fallbackStrategy
@@ -342,6 +377,7 @@ router.post('/', async (req, res) => {
 
     if (settings.cloudStorage?.feishu) {
       await upsertFeishu(settings.cloudStorage.feishu);
+      await upsertFeishuSheet(settings.cloudStorage.feishu);
     }
 
     if (settings.externalAgent) {

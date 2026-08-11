@@ -48,6 +48,7 @@ test('GET /api/settings masks stored secrets', async () => {
     assert.equal(data.aiModels.providers.deepseek.api_key, '••••••••');
     assert.equal(data.cloudStorage.feishu.app_secret, '••••••••');
     assert.equal(data.cloudStorage.feishu.app_token, '••••••••');
+    assert.equal(data.cloudStorage.feishu.sync_kol_master, true);
     assert.equal(data.externalAgent.api_token, '••••••••');
     assert.equal(Object.prototype.hasOwnProperty.call(data, 'agents'), false);
     assert.equal(JSON.stringify(data).includes('browseract'), false);
@@ -235,6 +236,7 @@ test('POST /api/settings preserves existing secrets when masked values are submi
             feishu: {
               app_secret: '••••••••',
               app_token: '••••••••',
+              sync_kol_master: false,
               base_url: 'https://open.feishu.cn',
               campaign_tracking_map: '{"3":"tbl_track_3"}'
             }
@@ -253,6 +255,7 @@ test('POST /api/settings preserves existing secrets when masked values are submi
     assert.equal(youtubeWrite.params[1], 'youtube-secret');
     assert.equal(feishuWrite.params[1], 'feishu-secret');
     assert.equal(JSON.parse(feishuWrite.params[3]).app_token, 'base-token');
+    assert.equal(JSON.parse(feishuWrite.params[3]).sync_kol_master, false);
     assert.equal(JSON.parse(feishuWrite.params[3]).campaign_tracking_map, '{"3":"tbl_track_3"}');
     assert.equal(JSON.parse(feishuWrite.params[3]).campaign_kol_table_id, undefined);
     assert.equal(agentWrite.params[1], 'agent-token');

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Form, Input, Row, Select, Space, Switch, Tabs, Tag, Typography, message
+  Alert, Button, Card, Col, Divider, Form, Input, Row, Select, Space, Switch, Tabs, Tag, Typography, message
 } from 'antd';
 import { ArrowRightOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import axios from 'axios';
@@ -16,10 +16,34 @@ import {
 } from './settings/settingsContract';
 import { ProviderCard, ProviderDrawer } from './settings/SettingsProviderComponents';
 import FeishuSubtableMappings from './settings/feishuSubtableMappings';
+import FeishuSheetMappings from './settings/FeishuSheetMappings';
 import { parseCampaignSubtableMap, serializeCampaignSubtableRows } from './settings/feishuSubtableMappingUtils';
 import './Settings.css';
 
 const { Text } = Typography;
+
+const parseSheetPurposeMap = (value, campaigns = []) => {
+  const vivaTrees = campaigns.find((item) => item.name === 'VivaTrees｜Christmas Tree 2026');
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value || '[]') : (value || []);
+    const rows = Array.isArray(parsed)
+      ? parsed
+      : Object.entries(parsed).map(([purpose, sheet_id]) => ({ campaign_id: vivaTrees?.id || 61, purpose, sheet_id }));
+    if (rows.length) return rows;
+  } catch (error) {
+    // Fall through to the initial mapping used by the current workbook.
+  }
+  return [
+    { campaign_id: vivaTrees?.id || 61, purpose: 'candidate_pool', sheet_id: '6nUDXq' },
+    { campaign_id: vivaTrees?.id || 61, purpose: 'cooperation_tracking', sheet_id: 'uSIrMc' }
+  ];
+};
+
+const serializeSheetPurposeMap = (rows = []) => JSON.stringify(rows.map((row) => ({
+  campaign_id: Number(row.campaign_id),
+  purpose: String(row.purpose || '').trim(),
+  sheet_id: String(row.sheet_id || '').trim()
+})));
 
 const Settings = () => {
   const [form] = Form.useForm();
@@ -62,6 +86,9 @@ const Settings = () => {
         ...parsedTracking.rows,
         ...parsedTracking.unresolved.map((item) => ({ campaign_id: null, table_id: item.table_id }))
       ];
+      formSettings.cloudStorage.feishu.sheet_purpose_map = parseSheetPurposeMap(next.cloudStorage.feishu.sheet_purpose_map, nextCampaigns);
+      formSettings.cloudStorage.feishu.sheet_candidate_map = formSettings.cloudStorage.feishu.sheet_purpose_map.filter((row) => row.purpose === 'candidate_pool');
+      formSettings.cloudStorage.feishu.sheet_cooperation_map = formSettings.cloudStorage.feishu.sheet_purpose_map.filter((row) => row.purpose === 'cooperation_tracking');
       setUnresolvedMappings(parsed.unresolved);
       setUnresolvedTrackingMappings(parsedTracking.unresolved);
       setSettings(next);
@@ -114,9 +141,18 @@ const Settings = () => {
         };
         nextValues.cloudStorage.feishu.campaign_subtable_map = serializeRows(feishuValues.campaign_subtable_map || [], '候选池子表映射');
         nextValues.cloudStorage.feishu.campaign_tracking_map = serializeRows(feishuValues.campaign_tracking_map || [], '项目跟进表映射');
+        const sheetRows = [
+          ...(feishuValues.sheet_candidate_map || []).map((row) => ({ ...row, purpose: 'candidate_pool' })),
+          ...(feishuValues.sheet_cooperation_map || []).map((row) => ({ ...row, purpose: 'cooperation_tracking' }))
+        ];
+        const invalidSheetRows = sheetRows.some((row) => !row?.campaign_id || !row?.purpose || !/^\S+$/.test(String(row?.sheet_id || '').trim()))
+          || new Set(sheetRows.map((row) => `${row.campaign_id}:${row.purpose}`)).size !== sheetRows.length;
+        if (invalidSheetRows) throw new Error('请修正普通表格工作表用途映射后再保存。');
+        nextValues.cloudStorage.feishu.sheet_purpose_map = serializeSheetPurposeMap(sheetRows);
       } else if (nextValues.cloudStorage?.feishu) {
         nextValues.cloudStorage.feishu.campaign_subtable_map = settings.cloudStorage.feishu.campaign_subtable_map;
         nextValues.cloudStorage.feishu.campaign_tracking_map = settings.cloudStorage.feishu.campaign_tracking_map;
+        nextValues.cloudStorage.feishu.sheet_purpose_map = settings.cloudStorage.feishu.sheet_purpose_map;
       }
       await persistSettings(mergeSettings(settings, nextValues));
     } catch (error) {
@@ -134,6 +170,7 @@ const Settings = () => {
       const pendingPageValues = form.getFieldsValue(true).settings || {};
       if (pendingPageValues.cloudStorage?.feishu) {
         pendingPageValues.cloudStorage.feishu.campaign_subtable_map = settings.cloudStorage.feishu.campaign_subtable_map;
+        pendingPageValues.cloudStorage.feishu.sheet_purpose_map = settings.cloudStorage.feishu.sheet_purpose_map;
       }
       const next = updateAtPath(mergeSettings(settings, pendingPageValues), drawer.path, providerValues);
       await persistSettings(next, `${drawer.meta.label} 配置已保存`);
@@ -299,16 +336,34 @@ const Settings = () => {
 
   const renderStorage = () => (
     <>
-      <SectionHeading title="云端存储" description="飞书多维表格作为云端主库：KOL 总表对应 KOL 管理；候选池表（每项目一张）对应 KOL 寻找的人工确认候选人；项目跟进表（每项目一张）对应 KOL 合作。" />
+      <SectionHeading title="云端存储" />
+      <Divider orientation="left">飞书普通表格</Divider>
       <Row gutter={16}>
-        <Col xs={24} md={8}><Form.Item label="Feishu App ID" name={['settings', 'cloudStorage', 'feishu', 'app_id']}><Input placeholder="cli_xxx" /></Form.Item></Col>
-        <Col xs={24} md={8}><Form.Item label="Feishu App Secret" name={['settings', 'cloudStorage', 'feishu', 'app_secret']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 secret" /></Form.Item></Col>
-        <Col xs={24} md={8}><Form.Item label="OpenAPI Base URL" name={['settings', 'cloudStorage', 'feishu', 'base_url']}><Input /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="普通表格 App ID" name={['settings', 'cloudStorage', 'feishu', 'sheet_app_id']}><Input placeholder="cli_xxx" /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="普通表格 App Secret" name={['settings', 'cloudStorage', 'feishu', 'sheet_app_secret']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 secret" /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="普通表格 OpenAPI Base URL" name={['settings', 'cloudStorage', 'feishu', 'sheet_base_url']}><Input /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="Wiki 节点 Token" name={['settings', 'cloudStorage', 'feishu', 'sheet_wiki_node_token']}><Input placeholder="Q3Bmwq..." /></Form.Item></Col>
+      </Row>
+      <Form.Item label="项目候选池（KOL 寻找 · 人工确认候选人）" name={['settings', 'cloudStorage', 'feishu', 'sheet_candidate_map']}>
+        <FeishuSheetMappings campaigns={campaigns} loadError={campaignLoadError} emptyText="尚未配置普通表格项目候选池映射。" />
+      </Form.Item>
+      <Form.Item label="KOL 合作" name={['settings', 'cloudStorage', 'feishu', 'sheet_cooperation_map']}>
+        <FeishuSheetMappings campaigns={campaigns} loadError={campaignLoadError} emptyText="尚未配置普通表格 KOL 合作映射。" />
+      </Form.Item>
+      <Divider orientation="left">飞书多维表格</Divider>
+      <Row gutter={16}>
+        <Col xs={24} md={8}><Form.Item label="多维表格 App ID" name={['settings', 'cloudStorage', 'feishu', 'app_id']}><Input placeholder="cli_xxx" /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="多维表格 App Secret" name={['settings', 'cloudStorage', 'feishu', 'app_secret']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 secret" /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="多维表格 OpenAPI Base URL" name={['settings', 'cloudStorage', 'feishu', 'base_url']}><Input /></Form.Item></Col>
       </Row>
       <Row gutter={16}>
         <Col xs={24} md={12}><Form.Item label="Base/App Token" name={['settings', 'cloudStorage', 'feishu', 'app_token']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 app_token" /></Form.Item></Col>
-        <Col xs={24} md={12}><Form.Item label="飞书 KOL 总表 ID" name={['settings', 'cloudStorage', 'feishu', 'kol_table_id']}><Input placeholder="tbl..." /></Form.Item></Col>
-        <Col xs={24} md={12}><Form.Item label="项目表 ID" name={['settings', 'cloudStorage', 'feishu', 'campaign_table_id']}><Input placeholder="tbl...（预留）" /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="同步 KOL 总库" name={['settings', 'cloudStorage', 'feishu', 'sync_kol_master']} valuePropName="checked"><Switch /></Form.Item></Col>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous?.settings?.cloudStorage?.feishu?.sync_kol_master !== current?.settings?.cloudStorage?.feishu?.sync_kol_master}>
+          {({ getFieldValue }) => getFieldValue(['settings', 'cloudStorage', 'feishu', 'sync_kol_master']) ? (
+            <Col xs={24} md={12}><Form.Item label="飞书 KOL 总表 ID" name={['settings', 'cloudStorage', 'feishu', 'kol_table_id']}><Input placeholder="tbl..." /></Form.Item></Col>
+          ) : null}
+        </Form.Item>
       </Row>
       {unresolvedMappings.length > 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`候选池子表映射中存在无法匹配的旧项目：${unresolvedMappings.map((item) => item.key).join('、')}。子表 ID 已带入下方，请重新选择系统项目后保存。`} />}
       {unresolvedTrackingMappings.length > 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`项目跟进表映射中存在无法匹配的旧项目：${unresolvedTrackingMappings.map((item) => item.key).join('、')}。表 ID 已带入下方，请重新选择系统项目后保存。`} />}

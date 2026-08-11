@@ -244,19 +244,20 @@ async function getFeishuConfig() {
     app_id: extra.app_id || '',
     app_secret: row?.api_key || extra.app_secret || '',
     app_token: extra.app_token || '',
+    sync_kol_master: extra.sync_kol_master !== false,
     kol_table_id: extra.kol_table_id || '',
-    campaign_table_id: extra.campaign_table_id || '',
     campaign_subtable_map: parseCampaignSubtableMap(extra.campaign_subtable_map),
     campaign_tracking_map: parseCampaignSubtableMap(extra.campaign_tracking_map)
   };
 }
 
-function requireFeishuConfig(config) {
+function requireFeishuConfig(config, { requireKolMaster = true } = {}) {
   const missing = [];
   if (!config.app_id) missing.push('App ID');
   if (!config.app_secret) missing.push('App Secret');
   if (!config.app_token) missing.push('Base/App Token');
-  if (!config.kol_table_id) missing.push('KOL Master Table ID');
+  if (requireKolMaster && !config.sync_kol_master) missing.push('KOL master sync is disabled');
+  if (requireKolMaster && !config.kol_table_id) missing.push('KOL Master Table ID');
   if (missing.length) throw new Error(`Feishu Bitable is not configured: ${missing.join(', ')}`);
 }
 
@@ -1068,18 +1069,6 @@ async function markCandidatePoolOutreachConfirmed(config, token, tableId, record
   });
 }
 
-function campaignFields(row) {
-  return {
-    '项目/产品名': compact(row.name),
-    '品牌': compact(row.brand),
-    '产品品类': compact(row.product),
-    '品牌关键词': compact(row.brand_keywords),
-    '购买意向关键词': compact(row.purchase_keywords),
-    '负面关键词': compact(row.negative_keywords),
-    '备注': compact(row.notes)
-  };
-}
-
 async function syncKols(config, token, ids = []) {
   const params = [];
   let sql = 'SELECT * FROM customers WHERE 1=1';
@@ -1105,33 +1094,6 @@ async function syncKols(config, token, ids = []) {
     } catch (error) {
       await dbOperations.run('UPDATE customers SET sync_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['sync_failed', row.id]);
       results.push({ type: 'kol', id: row.id, success: false, error: error.message });
-    }
-  }
-  return results;
-}
-
-async function syncCampaigns(config, token, ids = []) {
-  if (!config.campaign_table_id) {
-    if (ids.length) throw new Error('Feishu Campaigns Table ID is not configured');
-    return [];
-  }
-
-  const params = [];
-  let sql = 'SELECT * FROM campaigns WHERE 1=1';
-  if (ids.length) {
-    sql += ` AND id IN (${ids.map(() => '?').join(',')})`;
-    params.push(...ids);
-  }
-  sql += ' ORDER BY id';
-  const rows = await dbOperations.query(sql, params);
-  const results = [];
-
-  for (const row of rows) {
-    try {
-      const recordId = await pushBitableRecord(config, token, config.campaign_table_id, null, campaignFields(row));
-      results.push({ type: 'campaign', id: row.id, success: true, record_id: recordId });
-    } catch (error) {
-      results.push({ type: 'campaign', id: row.id, success: false, error: error.message });
     }
   }
   return results;
@@ -1241,16 +1203,19 @@ async function syncRefreshedKolAndCandidates(customerId) {
   const id = Number(customerId);
   if (!id) throw new Error('KOL id is required');
   const config = await getFeishuConfig();
-  requireFeishuConfig(config);
+  requireFeishuConfig(config, { requireKolMaster: false });
   const token = await getTenantAccessToken(config);
-  await ensureKolMasterFields(config, token);
+  if (config.sync_kol_master) {
+    requireFeishuConfig(config);
+    await ensureKolMasterFields(config, token);
+  }
   const candidateRows = await dbOperations.query(
     `SELECT id FROM campaign_kols
      WHERE customer_id = ? AND project_status IN ('candidate', 'pending_confirmation')`,
     [id]
   );
   const [kolResults, candidateResults] = await Promise.all([
-    syncKols(config, token, [id]),
+    config.sync_kol_master ? syncKols(config, token, [id]) : Promise.resolve([]),
     candidateRows.length
       ? syncCampaignKols(config, token, candidateRows.map((row) => row.id))
       : Promise.resolve([])
@@ -1486,7 +1451,7 @@ router.post('/feishu/ensure-kol-fields', async (req, res) => {
 router.post('/feishu/ensure-project-fields', async (req, res) => {
   try {
     const config = await getFeishuConfig();
-    requireFeishuConfig(config);
+    requireFeishuConfig(config, { requireKolMaster: false });
     const explicit = compact(req.body?.table_id).trim();
     const tableIds = explicit
       ? [explicit]
@@ -1507,7 +1472,7 @@ router.post('/feishu/ensure-project-fields', async (req, res) => {
 router.post('/feishu/inspect-project-fields', async (req, res) => {
   try {
     const config = await getFeishuConfig();
-    requireFeishuConfig(config);
+    requireFeishuConfig(config, { requireKolMaster: false });
     const explicit = compact(req.body?.table_id).trim();
     const tableIds = explicit
       ? [explicit]
@@ -1632,19 +1597,19 @@ router.post('/feishu/rename-kol-fields', async (req, res) => {
 router.post('/feishu/push', async (req, res) => {
   try {
     const config = await getFeishuConfig();
-    requireFeishuConfig(config);
-    const token = await getTenantAccessToken(config);
     const scope = req.body.scope || 'all';
+    const wantsKolMaster = scope === 'kols' || (scope === 'all' && config.sync_kol_master);
+    requireFeishuConfig(config, { requireKolMaster: wantsKolMaster });
+    const token = await getTenantAccessToken(config);
     const ids = (req.body.ids || []).map((id) => Number(id)).filter(Boolean);
 
     let fieldSummary = null;
-    if (scope === 'all' || scope === 'kols') {
+    if (wantsKolMaster) {
       fieldSummary = await ensureKolMasterFields(config, token);
     }
 
     let results = [];
-    if (scope === 'all' || scope === 'kols') results = results.concat(await syncKols(config, token, scope === 'kols' ? ids : []));
-    if (scope === 'all' || scope === 'campaigns') results = results.concat(await syncCampaigns(config, token, scope === 'campaigns' ? ids : []));
+    if (wantsKolMaster) results = results.concat(await syncKols(config, token, scope === 'kols' ? ids : []));
     if (scope === 'all' || scope === 'campaign_kols') {
       results = results.concat(await syncCampaignKols(config, token, scope === 'campaign_kols' ? ids : []));
     }

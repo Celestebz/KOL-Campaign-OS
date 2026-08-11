@@ -82,8 +82,11 @@ export const DEFAULT_SETTINGS = {
     primary: 'feishu_bitable',
     feishu: {
       app_id: '', app_secret: '', base_url: 'https://open.feishu.cn', app_token: '',
-      kol_table_id: '', campaign_table_id: '',
-      campaign_subtable_map: '', campaign_tracking_map: '', notes: ''
+      sync_kol_master: true,
+      kol_table_id: '',
+      campaign_subtable_map: '', campaign_tracking_map: '',
+      sheet_app_id: '', sheet_app_secret: '', sheet_base_url: 'https://open.feishu.cn',
+      sheet_wiki_node_token: '', sheet_id: '', sheet_purpose_map: '', notes: ''
     }
   },
   externalAgent: { enabled: true, api_token: '', notes: '' },

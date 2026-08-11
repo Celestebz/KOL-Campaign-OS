@@ -565,6 +565,27 @@ test('candidate pool push writes only 外联状态 and omits 状态/项目状态
   assert.equal(recordCallsTo(calls, 'tbl_execution').length, 0);
 });
 
+test('candidate pool sync works with KOL master sync disabled and no master table', async () => {
+  const configRow = {
+    ...poolFeishuConfigRow,
+    extra_config: JSON.stringify({
+      app_id: 'cli_test',
+      app_token: 'base-token',
+      sync_kol_master: false,
+      campaign_subtable_map: { 3: 'tbl_pool_3' }
+    })
+  };
+  const { response, calls } = await runCampaignKolPush(
+    [buildCampaignKolRow({ project_status: 'pending_confirmation' })],
+    { configRow }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.data.failed_count, 0, JSON.stringify(response.payload.data.results));
+  assert.equal(recordCallsTo(calls, 'tbl_pool_3').length, 1);
+  assert.equal(calls.some((call) => call.url.includes('/tables/tbl_kol_master/')), false);
+});
+
 test('execution-stage rows push to the tracking table and mark the old pool record confirmed', async () => {
   const { response, calls } = await runCampaignKolPush(
     [buildCampaignKolRow({

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Card, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber, List, message, Modal, Popconfirm, Progress, Select, Space, Spin, Table, Tag } from 'antd';
+import { Alert, Button, Card, Descriptions, Divider, Drawer, Dropdown, Empty, Form, Input, InputNumber, List, message, Modal, Popconfirm, Progress, Select, Space, Spin, Table, Tag } from 'antd';
 import { CheckOutlined, DeleteOutlined, EditOutlined, MailOutlined, ReloadOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { describeSyncResult } from './campaignKolSyncResult';
@@ -194,6 +194,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [sheetSyncing, setSheetSyncing] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [emailTemplates, setEmailTemplates] = useState([]);
@@ -494,6 +495,57 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     }
   };
 
+  const syncOrdinarySheet = async () => {
+    if (!filters.campaign_id) {
+      message.warning('请先选择项目，再同步飞书普通表格');
+      return;
+    }
+    const ids = selectedRowKeys.length ? selectedRowKeys : rows.map((row) => row.id);
+    const sheetPurpose = isCandidatePool ? 'candidate_pool' : 'cooperation_tracking';
+    const sheetLabel = isCandidatePool ? '达人资源库' : '项目合作跟进';
+    if (!ids.length) {
+      message.warning('当前没有可同步的 KOL');
+      return;
+    }
+    setSheetSyncing(true);
+    try {
+      const preview = await axios.post('/api/sync/feishu-sheet/preview', { ids, campaign_id: filters.campaign_id, sheet_purpose: sheetPurpose });
+      const summary = preview.data.data || {};
+      Modal.confirm({
+        title: `同步到飞书普通表格 · ${sheetLabel}`,
+        content: `预计新增 ${summary.created || 0} 条、更新 ${summary.updated || 0} 条。`,
+        okText: '确认同步',
+        cancelText: '取消',
+        onOk: async () => {
+          const response = await axios.post('/api/sync/feishu-sheet/push', { ids, campaign_id: filters.campaign_id, sheet_purpose: sheetPurpose });
+          const result = response.data.data || {};
+          message.success(`普通表格同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}`);
+        }
+      });
+    } catch (error) {
+      message.warning(error.response?.data?.error || '飞书普通表格未配置或连接失败');
+    } finally {
+      setSheetSyncing(false);
+    }
+  };
+
+  const feishuSyncMenu = {
+    items: [
+      {
+        key: 'sheet',
+        label: isCandidatePool ? '普通表格 · 达人资源库' : '普通表格 · 项目合作跟进'
+      },
+      {
+        key: 'bitable',
+        label: isCandidatePool ? '多维表格 · 项目候选池' : '多维表格 · 项目跟进表'
+      }
+    ],
+    onClick: ({ key }) => {
+      if (key === 'sheet') syncOrdinarySheet();
+      if (key === 'bitable') syncSelected();
+    }
+  };
+
   const platformLink = (url, followers) => {
     if (!url && !followers) return '-';
     return (
@@ -775,9 +827,11 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           ]} style={{ width: 160 }} />
           <Input.Search allowClear placeholder="搜索 KOL、Email、国家、备注、视频链接" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchRows} style={{ width: 320 }} />
           <Button icon={<ReloadOutlined />} onClick={fetchRows}>刷新</Button>
-          <Button icon={<SyncOutlined />} loading={syncing} onClick={syncSelected}>{selectedRowKeys.length
-            ? `同步选中到飞书${isCandidatePool ? '候选池' : '项目跟进表'}`
-            : `同步待同步到飞书${isCandidatePool ? '候选池' : '项目跟进表'}`}</Button>
+          <Dropdown menu={feishuSyncMenu} trigger={['click']}>
+            <Button icon={<SyncOutlined />} loading={syncing || sheetSyncing}>
+              {selectedRowKeys.length ? `同步选中 ${selectedRowKeys.length} 条到飞书` : '同步到飞书'}
+            </Button>
+          </Dropdown>
           <Button icon={<MailOutlined />} onClick={openEmailModal} disabled={!selectedRowKeys.length}>发邮件</Button>
           <Button type="primary" icon={<RobotOutlined />} loading={aiDrafting} onClick={handleAiDraft} disabled={!selectedRowKeys.length}>AI 起草邮件</Button>
           <Popconfirm title="确定删除选中的项目 KOL？" onConfirm={batchDelete}>
