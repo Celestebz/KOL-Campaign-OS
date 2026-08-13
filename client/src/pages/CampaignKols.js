@@ -229,6 +229,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   const [detailError, setDetailError] = useState('');
   const [editingAssignment, setEditingAssignment] = useState(null);
   const [assignmentForm] = Form.useForm();
+  const [editProducts, setEditProducts] = useState([]);
   const [form] = Form.useForm();
   const cooperationType = Form.useWatch('cooperation_type', form);
 
@@ -305,6 +306,27 @@ const CampaignKols = ({ view = 'cooperation' }) => {
         message.error('获取合作发布视频失败');
       }
     }
+    try {
+      const [productsResponse, campaignProductsResponse] = await Promise.all([
+        axios.get('/api/products'),
+        axios.get(`/api/campaigns/${record.campaign_id}/products`)
+      ]);
+      const attachedIds = new Set((campaignProductsResponse.data.data || []).map((item) => item.product_id));
+      const productOptions = (productsResponse.data.data || [])
+        .filter((item) => item.status !== 'archived')
+        .map((item) => ({
+          value: item.id,
+          label: `${item.sku || item.name}${attachedIds.has(item.id) ? '' : '（未挂项目）'}`,
+          sku: item.sku
+        }));
+      const currentSku = record.product_sku || splitCampaignName(record.campaign_name).product;
+      const current = productOptions.find((item) => item.sku === currentSku) || null;
+      values.product_id = current?.value;
+      setEditProducts(productOptions);
+    } catch (error) {
+      setEditProducts([]);
+      message.error(error.response?.data?.error || '获取产品列表失败');
+    }
     form.setFieldsValue(values);
   };
 
@@ -316,20 +338,19 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   const confirmCooperation = async (record) => {
     setConfirmingId(record.id);
     try {
-      await axios.post(`/api/campaign-kols/${record.id}/confirm-cooperation`);
-      try {
-        const syncResponse = await axios.post('/api/sync/feishu/push', {
-          scope: 'campaign_kols', ids: [record.id]
-        });
-        const failed = syncResponse.data?.data?.failed_count || 0;
-        if (failed) {
-          const reason = syncResponse.data?.data?.results?.find((item) => !item.success)?.error;
-          message.warning(`已确认合作，但飞书项目跟进同步失败：${reason || '请稍后重试'}`);
-        } else {
-          message.success('已确认合作，并同步到飞书项目跟进表');
-        }
-      } catch (syncError) {
-        message.warning(`已确认合作，但飞书项目跟进同步失败：${syncError.response?.data?.error || syncError.message || '请稍后重试'}`);
+      const response = await axios.post(`/api/campaign-kols/${record.id}/confirm-cooperation`);
+      const syncs = response.data?.syncs || [];
+      const succeeded = syncs.filter((item) => item.success);
+      const failed = syncs.filter((item) => !item.success);
+      if (succeeded.length && !failed.length) {
+        const labels = [...new Set(succeeded.map((item) => item.label || '飞书'))];
+        message.success(`已确认合作，并同步到${labels.join('、')}`);
+      } else if (failed.length) {
+        const labels = [...new Set(failed.map((item) => item.label || '飞书'))];
+        const reasons = failed.map((item) => item.error || '未知错误').join('；');
+        message.warning(`已确认合作，但${labels.join('、')}同步失败：${reasons}`);
+      } else {
+        message.warning('已确认合作，但未配置飞书导出目标，请先在设置中配置普通表格或多维表格');
       }
       fetchRows();
     } catch (error) {
@@ -779,7 +800,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       render: (_, record) => (
         <Space direction="vertical" size={0} align="start">
           {isCandidatePool && (
-            <Popconfirm title="确认后将进入 KOL 合作，并同步至飞书项目跟进表；候选池记录会保留。" onConfirm={() => confirmCooperation(record)}>
+            <Popconfirm title="确认后将进入 KOL 合作，并按项目配置同步到飞书普通表格或多维表格；候选池记录会保留。" onConfirm={() => confirmCooperation(record)}>
               <Button type="link" icon={<CheckOutlined />} loading={confirmingId === record.id}>确认合作</Button>
             </Popconfirm>
           )}
@@ -846,7 +867,7 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           columns={columns}
           dataSource={visibleRows}
           loading={loading}
-          rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
+          rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, preserveSelectedRowKeys: true }}
           scroll={{ x: 2100 }}
           pagination={{ defaultPageSize: 10, showSizeChanger: true }}
         />
@@ -1082,6 +1103,15 @@ const CampaignKols = ({ view = 'cooperation' }) => {
               <Select options={cooperationTypeOptions} style={{ width: 190 }} />
             </Form.Item>
           </Space>
+          <Form.Item label="沟通产品/SKU" name="product_id">
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择产品"
+              options={editProducts}
+              allowClear
+            />
+          </Form.Item>
           <Space align="start" style={{ width: '100%' }}>
             <Form.Item label="KOL合作费" name="final_fee">
               <InputNumber min={0} precision={2} disabled={cooperationType === 'product_exchange'} style={{ width: 200 }} placeholder="0.00" />

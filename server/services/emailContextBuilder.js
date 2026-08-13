@@ -176,11 +176,16 @@ async function generateThreadSummary(threadId, opts = {}, db = dbOperations) {
   }
 }
 
-function renderProjectBlock(campaign) {
+function renderProjectBlock(campaign, communicationProduct = null) {
   if (!campaign) return '';
   const lines = [`项目名称：${campaign.name}`];
   if (campaign.brand) lines.push(`品牌：${campaign.brand}`);
-  if (campaign.product) lines.push(`产品：${campaign.product}`);
+  const product = communicationProduct?.product_sku || communicationProduct?.product_name;
+  if (product) {
+    lines.push(`产品：${[communicationProduct.product_sku, communicationProduct.product_name].filter(Boolean).join(' | ')}`);
+  } else if (campaign.product) {
+    lines.push(`产品：${campaign.product}`);
+  }
   if (campaign.period) lines.push(`项目周期：${campaign.period}`);
   if (campaign.status) lines.push(`项目状态：${campaign.status}`);
   return lines.join('\n');
@@ -259,6 +264,17 @@ async function buildThreadContext(threadId, opts = {}, db = dbOperations) {
       [thread.campaign_id, thread.customer_id]
     )
     : null;
+  const communicationProduct = campaignKol
+    ? await db.get(
+        `SELECT p.sku AS product_sku, p.name AS product_name
+         FROM campaign_kol_products ckp
+         JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+         JOIN products p ON p.id = cp.product_id
+         WHERE ckp.campaign_kol_id = ? AND ckp.assignment_status = 'active'
+         ORDER BY cp.priority DESC, ckp.id LIMIT 1`,
+        [campaignKol.id]
+      )
+    : null;
   const strategy = thread.campaign_id
     ? await db.get('SELECT * FROM kol_strategies WHERE campaign_id = ? ORDER BY updated_at DESC LIMIT 1', [thread.campaign_id])
     : null;
@@ -270,7 +286,7 @@ async function buildThreadContext(threadId, opts = {}, db = dbOperations) {
 
   return {
     thread,
-    projectBlock: renderProjectBlock(campaign),
+    projectBlock: renderProjectBlock(campaign, communicationProduct),
     kolBlock: renderKolBlock(customer),
     strategyBlock: renderStrategyBlock(strategy),
     factsBlock: renderFactsBlock(campaignKol),

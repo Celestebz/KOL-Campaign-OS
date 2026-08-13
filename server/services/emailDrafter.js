@@ -22,10 +22,13 @@ const SUPPORTED_PLATFORMS = Object.keys(PLATFORM_LABELS);
 
 const SYSTEM_PROMPT = 'You are an outreach copywriter for a brand marketing team. Write natural, professional emails to content creators. Return valid JSON only. No Markdown, no explanations.';
 
-function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', threadContext = null, replyFallback = null }) {
+function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', threadContext = null, replyFallback = null, communicationProduct = null }) {
   const videoLines = videos.map((v) =>
     `- [${v.video_id ?? v.youtube_video_id}] "${v.title}" | ${Number(v.play_count || 0).toLocaleString()} views | published ${v.published_at ? new Date(v.published_at).toISOString().slice(0, 10) : 'unknown'}`
   ).join('\n');
+  const productContext = communicationProduct
+    ? [communicationProduct.product_sku, communicationProduct.product_name].filter(Boolean).join(' | ')
+    : (strategy?.product_context || campaign.product || '');
   const platformLabel = PLATFORM_LABELS[platform] || platform;
   const followerCount = followers ?? customer.youtube_followers;
   const evidenceRules = videos.length
@@ -70,7 +73,7 @@ Creator: ${customer.name} (${customer.country_region || 'unknown region'}), ${pl
 Recent real videos (ONLY these may be cited):
 ${videoLines || '(no videos available)'}
 
-Campaign: ${campaign.name}. Product context: ${strategy?.product_context || campaign.product || ''}.${conversationBlock ? `\n${conversationBlock}` : ''}
+Campaign: ${campaign.name}. Product context: ${productContext || '(none)'}.${conversationBlock ? `\n${conversationBlock}` : ''}
 Writing rules (must follow strictly):
 ${styleGuide}
 ${feedback ? `\nHuman feedback on previous version (address it): ${feedback}` : ''}
@@ -216,6 +219,17 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       'SELECT * FROM campaign_kols WHERE campaign_id = ? AND customer_id = ? ORDER BY id DESC LIMIT 1',
       [campaignId, customerId]
     );
+    const communicationProduct = campaignKol
+      ? await dbOperations.get(
+          `SELECT p.sku AS product_sku, p.name AS product_name
+           FROM campaign_kol_products ckp
+           JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+           JOIN products p ON p.id = cp.product_id
+           WHERE ckp.campaign_kol_id = ? AND ckp.assignment_status = 'active'
+           ORDER BY cp.priority DESC, ckp.id LIMIT 1`,
+          [campaignKol.id]
+        )
+      : null;
     if (!draftId) {
       const blocking = await findBlockingDraft({ campaignId, customerId, kind, sourceReplyId });
       if (blocking) {
@@ -298,7 +312,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       styleGuide: styleGuide?.body_html || '',
       videos, feedback, platform, followers, kind,
       senderName: mailbox?.sender_name || '',
-      threadContext, replyFallback
+      threadContext, replyFallback, communicationProduct
     });
     const { parsed, model } = await aiClient.callActiveAi(SYSTEM_PROMPT, userPrompt);
 

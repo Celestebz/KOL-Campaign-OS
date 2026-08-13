@@ -1,6 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { dbOperations } = require('../database');
+const confirmCooperationSync = require('../services/confirmCooperationSync');
+
+// 确认合作路由会触发飞书同步；单测只验证本地确认逻辑，避免真实网络调用。
+confirmCooperationSync.syncConfirmedToFeishu = async () => ({ targets: [] });
 
 function findHandler(router, method, path) {
   const layer = router.stack.find((item) => (
@@ -303,6 +307,113 @@ test('published-video endpoints reject candidate-stage records', async () => {
   } finally {
     dbOperations.get = originalGet;
     dbOperations.query = originalQuery;
+    dbOperations.run = originalRun;
+  }
+});
+
+test('POST /:id/products/switch attaches a new product and pauses the previous active assignment', async () => {
+  const originalGet = dbOperations.get;
+  const originalRun = dbOperations.run;
+  const writes = [];
+  dbOperations.get = async (sql, params = []) => {
+    const text = String(sql);
+    if (text.includes('FROM campaign_kols WHERE id = ?')) {
+      return { id: 7, campaign_id: 2, customer_id: 11 };
+    }
+    if (text.includes('FROM products WHERE id = ?')) {
+      return { id: 42, sku: 'TMB-1404', name: '53-inch PTO Flail Mower', status: 'active' };
+    }
+    if (text.includes('FROM campaign_products WHERE campaign_id = ? AND product_id = ?')) {
+      return null;
+    }
+    if (text.includes('FROM campaign_kol_products WHERE campaign_kol_id = ? AND campaign_product_id = ?')) {
+      return null;
+    }
+    if (text.includes('FROM campaign_kol_products ckp')) {
+      return {
+        id: 77,
+        campaign_kol_id: 7,
+        campaign_product_id: 9,
+        fit_status: 'approved',
+        assignment_status: 'active',
+        product_sku: 'TMB-1404',
+        product_name: '53-inch PTO Flail Mower'
+      };
+    }
+    return null;
+  };
+  dbOperations.run = async (sql) => {
+    writes.push({ sql: String(sql) });
+    if (/INSERT INTO campaign_products\b/.test(sql)) return { id: 9 };
+    if (/INSERT INTO campaign_kol_products\b/.test(sql)) return { id: 77 };
+    return { changes: 1 };
+  };
+  try {
+    const router = require('./campaignKols');
+    const response = await callHandler(findHandler(router, 'post', '/:id/products/switch'), {
+      params: { id: '7' },
+      body: { product_id: 42 }
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.payload.data.product_sku, 'TMB-1404');
+    assert.ok(writes.some((item) => /INSERT INTO campaign_products\b/.test(item.sql)));
+    assert.ok(writes.some((item) => item.sql.includes("assignment_status = 'paused'")));
+    assert.ok(writes.some((item) => item.sql.includes("campaign_kols SET sync_status = 'sync_pending'")));
+  } finally {
+    dbOperations.get = originalGet;
+    dbOperations.run = originalRun;
+  }
+});
+
+test('PATCH /:id switches communication product when product_id is provided', async () => {
+  const originalGet = dbOperations.get;
+  const originalRun = dbOperations.run;
+  const writes = [];
+  dbOperations.get = async (sql, params = []) => {
+    const text = String(sql);
+    if (text.includes('FROM campaign_kols WHERE id = ?')) {
+      return { id: 7, campaign_id: 2, customer_id: 11, pipeline_stage: 'candidate', outreach_status: 'not_contacted' };
+    }
+    if (text.includes('FROM products WHERE id = ?')) {
+      return { id: 42, sku: 'TMB-1404', name: '53-inch PTO Flail Mower', status: 'active' };
+    }
+    if (text.includes('FROM campaign_products WHERE campaign_id = ? AND product_id = ?')) {
+      return null;
+    }
+    if (text.includes('FROM campaign_kol_products WHERE campaign_kol_id = ? AND campaign_product_id = ?')) {
+      return null;
+    }
+    if (text.includes('FROM campaign_kol_products ckp')) {
+      return {
+        id: 77,
+        campaign_kol_id: 7,
+        campaign_product_id: 9,
+        fit_status: 'approved',
+        assignment_status: 'active',
+        product_sku: 'TMB-1404',
+        product_name: '53-inch PTO Flail Mower'
+      };
+    }
+    return null;
+  };
+  dbOperations.run = async (sql) => {
+    writes.push({ sql: String(sql) });
+    if (/INSERT INTO campaign_products\b/.test(sql)) return { id: 9 };
+    if (/INSERT INTO campaign_kol_products\b/.test(sql)) return { id: 77 };
+    return { changes: 1 };
+  };
+  try {
+    const router = require('./campaignKols');
+    const response = await callHandler(findHandler(router, 'patch', '/:id'), {
+      params: { id: '7' },
+      body: { product_id: 42, project_notes: 'switch to flail mower' }
+    });
+    assert.equal(response.statusCode, 200);
+    assert.ok(writes.some((item) => /INSERT INTO campaign_products\b/.test(item.sql)));
+    assert.ok(writes.some((item) => item.sql.includes("assignment_status = 'paused'")));
+    assert.ok(writes.some((item) => item.sql.includes('project_notes = ?')));
+  } finally {
+    dbOperations.get = originalGet;
     dbOperations.run = originalRun;
   }
 });

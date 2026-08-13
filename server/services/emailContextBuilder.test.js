@@ -32,13 +32,14 @@ function mkRecord(id, { at, body, messageId, subject = 'Hi', to = 'kol@x.com' })
 }
 
 // 内存版最小仓库：按 SQL 形态路由到固定数据，run 只记录
-function createFakeDb({ thread, replies = [], records = [], campaign = null, customer = null, campaignKol = null, strategy = null }) {
+function createFakeDb({ thread, replies = [], records = [], campaign = null, customer = null, campaignKol = null, strategy = null, campaignKolProduct = null }) {
   const statements = [];
   const get = async (sql) => {
     if (/FROM email_threads WHERE id = \?/.test(sql)) return thread;
     if (/FROM campaigns WHERE id = \?/.test(sql)) return campaign;
     if (/FROM customers WHERE id = \?/.test(sql)) return customer;
     if (/FROM campaign_kols WHERE campaign_id = \?/.test(sql)) return campaignKol;
+    if (/FROM campaign_kol_products ckp/.test(sql)) return campaignKolProduct;
     if (/FROM kol_strategies WHERE campaign_id = \?/.test(sql)) return strategy;
     throw new Error(`Unexpected get: ${sql}`);
   };
@@ -57,6 +58,25 @@ function createFakeDb({ thread, replies = [], records = [], campaign = null, cus
 const baseThread = { id: 33, campaign_id: 5, customer_id: 7, normalized_subject: 'Hi', context_summary: null, summary_through_message_id: null };
 const baseCampaign = { id: 5, name: 'Everglow', brand: 'BILT HARD', product: 'Tree collar', period: '2026Q3', status: 'active' };
 const baseCustomer = { id: 7, name: 'Casey', platform: 'instagram', country_region: 'US', email: 'kol@x.com' };
+
+test('communication product overrides the campaign product in the project block', async () => {
+  const fake = createFakeDb({
+    thread: baseThread,
+    campaign: baseCampaign,
+    customer: baseCustomer,
+    campaignKol: { cooperation_type: 'product_exchange' },
+    campaignKolProduct: { product_sku: 'TMB-1404', product_name: '53-inch PTO Flail Mower' },
+    replies: [],
+    records: []
+  });
+  const noAi = async () => { throw new Error('AI should not be called'); };
+  await withPatched(aiClient, { callActiveAi: noAi }, async () => {
+    const ctx = await emailContextBuilder.buildThreadContext(33, {}, fake);
+    assert.ok(ctx.projectBlock.includes('TMB-1404'));
+    assert.ok(ctx.projectBlock.includes('53-inch PTO Flail Mower'));
+    assert.ok(!ctx.projectBlock.includes('Tree collar'));
+  });
+});
 
 test('≤6 封：全部给完整清洗正文，方向/时间/发件人标记齐全，不调 AI', async () => {
   const fake = createFakeDb({

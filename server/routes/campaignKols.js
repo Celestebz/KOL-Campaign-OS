@@ -3,6 +3,7 @@ const { dbOperations } = require('../database');
 const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
 const timeline = require('../services/campaignKolTimeline');
 const emailFollowUp = require('../services/emailFollowUp');
+const { syncConfirmedToFeishu } = require('../services/confirmCooperationSync');
 const {
   PROJECT_STATUSES,
   PRIORITY_LEVELS,
@@ -108,6 +109,94 @@ async function markCustomerSyncPending(customerId) {
   );
 }
 
+async function switchCommunicationProduct(campaignKolId, productId) {
+  const campaignKol = await dbOperations.get(
+    'SELECT id, campaign_id, customer_id FROM campaign_kols WHERE id = ?',
+    [campaignKolId]
+  );
+  if (!campaignKol) {
+    const error = new Error('Campaign KOL not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const product = await dbOperations.get(
+    'SELECT id, sku, name, status FROM products WHERE id = ?',
+    [productId]
+  );
+  if (!product) {
+    const error = new Error('Product not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (product.status === 'archived') {
+    const error = new Error('Archived Product cannot be used as the communication product');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  let campaignProduct = await dbOperations.get(
+    'SELECT id, status FROM campaign_products WHERE campaign_id = ? AND product_id = ?',
+    [campaignKol.campaign_id, productId]
+  );
+  if (!campaignProduct) {
+    const created = await dbOperations.run(
+      `INSERT INTO campaign_products
+       (campaign_id, product_id, role, priority, status, created_at, updated_at)
+       VALUES (?, ?, 'secondary', 1, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [campaignKol.campaign_id, productId]
+    );
+    campaignProduct = { id: created.id, status: 'active' };
+  } else if (campaignProduct.status === 'archived') {
+    await dbOperations.run(
+      `UPDATE campaign_products SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [campaignProduct.id]
+    );
+    campaignProduct.status = 'active';
+  }
+
+  const existingAssignment = await dbOperations.get(
+    'SELECT id FROM campaign_kol_products WHERE campaign_kol_id = ? AND campaign_product_id = ?',
+    [campaignKolId, campaignProduct.id]
+  );
+  if (existingAssignment) {
+    await dbOperations.run(
+      `UPDATE campaign_kol_products SET assignment_status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [existingAssignment.id]
+    );
+  } else {
+    await dbOperations.run(
+      `INSERT INTO campaign_kol_products
+       (campaign_kol_id, campaign_product_id, fit_status, assignment_status, created_at, updated_at)
+       VALUES (?, ?, 'approved', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [campaignKolId, campaignProduct.id]
+    );
+  }
+
+  await dbOperations.run(
+    `UPDATE campaign_kol_products SET assignment_status = 'paused', updated_at = CURRENT_TIMESTAMP
+     WHERE campaign_kol_id = ? AND campaign_product_id <> ? AND assignment_status = 'active'`,
+    [campaignKolId, campaignProduct.id]
+  );
+  await dbOperations.run(
+    `UPDATE campaign_kols SET sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [campaignKolId]
+  );
+  await markCustomerSyncPending(campaignKol.customer_id);
+
+  return dbOperations.get(
+    `SELECT ckp.*, cp.campaign_id, cp.role, cp.priority, cp.campaign_brief, cp.status AS campaign_product_status,
+       p.id AS product_id, p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
+       p.category AS product_category, p.product_url, p.description AS product_description,
+       p.selling_points AS product_selling_points, p.status AS product_status
+     FROM campaign_kol_products ckp
+     JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
+     JOIN products p ON p.id = cp.product_id
+     WHERE ckp.campaign_kol_id = ? AND ckp.campaign_product_id = ?`,
+    [campaignKolId, campaignProduct.id]
+  );
+}
+
 // 以下两个函数供 approval_items 决定副作用（decisionDispatcher）复用，
 // 与 PATCH /:id 走相同的 sync_status/markCustomerSyncPending 约定。
 async function setCampaignKolStatus(id, status) {
@@ -160,11 +249,13 @@ router.get('/', async (req, res) => {
         (SELECT p.sku FROM campaign_kol_products ckp
          JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
          JOIN products p ON p.id = cp.product_id
-         WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_sku,
+         WHERE ckp.campaign_kol_id = ck.id
+         ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_sku,
         (SELECT p.name FROM campaign_kol_products ckp
          JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
          JOIN products p ON p.id = cp.product_id
-         WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_name
+         WHERE ckp.campaign_kol_id = ck.id
+         ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_name
       FROM campaign_kols ck
       JOIN campaigns c ON c.id = ck.campaign_id
       JOIN customers k ON k.id = ck.customer_id
@@ -256,7 +347,7 @@ router.get('/:id/products', async (req, res) => {
        JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
        JOIN products p ON p.id = cp.product_id
        WHERE ckp.campaign_kol_id = ?
-       ORDER BY cp.priority DESC, cp.created_at ASC, cp.id ASC`,
+       ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, cp.created_at ASC, cp.id ASC`,
       [campaignKolId]
     );
     res.json({ success: true, data: rows.map(normalizeCampaignKolProduct) });
@@ -320,6 +411,24 @@ router.put('/:id/products/:campaignProductId', async (req, res) => {
     res.json({ success: true, data: normalizeCampaignKolProduct(updated), message: 'Campaign KOL Product updated' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/products/switch', async (req, res) => {
+  try {
+    const campaignKolId = parsePathId(req.params.id);
+    const productId = Number(req.body.product_id);
+    if (campaignKolId === null) {
+      return res.status(400).json({ success: false, error: 'Campaign KOL id must be a positive integer' });
+    }
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
+    }
+
+    const updated = await switchCommunicationProduct(campaignKolId, productId);
+    res.json({ success: true, data: normalizeCampaignKolProduct(updated), message: 'Communication product switched' });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -464,6 +573,14 @@ router.patch('/:id', async (req, res) => {
     const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
     if (!row) return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
 
+    const requestedProductId = req.body.product_id === undefined ? undefined : Number(req.body.product_id);
+    if (requestedProductId !== undefined) {
+      if (!Number.isSafeInteger(requestedProductId) || requestedProductId <= 0) {
+        return res.status(400).json({ success: false, error: 'Product id must be a positive integer' });
+      }
+      await switchCommunicationProduct(id, requestedProductId);
+    }
+
     const updates = {};
     for (const field of EDITABLE_FIELDS) {
       if (req.body[field] !== undefined) {
@@ -501,7 +618,7 @@ router.patch('/:id', async (req, res) => {
     }
     if (stage === 'confirmed') delete updates.outreach_status;
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0 && requestedProductId === undefined) {
       return res.status(400).json({ success: false, error: 'No editable fields provided' });
     }
 
@@ -517,11 +634,13 @@ router.patch('/:id', async (req, res) => {
     const assignments = fields.map((field) => `${field} = ?`).join(', ');
     const values = fields.map((field) => updates[field]);
 
-    await dbOperations.run(
-      `UPDATE campaign_kols SET ${assignments}, sync_status = 'sync_pending',
-       updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [...values, id]
-    );
+    if (fields.length > 0) {
+      await dbOperations.run(
+        `UPDATE campaign_kols SET ${assignments}, sync_status = 'sync_pending',
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [...values, id]
+      );
+    }
     await markCustomerSyncPending(row.customer_id);
     const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
     res.json({ success: true, data: updated, message: 'Campaign KOL updated' });
@@ -539,7 +658,10 @@ router.post('/:id/confirm-cooperation', async (req, res) => {
     const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
     if (!row) return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
     if (row.pipeline_stage === 'confirmed') {
-      return res.json({ success: true, data: row, message: 'KOL cooperation already confirmed' });
+      const syncs = await syncConfirmedToFeishu(id).then((result) => result?.targets || []).catch((error) => (
+        [{ type: 'unknown', label: '飞书', success: false, error: error.message || '同步失败' }]
+      ));
+      return res.json({ success: true, data: row, message: 'KOL cooperation already confirmed', syncs });
     }
     if (row.pipeline_stage !== 'candidate') {
       return res.status(409).json({ success: false, error: '只有项目候选可以确认合作；历史合作记录不能确认合作' });
@@ -559,7 +681,10 @@ router.post('/:id/confirm-cooperation', async (req, res) => {
     );
     await markCustomerSyncPending(row.customer_id);
     const updated = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
-    res.json({ success: true, data: updated, message: 'KOL cooperation confirmed' });
+    const syncs = await syncConfirmedToFeishu(id).then((result) => result?.targets || []).catch((error) => (
+      [{ type: 'unknown', label: '飞书', success: false, error: error.message || '同步失败' }]
+    ));
+    res.json({ success: true, data: updated, message: 'KOL cooperation confirmed', syncs });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

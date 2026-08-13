@@ -1111,11 +1111,13 @@ async function syncCampaignKols(config, token, ids = []) {
       (SELECT p.sku FROM campaign_kol_products ckp
        JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
        JOIN products p ON p.id = cp.product_id
-       WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_sku,
+       WHERE ckp.campaign_kol_id = ck.id
+       ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_sku,
       (SELECT p.name FROM campaign_kol_products ckp
        JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
        JOIN products p ON p.id = cp.product_id
-       WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_name
+       WHERE ckp.campaign_kol_id = ck.id
+       ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_name
     FROM campaign_kols ck
     JOIN campaigns c ON c.id = ck.campaign_id
     JOIN customers k ON k.id = ck.customer_id
@@ -1689,3 +1691,6 @@ module.exports.OUTREACH_STATUS_LABELS = OUTREACH_STATUS_LABELS;
 module.exports.EXECUTION_STATUSES = EXECUTION_STATUSES;
 module.exports.campaignKolTargetTableId = campaignKolTargetTableId;
 module.exports.isCandidatePoolTable = isCandidatePoolTable;
+module.exports.getFeishuConfig = getFeishuConfig;
+module.exports.getTenantAccessToken = getTenantAccessToken;
+module.exports.syncCampaignKols = syncCampaignKols;

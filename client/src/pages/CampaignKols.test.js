@@ -17,6 +17,8 @@ import CampaignKols, {
 } from './CampaignKols';
 import { describeSyncResult } from './campaignKolSyncResult';
 
+jest.setTimeout(20000);
+
 jest.mock('axios', () => ({ get: jest.fn(), post: jest.fn(), patch: jest.fn(), put: jest.fn() }));
 jest.mock('antd', () => {
   const actual = jest.requireActual('antd');
@@ -62,8 +64,8 @@ function mockListRequests() {
 async function clickSync() {
   render(<CampaignKols />);
   expect(await screen.findByText('Alice')).toBeInTheDocument();
-  const button = screen.getByRole('button', { name: /同步待同步到飞书项目跟进表/ });
-  await userEvent.click(button);
+  await userEvent.click(screen.getByRole('button', { name: /同步到飞书/ }));
+  await userEvent.click(await screen.findByText('多维表格 · 项目跟进表'));
   await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/sync/feishu/push', expect.anything()));
   await waitFor(() => expect(
     message.success.mock.calls.length + message.warning.mock.calls.length + message.error.mock.calls.length
@@ -231,7 +233,13 @@ describe('CampaignKols confirm cooperation', () => {
   test('candidate view shows the required notice, confirms and syncs to the tracking table', async () => {
     axios.post.mockImplementation((url) => {
       if (url.includes('/confirm-cooperation')) {
-        return Promise.resolve({ data: { success: true, data: { ...kolRow, pipeline_stage: 'confirmed' } } });
+        return Promise.resolve({
+          data: {
+            success: true,
+            data: { ...kolRow, pipeline_stage: 'confirmed' },
+            syncs: [{ type: 'sheet', label: '普通表格', success: true }]
+          }
+        });
       }
       return Promise.resolve({ data: { data: { success_count: 1, failed_count: 0, results: [{ success: true }] } } });
     });
@@ -239,14 +247,12 @@ describe('CampaignKols confirm cooperation', () => {
     render(<CampaignKols view="candidate" />);
     expect(await screen.findByText('Alice')).toBeInTheDocument();
     await userEvent.click(await screen.findByRole('button', { name: /确认合作/ }));
-    expect(await screen.findByText('确认后将进入 KOL 合作，并同步至飞书项目跟进表；候选池记录会保留。')).toBeInTheDocument();
+    expect(await screen.findByText('确认后将进入 KOL 合作，并按项目配置同步到飞书普通表格或多维表格；候选池记录会保留。')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /^(OK|确\s*定)$/ }));
 
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/campaign-kols/7/confirm-cooperation'));
-    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/sync/feishu/push', {
-      scope: 'campaign_kols', ids: [7]
-    }));
-    await waitFor(() => expect(message.success).toHaveBeenCalledWith('已确认合作，并同步到飞书项目跟进表'));
+    expect(axios.post).not.toHaveBeenCalledWith('/api/sync/feishu/push', expect.anything());
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith('已确认合作，并同步到普通表格'));
     expect(message.warning).not.toHaveBeenCalled();
     expect(message.error).not.toHaveBeenCalled();
   });
@@ -254,7 +260,13 @@ describe('CampaignKols confirm cooperation', () => {
   test('keeps the local confirmation and warns with the reason when the Feishu sync fails', async () => {
     axios.post.mockImplementation((url) => {
       if (url.includes('/confirm-cooperation')) {
-        return Promise.resolve({ data: { success: true, data: { ...kolRow, pipeline_stage: 'confirmed' } } });
+        return Promise.resolve({
+          data: {
+            success: true,
+            data: { ...kolRow, pipeline_stage: 'confirmed' },
+            syncs: [{ type: 'sheet', label: '普通表格', success: false, error: '飞书连接超时' }]
+          }
+        });
       }
       return Promise.resolve({
         data: { data: { success_count: 0, failed_count: 1, results: [{ success: false, error: '飞书连接超时' }] } }
@@ -267,7 +279,7 @@ describe('CampaignKols confirm cooperation', () => {
     await userEvent.click(await screen.findByRole('button', { name: /^(OK|确\s*定)$/ }));
 
     await waitFor(() => expect(message.warning).toHaveBeenCalledTimes(1));
-    expect(message.warning.mock.calls[0][0]).toContain('已确认合作，但飞书项目跟进同步失败');
+    expect(message.warning.mock.calls[0][0]).toContain('已确认合作，但普通表格同步失败');
     expect(message.warning.mock.calls[0][0]).toContain('飞书连接超时');
     expect(message.success).not.toHaveBeenCalled();
     expect(message.error).not.toHaveBeenCalled();
@@ -536,5 +548,77 @@ describe('CampaignKols 项目与产品SKU拆分', () => {
     await userEvent.click(option);
     await waitFor(() => expect(screen.queryByText('Alice')).not.toBeInTheDocument());
     expect(screen.getByText('Bob')).toBeInTheDocument();
+  });
+});
+
+describe('CampaignKols 编辑弹窗切换沟通产品', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/campaigns') return Promise.resolve({ data: { data: [{ id: 3, name: 'Lobster Co' }] } });
+      if (url === '/api/campaign-kols') return Promise.resolve({
+        data: { data: [{ ...kolRow, product_sku: 'TMB-1401', product_name: '48-inch PTO Finish Mower' }] }
+      });
+      if (url === '/api/products') return Promise.resolve({
+        data: { data: [
+          { id: 1, sku: 'TMB-1401', name: '48-inch PTO Finish Mower', status: 'active' },
+          { id: 42, sku: 'TMB-1404', name: '53-inch PTO Flail Mower', status: 'active' }
+        ] }
+      });
+      if (url === '/api/campaigns/3/products') return Promise.resolve({
+        data: { data: [{ id: 2, product_id: 1, role: 'hero', status: 'active' }] }
+      });
+      return Promise.resolve({ data: { data: [] } });
+    });
+    axios.patch.mockResolvedValue({ data: { success: true, data: {} } });
+  });
+
+  test('sends the selected communication product in the edit save request', async () => {
+    render(<CampaignKols view="candidate" />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    const editButtons = screen.getAllByRole('button', { name: /编辑/ });
+    fireEvent.click(editButtons[editButtons.length - 1]);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('沟通产品/SKU')).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole('combobox', { name: '沟通产品/SKU' }));
+    const option = (await screen.findAllByText(/TMB-1404/))
+      .find((el) => el.closest('.ant-select-item-option'));
+    expect(option).toBeTruthy();
+    await userEvent.click(option);
+    await userEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }));
+
+    await waitFor(() => expect(axios.patch).toHaveBeenCalledWith(
+      '/api/campaign-kols/7',
+      expect.objectContaining({ product_id: 42 })
+    ));
+    expect(axios.post).not.toHaveBeenCalledWith('/api/campaign-kols/7/products/switch', expect.anything());
+  });
+});
+
+describe('CampaignKols cross-page selection', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/campaigns') return Promise.resolve({ data: { data: [{ id: 3, name: 'Lobster Co' }] } });
+      if (url === '/api/campaign-kols') return Promise.resolve({
+        data: { data: Array.from({ length: 15 }, (_, index) => ({ ...kolRow, id: index + 1, kol_name: `Creator ${index + 1}` })) }
+      });
+      return Promise.resolve({ data: { data: [] } });
+    });
+  });
+
+  test('keeps the row checked after paging away and back', async () => {
+    render(<CampaignKols />);
+    expect(await screen.findByText('Creator 1')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('checkbox')[1]);
+    expect(screen.getAllByRole('checkbox')[1]).toBeChecked();
+
+    fireEvent.click(screen.getByTitle('2'));
+    expect(await screen.findByText('Creator 11')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('1'));
+    expect(await screen.findByText('Creator 1')).toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox')[1]).toBeChecked();
   });
 });

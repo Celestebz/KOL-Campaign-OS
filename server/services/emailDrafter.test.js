@@ -29,12 +29,13 @@ function daysAgo(n) {
 }
 
 // 内存版最小仓库：按 SQL 形态路由到固定数据，run 只记录
-function createFakeDb({ customer = igCustomer, campaignKol = null, finderVideos = [], aiParsed } = {}) {
+function createFakeDb({ customer = igCustomer, campaignKol = null, finderVideos = [], aiParsed, campaignKolProduct = null } = {}) {
   const statements = [];
   const get = async (sql) => {
     if (/FROM campaigns WHERE id = \?/.test(sql)) return { id: 5, name: 'Everglow', product: 'Tree collar' };
     if (/FROM customers WHERE id = \?/.test(sql)) return customer;
     if (/FROM campaign_kols WHERE campaign_id = \?/.test(sql)) return campaignKol;
+    if (/FROM campaign_kol_products ckp/.test(sql)) return campaignKolProduct;
     if (/FROM kol_strategies WHERE campaign_id = \?/.test(sql)) return { target_market: 'US', product_context: 'tree collar' };
     if (/FROM email_templates/.test(sql)) return { id: 3, body_html: 'be brief' };
     if (/FROM email_settings/.test(sql)) return { sender_name: 'Celeste' };
@@ -92,6 +93,21 @@ test('first-touch prompt uses configured sender and asks interest before commerc
   assert.match(prompt, /never continue the first sentence on the greeting line/);
   assert.match(prompt, /one blank line between every paragraph/);
   assert.match(prompt, /override any conflicting general style-guide instruction/);
+});
+
+test('communication product overrides the campaign product in the AI prompt', () => {
+  const prompt = emailDrafter.buildUserPrompt({
+    customer: { name: 'Casey', country_region: 'US' },
+    campaign: { name: 'TMB-1401', product: '48-inch PTO Finish Mower' },
+    strategy: null,
+    styleGuide: 'be brief',
+    videos: [],
+    senderName: 'Celeste',
+    kind: 'first_touch',
+    communicationProduct: { product_sku: 'TMB-1404', product_name: '53-inch PTO Flail Mower' }
+  });
+  assert.match(prompt, /TMB-1404/);
+  assert.match(prompt, /53-inch PTO Flail Mower/);
 });
 
 test('normalizeGreetingLine puts a blank line after a greeting without changing formatted bodies', () => {

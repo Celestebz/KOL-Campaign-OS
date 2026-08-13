@@ -170,6 +170,16 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
 
   const timeline = useMemo(() => (detail ? (detail.timeline || []) : legacyTimeline), [detail, legacyTimeline]);
 
+  // 往来邮件按最新日期在前展示；服务端 timeline 仍按时间升序供 AI 摘要使用
+  const displayTimeline = useMemo(
+    () => [...timeline].sort((a, b) => {
+      const diff = new Date(b.at).getTime() - new Date(a.at).getTime();
+      if (diff) return diff;
+      return String(b.messageId).localeCompare(String(a.messageId));
+    }),
+    [timeline]
+  );
+
   const initEditor = useCallback((d) => {
     setEditSubject(d?.subject || '');
     setEditHtml(plainTextToHtml(d?.body_text || ''));
@@ -178,8 +188,12 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
   // 默认展开：最新一封来信 + 最近一封我方邮件；更早的折叠
   const defaultExpandedIds = useCallback((items) => {
     const ids = new Set();
-    const latestInbound = [...items].reverse().find((m) => m.direction === 'inbound');
-    const latestOutbound = [...items].reverse().find((m) => m.direction === 'outbound');
+    const latestInbound = [...items]
+      .filter((m) => m.direction === 'inbound')
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())[0];
+    const latestOutbound = [...items]
+      .filter((m) => m.direction === 'outbound')
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())[0];
     if (latestInbound) ids.add(latestInbound.messageId);
     if (latestOutbound) ids.add(latestOutbound.messageId);
     return ids;
@@ -237,8 +251,8 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
   }, [open, threadId, reply, loadThread, legacyTimeline, initEditor]);
 
   const latestInbound = useMemo(
-    () => [...timeline].reverse().find((m) => m.direction === 'inbound') || null,
-    [timeline]
+    () => [...displayTimeline].find((m) => m.direction === 'inbound') || null,
+    [displayTimeline]
   );
 
   // 回复目标：草稿记录的 reply_to_message_id（需能在时间线中找到），否则最新一封来信
@@ -445,7 +459,7 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
             {!timeline.length && !loading ? (
               <Empty description="暂无往来邮件" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 40 }} />
             ) : (
-              timeline.map((item) => (
+              displayTimeline.map((item) => (
                 <TimelineCard
                   key={item.messageId}
                   item={item}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up KOL Campaign OS data
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/backup-kol-campaign-os
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

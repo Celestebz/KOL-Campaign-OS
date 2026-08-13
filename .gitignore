@@ -111,6 +111,14 @@ Desktop.ini
 server/scratch_*.js
 server/submit_candidates.js
 
+# One-off / temporary scripts (not project content)
+/scratch_*.cjs
+/server/scratch_*.cjs
+/scripts/_cache_*.cjs
+/scripts/_sc_*.cjs
+/server/scripts/ad-hoc-*.cjs
+/server/tmp_*.js
+
 # Superpowers dev workflow state (brainstorm sessions, SDD working docs)
 .superpowers/
 

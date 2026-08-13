@@ -175,7 +175,9 @@ function mapCandidateRow(row) {
   const all = [
     platform, name, richLink(profileUrl || name, profileUrl),
     email ? richLink(email, `mailto:${email}`) : '', compact(row.creator_type),
-    followers, row.avg_views_30d_snapshot || '', compact(row.owner), outreachStatusLabel(row.outreach_status)
+    followers, row.avg_views_30d_snapshot || '',
+    compact(row.product_sku || row.product_name || ''), compact(row.owner),
+    outreachStatusLabel(row.outreach_status)
   ];
   return {
     id: row.id,
@@ -226,11 +228,13 @@ async function loadRows(ids = [], campaignId = null, purpose = 'cooperation_trac
       (SELECT p.sku FROM campaign_kol_products ckp
        JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
        JOIN products p ON p.id = cp.product_id
-       WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_sku,
+       WHERE ckp.campaign_kol_id = ck.id
+       ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_sku,
       (SELECT p.name FROM campaign_kol_products ckp
        JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
        JOIN products p ON p.id = cp.product_id
-       WHERE ckp.campaign_kol_id = ck.id ORDER BY cp.priority DESC, ckp.id LIMIT 1) product_name
+       WHERE ckp.campaign_kol_id = ck.id
+       ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_name
     FROM campaign_kols ck
     JOIN customers c ON c.id = ck.customer_id
     LEFT JOIN kol_platform_accounts kpa ON kpa.id = ck.platform_account_id
@@ -301,10 +305,49 @@ async function prepare(req) {
   const purpose = compact(req.body?.sheet_purpose) || 'cooperation_tracking';
   if (!campaignId) throw new Error('请先选择项目，再同步飞书普通表格');
   const config = await getConfig(purpose, campaignId);
-  config.endColumn = purpose === 'candidate_pool' ? 'I' : 'Y';
+  config.endColumn = purpose === 'candidate_pool' ? 'J' : 'Y';
   const context = await getSheetContext(config);
   const [systemRows, sheetRows] = await Promise.all([loadRows(ids, campaignId, purpose), readSheet(config, context)]);
   return { config, context, purpose, preview: buildPreview(systemRows, sheetRows, purpose) };
+}
+
+async function pushToSheet(ids, campaignId, purpose = 'cooperation_tracking', fieldPolicies = null) {
+  const config = await getConfig(purpose, campaignId);
+  config.endColumn = purpose === 'candidate_pool' ? 'J' : 'Y';
+  const context = await getSheetContext(config);
+  const [systemRows, sheetRows] = await Promise.all([loadRows(ids, campaignId, purpose), readSheet(config, context)]);
+  const preview = buildPreview(systemRows, sheetRows, purpose);
+  const updates = [];
+  const creates = [];
+  const hasFieldPolicies = fieldPolicies && typeof fieldPolicies === 'object';
+  for (const item of preview.plan) {
+    if (!item.sheetRow) {
+      creates.push(item.row.values.append);
+      continue;
+    }
+    const n = item.sheetRow;
+    if (hasFieldPolicies) {
+      const endColumn = purpose === 'candidate_pool' ? 'J' : 'Y';
+      updates.push({
+        range: `${config.sheetId}!A${n}:${endColumn}${n}`,
+        values: [applyFieldPolicies(item.row.values.all, item.sheetValues, fieldPolicies, purpose === 'candidate_pool' ? 10 : 25)]
+      });
+      continue;
+    }
+    if (purpose === 'candidate_pool') {
+      updates.push({ range: `${config.sheetId}!A${n}:J${n}`, values: [item.row.values.all] });
+      continue;
+    }
+    updates.push(
+      { range: `${config.sheetId}!A${n}:H${n}`, values: [item.row.values.identity] },
+      { range: `${config.sheetId}!N${n}:O${n}`, values: [item.row.values.finance] },
+      { range: `${config.sheetId}!Q${n}:R${n}`, values: [item.row.values.budget] },
+      { range: `${config.sheetId}!U${n}:W${n}`, values: [item.row.values.progress] }
+    );
+  }
+  await batchUpdate(config, context, updates);
+  await appendRows(config, context, creates);
+  return { created: creates.length, updated: preview.updated, skipped: preview.skipped };
 }
 
 router.post('/test', async (req, res) => {
@@ -329,38 +372,12 @@ router.post('/preview', async (req, res) => {
 
 router.post('/push', async (req, res) => {
   try {
-    const { config, context, purpose, preview } = await prepare(req);
-    const updates = [];
-    const creates = [];
-    const hasFieldPolicies = req.body?.field_policies && typeof req.body.field_policies === 'object';
-    for (const item of preview.plan) {
-      if (!item.sheetRow) {
-        creates.push(item.row.values.append);
-        continue;
-      }
-      const n = item.sheetRow;
-      if (hasFieldPolicies) {
-        const endColumn = purpose === 'candidate_pool' ? 'I' : 'Y';
-        updates.push({
-          range: `${config.sheetId}!A${n}:${endColumn}${n}`,
-          values: [applyFieldPolicies(item.row.values.all, item.sheetValues, req.body.field_policies, purpose === 'candidate_pool' ? 9 : 25)]
-        });
-        continue;
-      }
-      if (purpose === 'candidate_pool') {
-        updates.push({ range: `${config.sheetId}!A${n}:I${n}`, values: [item.row.values.all] });
-        continue;
-      }
-      updates.push(
-        { range: `${config.sheetId}!A${n}:H${n}`, values: [item.row.values.identity] },
-        { range: `${config.sheetId}!N${n}:O${n}`, values: [item.row.values.finance] },
-        { range: `${config.sheetId}!Q${n}:R${n}`, values: [item.row.values.budget] },
-        { range: `${config.sheetId}!U${n}:W${n}`, values: [item.row.values.progress] }
-      );
-    }
-    await batchUpdate(config, context, updates);
-    await appendRows(config, context, creates);
-    res.json({ success: true, data: { created: creates.length, updated: preview.updated, skipped: preview.skipped } });
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : [];
+    const campaignId = Number(req.body?.campaign_id) || null;
+    const purpose = compact(req.body?.sheet_purpose) || 'cooperation_tracking';
+    if (!campaignId) throw new Error('请先选择项目，再同步飞书普通表格');
+    const data = await pushToSheet(ids, campaignId, purpose, req.body?.field_policies);
+    res.json({ success: true, data });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -376,3 +393,4 @@ module.exports.getConfig = getConfig;
 module.exports.getSheetContext = getSheetContext;
 module.exports.readSheet = readSheet;
 module.exports.loadRows = loadRows;
+module.exports.pushToSheet = pushToSheet;
