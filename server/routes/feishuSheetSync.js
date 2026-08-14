@@ -175,8 +175,8 @@ function mapCandidateRow(row) {
   const all = [
     platform, name, richLink(profileUrl || name, profileUrl),
     email ? richLink(email, `mailto:${email}`) : '', compact(row.creator_type),
-    followers, row.avg_views_30d_snapshot || '',
-    compact(row.product_sku || row.product_name || ''), compact(row.owner),
+    followers, row.median_views_30d_snapshot || '',
+    '', compact(row.owner),
     outreachStatusLabel(row.outreach_status)
   ];
   return {
@@ -220,7 +220,7 @@ async function loadRows(ids = [], campaignId = null, purpose = 'cooperation_trac
     throw new Error('请选择要同步的 KOL，或先选择项目');
   }
   const rows = await dbOperations.query(`
-    SELECT ck.*, c.name kol_name, c.email, c.platform, c.youtube_url, c.youtube_followers,
+    SELECT ck.*, c.name kol_name, c.email, c.platform, c.creator_type, c.youtube_url, c.youtube_followers,
       c.instagram_url, c.instagram_followers, c.tiktok_url, c.tiktok_followers,
       kpa.platform platform_account_platform, kpa.username platform_account_username,
       kpa.profile_url platform_account_url,

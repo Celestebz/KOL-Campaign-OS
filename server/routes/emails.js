@@ -53,8 +53,8 @@ router.post("/settings", async (req, res) => {
       `INSERT INTO email_settings
        (smtp_host, smtp_port, smtp_secure, imap_host, imap_port, imap_secure,
         username, password, sender_name, default_cc, poll_interval_minutes, sync_mode,
-        label, is_default, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        label, brand, is_default, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         body.smtp_host, Number(body.smtp_port) || 465, body.smtp_secure ? 1 : 0,
         body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure ? 1 : 0,
@@ -63,6 +63,7 @@ router.post("/settings", async (req, res) => {
         Number(body.poll_interval_minutes ?? 5),
         ["idle", "poll", "off"].includes(body.sync_mode) ? body.sync_mode : "idle",
         body.label || null,
+        body.brand || null,
         isFirst ? 1 : 0,
         1
       ]
@@ -88,7 +89,7 @@ async function updateMailboxRow(id, body) {
   await dbOperations.run(
     `UPDATE email_settings SET smtp_host=?, smtp_port=?, smtp_secure=?, imap_host=?, imap_port=?, imap_secure=?,
      username=?, password=?, sender_name=?, default_cc=?, poll_interval_minutes=?, sync_mode=?,
-     label=?, enabled=?, updated_at=NOW() WHERE id=?`,
+     label=?, brand=?, enabled=?, updated_at=NOW() WHERE id=?`,
     [
       body.smtp_host || null, Number(body.smtp_port) || 465, body.smtp_secure ? 1 : 0,
       body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure ? 1 : 0,
@@ -96,6 +97,7 @@ async function updateMailboxRow(id, body) {
       body.sender_name || null, body.default_cc || null,
       Number(body.poll_interval_minutes ?? 5), syncMode,
       body.label !== undefined ? body.label : existing.label,
+      body.brand !== undefined ? body.brand : existing.brand,
       body.enabled !== undefined ? (body.enabled ? 1 : 0) : existing.enabled,
       id
     ]

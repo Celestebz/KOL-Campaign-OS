@@ -1344,6 +1344,7 @@ function SettingsTab() {
                 {row.is_default ? <Tag color="blue">默认</Tag> : null}
               </Space>
             ) },
+            { title: '品牌', dataIndex: 'brand', width: 120, render: (v) => v || '-' },
             { title: '邮箱账号', dataIndex: 'username', width: 200 },
             { title: '发件人', dataIndex: 'sender_name', width: 130, render: (v) => v || '-' },
             { title: '收信模式', dataIndex: 'sync_mode', width: 110, render: (v) => SYNC_MODE_LABELS[v] || v || '-' },
@@ -1428,6 +1429,9 @@ function SettingsTab() {
           </Form.Item>
           <Form.Item name="sender_name" label="发件人显示名">
             <Input placeholder="如 Marketing" />
+          </Form.Item>
+          <Form.Item name="brand" label="品牌名（AI 署名）">
+            <Input placeholder="如：VivaTrees，将用于 AI 邮件署名" />
           </Form.Item>
           <Form.Item name="default_cc" label="默认抄送">
             <TextArea rows={2} placeholder="多个地址用逗号/分号/换行分隔" />

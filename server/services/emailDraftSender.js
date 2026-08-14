@@ -117,18 +117,23 @@ async function sendApprovedDraft(draftId) {
   }
 
   const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [draftId]);
-  // 多邮箱：草稿绑定的邮箱优先；绑定邮箱不存在或已停用时回退默认邮箱
+  // 多邮箱：草稿绑定的邮箱优先；草稿未绑定时按活动绑定邮箱解析，最后才回退默认邮箱
   const bound = draft.mailbox_id ? await emailMailboxes.getMailboxById(draft.mailbox_id) : null;
-  const fallbackToDefault = Boolean(draft.mailbox_id && !(bound && bound.enabled));
-  const settings = bound && bound.enabled ? bound : await emailMailboxes.getDefaultMailbox();
+  const campaignRow = draft.campaign_id
+    ? await dbOperations.get('SELECT mailbox_id FROM campaigns WHERE id = ?', [draft.campaign_id])
+    : null;
+  const campaignBound = campaignRow?.mailbox_id ? await emailMailboxes.getMailboxById(campaignRow.mailbox_id) : null;
+  const settings = bound && bound.enabled
+    ? bound
+    : (campaignBound && campaignBound.enabled ? campaignBound : await emailMailboxes.getDefaultMailbox());
   if (!settings) {
     await markFailed(draft.id);
     throw actionError('请先配置邮箱设置', 400);
   }
   const mailboxId = settings.id || null;
-  // 回退默认邮箱时给审批人可见的警告（路由层 data 透传 result，前端据此弹提示）
+  const fallbackToDefault = !(bound && bound.enabled) && !(campaignBound && campaignBound.enabled);
   const sendWarning = fallbackToDefault
-    ? `草稿绑定的邮箱已停用或不存在，已改用默认邮箱 ${settings.username} 发送`
+    ? `草稿和活动绑定的邮箱不可用或未配置，已改用默认邮箱 ${settings.username} 发送`
     : null;
 
   const customer = await dbOperations.get(

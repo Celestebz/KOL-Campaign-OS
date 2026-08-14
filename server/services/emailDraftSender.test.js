@@ -458,3 +458,50 @@ test('sendApprovedDraft falls back to the default mailbox when the bound one is 
   const record = writes.find(({ sql }) => sql.includes('INSERT INTO email_records') && sql.includes("'success'"));
   assert.equal(record.params.at(-1), 1);
 });
+
+test('sendApprovedDraft uses the campaign-bound mailbox when the draft has no mailbox binding', async () => {
+  const writes = [];
+  dbOperations.run = async (sql, params) => { writes.push({ sql, params }); return { id: 903, changes: 1 }; };
+  dbOperations.get = async (sql, params) => {
+    if (sql.includes('FROM email_drafts')) {
+      return { id: 77, status: 'sending', campaign_id: 3, customer_id: 5, subject: 'Hello', body_text: 'Body', mailbox_id: null };
+    }
+    if (sql.includes('SELECT mailbox_id FROM campaigns')) return { mailbox_id: 9 };
+    if (sql.includes('FROM email_settings WHERE id = ?')) return { id: 9, username: 'bilthard@example.com', default_cc: '', enabled: 1 };
+    if (sql.includes('WHERE is_default = 1')) return { id: 1, username: 'default@example.com', default_cc: '', enabled: 1 };
+    if (sql.includes('FROM customers')) return { id: 5, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  let sentOptions = null;
+  mailer.sendMail = async (options) => { sentOptions = options; return { messageId: 'message-77' }; };
+
+  const result = await emailDraftSender.sendApprovedDraft(77);
+
+  assert.equal(sentOptions.settings.username, 'bilthard@example.com', '草稿未绑定时按活动邮箱发送');
+  assert.equal(result.warning, null, '使用活动邮箱时不弹默认邮箱警告');
+  const record = writes.find(({ sql }) => sql.includes('INSERT INTO email_records') && sql.includes("'success'"));
+  assert.equal(record.params.at(-1), 9, 'email_records 落活动邮箱 mailbox_id');
+});
+
+test('sendApprovedDraft warns when neither the draft nor the campaign has a usable mailbox', async () => {
+  const writes = [];
+  dbOperations.run = async (sql, params) => { writes.push({ sql, params }); return { id: 904, changes: 1 }; };
+  dbOperations.get = async (sql, params) => {
+    if (sql.includes('FROM email_drafts')) {
+      return { id: 78, status: 'sending', campaign_id: 4, customer_id: 6, subject: 'Hello', body_text: 'Body', mailbox_id: null };
+    }
+    if (sql.includes('SELECT mailbox_id FROM campaigns')) return { mailbox_id: null };
+    if (sql.includes('WHERE is_default = 1')) return { id: 1, username: 'default@example.com', default_cc: '', enabled: 1 };
+    if (sql.includes('FROM customers')) return { id: 6, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  let sentOptions = null;
+  mailer.sendMail = async (options) => { sentOptions = options; return { messageId: 'message-78' }; };
+
+  const result = await emailDraftSender.sendApprovedDraft(78);
+
+  assert.equal(sentOptions.settings.username, 'default@example.com');
+  assert.match(result.warning || '', /已改用默认邮箱/);
+  const record = writes.find(({ sql }) => sql.includes('INSERT INTO email_records') && sql.includes("'success'"));
+  assert.equal(record.params.at(-1), 1);
+});

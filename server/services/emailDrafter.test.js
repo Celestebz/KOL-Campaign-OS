@@ -110,6 +110,21 @@ test('communication product overrides the campaign product in the AI prompt', ()
   assert.match(prompt, /53-inch PTO Flail Mower/);
 });
 
+test('prompt uses the exact brand supplied by the mailbox or campaign', () => {
+  const prompt = emailDrafter.buildUserPrompt({
+    customer: { name: 'Casey', country_region: 'US' },
+    campaign: { name: 'VivaTrees Christmas Tree 2026', product: 'Evercrest' },
+    strategy: null,
+    styleGuide: 'be brief',
+    videos: [],
+    senderName: 'Celeste',
+    brand: 'VivaTrees',
+    kind: 'first_touch'
+  });
+  assert.match(prompt, /Brand: VivaTrees/);
+  assert.match(prompt, /use this exact brand name when introducing the sender and in the signature/);
+});
+
 test('normalizeGreetingLine puts a blank line after a greeting without changing formatted bodies', () => {
   assert.equal(
     emailDrafter.normalizeGreetingLine('Hi Walker Farm Fam, this is Celeste with BILT HARD.\n\nSecond paragraph.'),
@@ -294,6 +309,63 @@ test('TikTok 达人走 finder 证据路径起草成功', async () => {
   assert.equal(evidence.platform, 'tiktok');
   assert.equal(evidence.videos[0].video_id, '7661681242777210126');
   assert.equal(evidence.metrics.followers, '402203');
+});
+
+test('first-touch draft snapshots the product context used in the prompt', async () => {
+  const fake = createFakeDb({
+    campaignKol: { target_platform: 'instagram', instagram_followers_snapshot: '90000' },
+    campaignKolProduct: { product_sku: 'TMB-1404', product_name: '53-inch PTO Flail Mower' },
+    finderVideos: []
+  });
+  const result = await runDraft(fake);
+  assert.equal(result.ok, true);
+  const evidence = JSON.parse(draftInsert(fake.statements).params[7]);
+  assert.equal(evidence.product_context, 'TMB-1404 | 53-inch PTO Flail Mower');
+});
+
+test('follow-up reuses the first-touch product snapshot instead of current campaign context', async () => {
+  const fake = createFakeDb({
+    campaignKol: { target_platform: 'tiktok', tiktok_followers_snapshot: '1000' },
+    finderVideos: []
+  });
+  const originalGet = fake.get;
+  fake.get = async (sql, params) => {
+    if (/kind = 'first_touch'/.test(sql)) {
+      return { evidence: JSON.stringify({ product_context: 'CTA-4050 | 9ft Evercrest' }), prompt_version: 'p2.1' };
+    }
+    return originalGet(sql, params);
+  };
+  let seenPrompt = '';
+  const originalAi = fake.ai;
+  fake.ai = async (system, user) => { seenPrompt = user; return originalAi(system, user); };
+  const result = await runDraft(fake, { kind: 'follow_up' });
+  assert.equal(result.ok, true);
+  assert.match(seenPrompt, /CTA-4050 \| 9ft Evercrest/);
+  const evidence = JSON.parse(draftInsert(fake.statements).params[7]);
+  assert.equal(evidence.product_context, 'CTA-4050 | 9ft Evercrest');
+});
+
+test('follow-up does not invent a product when the first touch was a generic manual email', async () => {
+  const fake = createFakeDb({
+    campaignKol: { target_platform: 'tiktok', tiktok_followers_snapshot: '1000' },
+    finderVideos: []
+  });
+  const originalGet = fake.get;
+  fake.get = async (sql, params) => {
+    if (/kind = 'first_touch'/.test(sql)) {
+      return { evidence: '{"source":"external_agent"}', prompt_version: 'agent-manual-v1' };
+    }
+    return originalGet(sql, params);
+  };
+  let seenPrompt = '';
+  const originalAi = fake.ai;
+  fake.ai = async (system, user) => { seenPrompt = user; return originalAi(system, user); };
+  const result = await runDraft(fake, { kind: 'follow_up' });
+  assert.equal(result.ok, true);
+  assert.match(seenPrompt, /Product context: \(none\)\./);
+  assert.doesNotMatch(seenPrompt, /tree collar|Evercrest/i);
+  const evidence = JSON.parse(draftInsert(fake.statements).params[7]);
+  assert.equal(evidence.product_context, null);
 });
 
 // ---- kind='reply' 会话上下文（p2.0）----

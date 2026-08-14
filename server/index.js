@@ -29,7 +29,6 @@ const workbenchRoutes = require('./routes/workbench');
 const approvalRoutes = require('./routes/approvals');
 const automationRunRoutes = require('./routes/automationRuns');
 const { startEmailSync } = require('./services/emailLiveSync');
-const { startFollowUpTimer } = require('./services/emailFollowUp');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -128,7 +127,6 @@ async function startServer() {
         console.log(`[recovery] 服务重启中断标记：automation_runs ${interruptedRuns} 条，finder_tasks ${interruptedFinderTasks} 条`);
       }
       await startEmailSync();
-      startFollowUpTimer();
     }
     app.listen(PORT, () => {
       console.log(`KOL Campaign OS server is running on http://localhost:${PORT}`);

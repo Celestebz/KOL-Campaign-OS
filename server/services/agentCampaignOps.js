@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { dbOperations } = require('../database');
 const { PRIORITY_LEVELS, normalizePriorityLevel } = require('../utils/campaignKolEnums');
 const { draftDedupeKey, isDuplicateError } = require('./emailDraftDedupe');
+const emailMailboxes = require('./emailMailboxes');
 
 const ALLOWED_PLATFORMS = new Set(['youtube', 'instagram', 'tiktok', 'facebook', 'x']);
 const MAX_CANDIDATE_BATCH = 100;
@@ -332,6 +333,8 @@ async function upsertDraft(campaignId, item) {
   if (validation.action === 'rejected') return validation;
   const subject = clean(item.subject);
   const bodyText = clean(item.body_text);
+  const mailbox = await emailMailboxes.resolveMailboxForDraft({ campaignId });
+  const mailboxId = mailbox?.id || null;
   if (validation.action === 'update') {
     await dbOperations.run(
       `INSERT INTO email_draft_versions (draft_id, subject, body_text, source, created_at)
@@ -340,8 +343,8 @@ async function upsertDraft(campaignId, item) {
     );
     await dbOperations.run(
       `UPDATE email_drafts SET subject = ?, body_text = ?, status = 'pending_review',
-       risk_level = 'none', risk_reasons = '[]', updated_at = NOW() WHERE id = ?`,
-      [subject, bodyText, validation.draft_id]
+       risk_level = 'none', risk_reasons = '[]', mailbox_id = ?, updated_at = NOW() WHERE id = ?`,
+      [subject, bodyText, mailboxId, validation.draft_id]
     );
     await closeCandidateApproval(campaignId, validation.customer_id);
     return validation;
@@ -351,10 +354,10 @@ async function upsertDraft(campaignId, item) {
     result = await dbOperations.run(
       `INSERT INTO email_drafts
      (campaign_id, customer_id, kind, subject, body_text, status, risk_level, risk_reasons,
-      evidence, prompt_version, dedupe_key, created_at, updated_at)
-     VALUES (?, ?, 'first_touch', ?, ?, 'pending_review', 'none', '[]', ?, 'agent-manual-v1', ?, NOW(), NOW())`,
+      evidence, prompt_version, mailbox_id, dedupe_key, created_at, updated_at)
+     VALUES (?, ?, 'first_touch', ?, ?, 'pending_review', 'none', '[]', ?, 'agent-manual-v1', ?, ?, NOW(), NOW())`,
       [campaignId, validation.customer_id, subject, bodyText, JSON.stringify({ source: 'external_agent' }),
-        draftDedupeKey({ campaignId, customerId: validation.customer_id, kind: 'first_touch' })]
+        mailboxId, draftDedupeKey({ campaignId, customerId: validation.customer_id, kind: 'first_touch' })]
     );
   } catch (error) {
     if (!isDuplicateError(error)) throw error;

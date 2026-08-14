@@ -22,13 +22,15 @@ const SUPPORTED_PLATFORMS = Object.keys(PLATFORM_LABELS);
 
 const SYSTEM_PROMPT = 'You are an outreach copywriter for a brand marketing team. Write natural, professional emails to content creators. Return valid JSON only. No Markdown, no explanations.';
 
-function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', threadContext = null, replyFallback = null, communicationProduct = null }) {
+function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', brand = '', threadContext = null, replyFallback = null, communicationProduct = null, productContextOverride = null }) {
   const videoLines = videos.map((v) =>
     `- [${v.video_id ?? v.youtube_video_id}] "${v.title}" | ${Number(v.play_count || 0).toLocaleString()} views | published ${v.published_at ? new Date(v.published_at).toISOString().slice(0, 10) : 'unknown'}`
   ).join('\n');
-  const productContext = communicationProduct
-    ? [communicationProduct.product_sku, communicationProduct.product_name].filter(Boolean).join(' | ')
-    : (strategy?.product_context || campaign.product || '');
+  const productContext = productContextOverride !== null
+    ? String(productContextOverride || '')
+    : communicationProduct
+      ? [communicationProduct.product_sku, communicationProduct.product_name].filter(Boolean).join(' | ')
+      : (strategy?.product_context || campaign.product || '');
   const platformLabel = PLATFORM_LABELS[platform] || platform;
   const followerCount = followers ?? customer.youtube_followers;
   const evidenceRules = videos.length
@@ -69,6 +71,7 @@ ${replyFallback}
   return `Write a ${kind.replace('_', ' ')} outreach email (JSON: {"subject": "...", "body_text": "...", "cited_video_ids": ["..."], "personalization_note": "..."}).
 
 Sender name: ${senderName || 'not provided'}. Use this exact name in the introduction and signature. Never output placeholders such as [Name].
+Brand: ${brand || 'not provided'}. When a brand is provided, use this exact brand name when introducing the sender and in the signature. Never invent, substitute, or omit a brand when one is provided.
 Creator: ${customer.name} (${customer.country_region || 'unknown region'}), ${platformLabel} followers: ${followerCount || 'unknown'}.
 Recent real videos (ONLY these may be cited):
 ${videoLines || '(no videos available)'}
@@ -96,6 +99,32 @@ function normalizeGreetingLine(input) {
     .replace(/\r\n/g, '\n')
     .replace(/^((?:Hi|Hello|Dear)\s+[^,\n]{1,100},)[ \t]+(?=\S)/i, '$1\n\n')
     .trim();
+}
+
+function resolveProductContext({ communicationProduct, strategy, campaign, override = null }) {
+  if (override !== null) return String(override || '');
+  if (communicationProduct) {
+    return [communicationProduct.product_sku, communicationProduct.product_name].filter(Boolean).join(' | ');
+  }
+  return strategy?.product_context || campaign.product || '';
+}
+
+// 首封草稿会记录 product_context 快照；外部人工草稿没有经过系统产品上下文，
+// 统一视为"首封未带产品"，跟进信不得突然引入当前活动/策略里的具体产品。
+function firstTouchProductContextSnapshot(firstTouch) {
+  let evidence = null;
+  try {
+    evidence = JSON.parse(firstTouch?.evidence || '{}');
+  } catch (error) {
+    evidence = null;
+  }
+  if (evidence && Object.prototype.hasOwnProperty.call(evidence, 'product_context')) {
+    return String(evidence.product_context || '');
+  }
+  if (evidence?.source === 'external_agent' || /^agent-manual/i.test(firstTouch?.prompt_version || '')) {
+    return '';
+  }
+  return null;
 }
 
 // 平台判定：campaign_kols.target_platform 优先，其次 customers 的平台主页 url，再次 customers.platform + profile_url
@@ -306,13 +335,30 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
 
     // 多邮箱：回复继承来信邮箱 → Campaign 绑定 → 默认邮箱
     const mailbox = await emailMailboxes.resolveMailboxForDraft({ campaignId, sourceReplyId });
+    const senderBrand = mailbox?.brand || campaign.brand || '';
+
+    // 跟进信复用首封的产品上下文快照，避免首封未提产品时突然引入当前活动/策略里的产品。
+    let productContextOverride = null;
+    if (kind === 'follow_up') {
+      const firstTouch = await dbOperations.get(
+        `SELECT evidence, prompt_version FROM email_drafts
+         WHERE campaign_id = ? AND customer_id = ? AND kind = 'first_touch' AND status = 'sent'
+         ORDER BY COALESCE(generated_at, created_at) DESC, id DESC LIMIT 1`,
+        [campaignId, customerId]
+      );
+      const snapshot = firstTouchProductContextSnapshot(firstTouch);
+      if (snapshot !== null) productContextOverride = snapshot;
+    }
+    const productContextUsed = resolveProductContext({ communicationProduct, strategy, campaign, override: productContextOverride });
 
     const userPrompt = buildUserPrompt({
       customer, campaign, strategy,
       styleGuide: styleGuide?.body_html || '',
       videos, feedback, platform, followers, kind,
       senderName: mailbox?.sender_name || '',
-      threadContext, replyFallback, communicationProduct
+      brand: senderBrand,
+      threadContext, replyFallback, communicationProduct,
+      productContextOverride: productContextUsed
     });
     const { parsed, model } = await aiClient.callActiveAi(SYSTEM_PROMPT, userPrompt);
 
@@ -344,6 +390,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       })),
       match_reason: parsed?.personalization_note || '',
       evidence_mode: videos.length ? 'video_backed' : 'profile_only',
+      product_context: productContextUsed || null,
       metrics
     });
 
