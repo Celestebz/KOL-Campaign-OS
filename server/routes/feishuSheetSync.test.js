@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { profileKey, mapSystemRow, buildPreview, applyFieldPolicies } = require('./feishuSheetSync');
+const { profileKey, mapSystemRow, mapRawCandidateRow, buildPreview, applyFieldPolicies } = require('./feishuSheetSync');
 
 test('profileKey normalizes platform profile URLs', () => {
   assert.equal(profileKey('TikTok', 'https://www.tiktok.com/@Demo.Creator/'), 'tiktok|demo.creator');
@@ -69,4 +69,50 @@ test('applyFieldPolicies changes only explicitly requested columns', () => {
   assert.equal(result[9], 'Existing address');
   assert.equal(result[19], 'Keep this note');
   assert.equal(result[23], 'TRACK-1');
+});
+
+test('mapRawCandidateRow maps finder metrics without changing approval state', () => {
+  const mapped = mapRawCandidateRow({
+    id: 202,
+    platform: 'Instagram',
+    kol_name: 'Vita Student',
+    profile_url: 'https://www.instagram.com/vitastudent/',
+    followers: 19209,
+    avg_views: 5715,
+    status: 'new'
+  });
+
+  assert.equal(mapped.key, 'instagram|vitastudent');
+  assert.equal(mapped.values.append.length, 10);
+  assert.equal(mapped.values.append[0], 'instagram');
+  assert.equal(mapped.values.append[5], 19209);
+  assert.equal(mapped.values.append[6], 5715);
+  assert.equal(mapped.values.append[9], '未触达');
+});
+
+test('mapRawCandidateRow can set an owner for newly appended rows', () => {
+  const mapped = mapRawCandidateRow({
+    id: 137,
+    platform: 'instagram',
+    kol_name: 'Jessica',
+    profile_url: 'https://www.instagram.com/jessicasaramorris/'
+  }, { create_owner: 'Celeste' });
+
+  assert.equal(mapped.values.append[8], 'Celeste');
+});
+
+test('buildPreview exposes the matched row needed by preview responses', () => {
+  const mapped = mapRawCandidateRow({
+    id: 202,
+    platform: 'instagram',
+    kol_name: 'Vita Student',
+    profile_url: 'https://www.instagram.com/vitastudent/'
+  });
+  const sheet = [
+    ['平台', '达人名称', '主页'],
+    ['instagram', 'Vita Student', [{ type: 'url', text: 'https://www.instagram.com/vitastudent/', link: 'https://www.instagram.com/vitastudent/' }]]
+  ];
+  const preview = buildPreview([mapped], sheet, 'candidate_pool');
+
+  assert.equal(preview.plan[0].sheetRow, 2);
 });

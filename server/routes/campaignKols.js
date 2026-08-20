@@ -1,5 +1,5 @@
 const express = require('express');
-const { dbOperations } = require('../database');
+const { dbOperations, sequelize } = require('../database');
 const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
 const timeline = require('../services/campaignKolTimeline');
 const emailFollowUp = require('../services/emailFollowUp');
@@ -140,13 +140,9 @@ async function switchCommunicationProduct(campaignKolId, productId) {
     [campaignKol.campaign_id, productId]
   );
   if (!campaignProduct) {
-    const created = await dbOperations.run(
-      `INSERT INTO campaign_products
-       (campaign_id, product_id, role, priority, status, created_at, updated_at)
-       VALUES (?, ?, 'secondary', 1, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      [campaignKol.campaign_id, productId]
-    );
-    campaignProduct = { id: created.id, status: 'active' };
+    const error = new Error('Selected Product belongs to another Campaign; migrate the Campaign KOL first');
+    error.statusCode = 409;
+    throw error;
   } else if (campaignProduct.status === 'archived') {
     await dbOperations.run(
       `UPDATE campaign_products SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
@@ -233,9 +229,81 @@ async function setBudgetApprovalStatus(id, status) {
 
 router.get('/', async (req, res) => {
   try {
-    const { campaign_id, status, sync_status, search, pipeline_stage, outreach_status } = req.query;
-    let sql = `
-      SELECT ck.*, c.name as campaign_name, c.brand, c.product,
+    const { campaign_id, status, sync_status, search, pipeline_stage, outreach_status, product_sku } = req.query;
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(req.query.page_size, 10) || 50));
+    const offset = (page - 1) * pageSize;
+    const listColumns = `
+      ck.id, ck.campaign_id, ck.customer_id, ck.platform_account_id,
+      ck.pipeline_stage, ck.project_status, ck.outreach_status, ck.priority_level,
+      ck.candidate_priority_score, ck.cooperation_type, ck.cooperation_platforms,
+      ck.final_fee, ck.currency, ck.price_rmb, ck.owner, ck.tracking_number,
+      ck.sync_status, ck.project_notes, ck.notes, ck.kol_name_snapshot,
+      ck.email_snapshot, ck.country_region_snapshot, ck.youtube_url_snapshot,
+      ck.youtube_followers_snapshot, ck.instagram_url_snapshot,
+      ck.instagram_followers_snapshot, ck.tiktok_url_snapshot,
+      ck.tiktok_followers_snapshot, ck.needs_reply, ck.last_inbound_at,
+      ck.created_at, ck.updated_at`;
+    const fromSql = `
+      FROM campaign_kols ck
+      JOIN campaigns c ON c.id = ck.campaign_id
+      JOIN customers k ON k.id = ck.customer_id
+      LEFT JOIN kol_platform_accounts kpa ON kpa.id = ck.platform_account_id
+      LEFT JOIN campaign_kol_products selected_ckp ON selected_ckp.id = (
+        SELECT ckp_pick.id
+        FROM campaign_kol_products ckp_pick
+        JOIN campaign_products cp_pick ON cp_pick.id = ckp_pick.campaign_product_id
+        WHERE ckp_pick.campaign_kol_id = ck.id
+        ORDER BY (ckp_pick.assignment_status = 'active') DESC,
+          cp_pick.priority DESC, ckp_pick.id
+        LIMIT 1
+      )
+      LEFT JOIN campaign_products selected_cp ON selected_cp.id = selected_ckp.campaign_product_id
+      LEFT JOIN products selected_p ON selected_p.id = selected_cp.product_id`;
+    let whereSql = ' WHERE 1=1';
+    const params = [];
+
+    if (campaign_id) {
+      whereSql += ' AND ck.campaign_id = ?';
+      params.push(campaign_id);
+    }
+    if (status) {
+      whereSql += ' AND ck.project_status = ?';
+      params.push(status);
+    }
+    if (outreach_status) {
+      // 旧值兼容：筛选“待回复/已终止”时同时命中 replied/rejected
+      const normalized = normalizeOutreachStatus(outreach_status);
+      if (OUTREACH_STATUSES.has(normalized)) {
+        const legacyAlias = { waiting_reply: 'replied', terminated: 'rejected' }[normalized];
+        whereSql += legacyAlias ? ' AND ck.outreach_status IN (?, ?)' : ' AND ck.outreach_status = ?';
+        params.push(...(legacyAlias ? [normalized, legacyAlias] : [normalized]));
+      }
+    }
+    if (sync_status) {
+      whereSql += ' AND ck.sync_status = ?';
+      params.push(sync_status);
+    }
+    if (PIPELINE_STAGES.has(pipeline_stage)) {
+      whereSql += ' AND ck.pipeline_stage = ?';
+      params.push(pipeline_stage);
+    }
+    if (product_sku) {
+      whereSql += ' AND selected_p.sku = ?';
+      params.push(product_sku);
+    }
+    if (search) {
+      whereSql += ` AND (
+        k.name LIKE ? OR k.contact_name LIKE ? OR k.email LIKE ? OR k.country_region LIKE ?
+        OR ck.kol_name_snapshot LIKE ? OR ck.project_notes LIKE ? OR ck.internal_notes LIKE ?
+        OR kpa.username LIKE ? OR kpa.profile_url LIKE ?
+      )`;
+      const term = `%${search}%`;
+      params.push(term, term, term, term, term, term, term, term, term);
+    }
+
+    const sql = `
+      SELECT ${listColumns}, c.name as campaign_name, c.brand, c.product,
         (SELECT COUNT(*) FROM campaign_videos cv WHERE cv.campaign_kol_id = ck.id) published_video_count,
         k.name as kol_name, k.contact_name, k.email, k.phone, k.country_region,
         k.cooperation_status as global_cooperation_status,
@@ -246,67 +314,56 @@ router.get('/', async (req, res) => {
         k.price_rmb as default_price_rmb, k.rating,
         kpa.platform as platform_account_platform, kpa.profile_url as platform_account_url,
         kpa.username as platform_account_username, kpa.followers_text as platform_account_followers,
-        (SELECT p.sku FROM campaign_kol_products ckp
-         JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
-         JOIN products p ON p.id = cp.product_id
-         WHERE ckp.campaign_kol_id = ck.id
-         ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_sku,
-        (SELECT p.name FROM campaign_kol_products ckp
-         JOIN campaign_products cp ON cp.id = ckp.campaign_product_id
-         JOIN products p ON p.id = cp.product_id
-         WHERE ckp.campaign_kol_id = ck.id
-         ORDER BY (ckp.assignment_status = 'active') DESC, cp.priority DESC, ckp.id LIMIT 1) product_name
-      FROM campaign_kols ck
-      JOIN campaigns c ON c.id = ck.campaign_id
-      JOIN customers k ON k.id = ck.customer_id
-      LEFT JOIN kol_platform_accounts kpa ON kpa.id = ck.platform_account_id
-      WHERE 1=1
-    `;
-    const params = [];
-
-    if (campaign_id) {
-      sql += ' AND ck.campaign_id = ?';
-      params.push(campaign_id);
-    }
-    if (status) {
-      sql += ' AND ck.project_status = ?';
-      params.push(status);
-    }
-    if (outreach_status) {
-      // 旧值兼容：筛选“待回复/已终止”时同时命中 replied/rejected
-      const normalized = normalizeOutreachStatus(outreach_status);
-      if (OUTREACH_STATUSES.has(normalized)) {
-        const legacyAlias = { waiting_reply: 'replied', terminated: 'rejected' }[normalized];
-        sql += legacyAlias ? ' AND ck.outreach_status IN (?, ?)' : ' AND ck.outreach_status = ?';
-        params.push(...(legacyAlias ? [normalized, legacyAlias] : [normalized]));
-      }
-    }
-    if (sync_status) {
-      sql += ' AND ck.sync_status = ?';
-      params.push(sync_status);
-    }
-    if (PIPELINE_STAGES.has(pipeline_stage)) {
-      sql += ' AND ck.pipeline_stage = ?';
-      params.push(pipeline_stage);
-    }
-    if (search) {
-      sql += ` AND (
-        k.name LIKE ? OR k.contact_name LIKE ? OR k.email LIKE ? OR k.country_region LIKE ?
-        OR ck.kol_name_snapshot LIKE ? OR ck.project_notes LIKE ? OR ck.internal_notes LIKE ?
-        OR kpa.username LIKE ? OR kpa.profile_url LIKE ?
-      )`;
-      const term = `%${search}%`;
-      params.push(term, term, term, term, term, term, term, term, term);
-    }
-
-    sql += ' ORDER BY ck.candidate_priority_score DESC, ck.created_at DESC, ck.id DESC';
-    const rows = await dbOperations.query(sql, params);
+        selected_p.sku AS product_sku, selected_p.name AS product_name
+      ${fromSql}${whereSql}
+      ORDER BY ck.candidate_priority_score DESC, ck.created_at DESC, ck.id DESC
+      LIMIT ? OFFSET ?`;
+    const countSql = product_sku
+      ? `SELECT COUNT(*) AS total ${fromSql}${whereSql}`
+      : `SELECT COUNT(*) AS total
+         FROM campaign_kols ck
+         JOIN campaigns c ON c.id = ck.campaign_id
+         JOIN customers k ON k.id = ck.customer_id
+         LEFT JOIN kol_platform_accounts kpa ON kpa.id = ck.platform_account_id
+         ${whereSql}`;
+    const [rows, countRows] = await Promise.all([
+      dbOperations.query(sql, [...params, pageSize, offset]),
+      dbOperations.query(countSql, params)
+    ]);
+    const countRow = countRows[0];
+    const total = Number(countRow?.total || 0);
     res.json({ success: true, data: rows.map((row) => ({
+      ...hideCandidateCollaborationFields(row),
+      cooperation_platforms: row.cooperation_platforms
+    })), pagination: { page, page_size: pageSize, total } });
+  } catch (error) {
+    console.error('[campaign-kols:list]', {
+      code: error.code,
+      errno: error.errno,
+      campaign_id: req.query.campaign_id || null,
+      pipeline_stage: req.query.pipeline_stage || null,
+      page: req.query.page || 1,
+      page_size: req.query.page_size || 50,
+      message: error.message
+    });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/:id', async (req, res) => {
+  try {
+    const id = parsePathId(req.params.id);
+    if (id === null) return res.status(400).json({ success: false, error: 'Campaign KOL id must be a positive integer' });
+    const row = await dbOperations.get('SELECT * FROM campaign_kols WHERE id = ?', [id]);
+    if (!row) return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
+    res.json({ success: true, data: {
       ...hideCandidateCollaborationFields(row),
       master_snapshot: safeParseJson(row.master_snapshot),
       project_override: safeParseJson(row.project_override),
-      evidence_summary: safeParseJson(row.evidence_summary)
-    })) });
+      evidence_summary: safeParseJson(row.evidence_summary),
+      cooperation_platforms: row.cooperation_platforms,
+      deliverables: safeParseJson(row.deliverables)
+    } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -429,6 +486,106 @@ router.post('/:id/products/switch', async (req, res) => {
     res.json({ success: true, data: normalizeCampaignKolProduct(updated), message: 'Communication product switched' });
   } catch (error) {
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/products/migrate', async (req, res) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const campaignKolId = parsePathId(req.params.id);
+    const productId = Number(req.body.product_id);
+    const targetCampaignId = Number(req.body.target_campaign_id);
+    if (campaignKolId === null || !Number.isSafeInteger(productId) || productId <= 0
+      || !Number.isSafeInteger(targetCampaignId) || targetCampaignId <= 0) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, error: 'Campaign KOL, Product and target Campaign ids must be positive integers' });
+    }
+    const selectOne = async (sql, replacements) => {
+      const rows = await sequelize.query(sql, { replacements, type: sequelize.QueryTypes.SELECT, transaction, logging: false });
+      return rows[0] || null;
+    };
+    const campaignKol = await selectOne('SELECT * FROM campaign_kols WHERE id = ? FOR UPDATE', [campaignKolId]);
+    if (!campaignKol) {
+      await transaction.rollback();
+      return res.status(404).json({ success: false, error: 'Campaign KOL not found' });
+    }
+    if (Number(campaignKol.campaign_id) === targetCampaignId) {
+      await transaction.rollback();
+      return res.status(409).json({ success: false, error: 'Campaign KOL already belongs to the target Campaign' });
+    }
+    const targetProduct = await selectOne(
+      `SELECT cp.id AS campaign_product_id, cp.campaign_id, c.name AS campaign_name, p.id AS product_id, p.sku, p.name AS product_name
+       FROM campaign_products cp JOIN campaigns c ON c.id = cp.campaign_id JOIN products p ON p.id = cp.product_id
+       WHERE cp.campaign_id = ? AND cp.product_id = ? AND cp.status = 'active' AND c.status = 'active' LIMIT 1 FOR UPDATE`,
+      [targetCampaignId, productId]
+    );
+    if (!targetProduct) {
+      await transaction.rollback();
+      return res.status(409).json({ success: false, error: 'Selected Product is not active in the target Campaign' });
+    }
+    const duplicate = await selectOne(
+      'SELECT id FROM campaign_kols WHERE campaign_id = ? AND customer_id = ? AND id <> ? LIMIT 1 FOR UPDATE',
+      [targetCampaignId, campaignKol.customer_id, campaignKolId]
+    );
+    if (duplicate) {
+      await transaction.rollback();
+      return res.status(409).json({ success: false, error: 'The target Campaign already contains this KOL; merge the records instead' });
+    }
+
+    const sourceCampaignId = campaignKol.campaign_id;
+    const customerId = campaignKol.customer_id;
+    await sequelize.query(
+      `UPDATE approval_items ai
+       LEFT JOIN email_drafts d ON ai.subject_type = 'email_draft' AND ai.subject_id = d.id
+       LEFT JOIN email_replies r ON ai.subject_type = 'email_reply' AND ai.subject_id = r.id
+       SET ai.campaign_id = ?, ai.updated_at = CURRENT_TIMESTAMP
+       WHERE ai.campaign_id = ? AND ((d.customer_id = ?) OR (r.customer_id = ?))`,
+      { replacements: [targetCampaignId, sourceCampaignId, customerId, customerId], transaction, logging: false }
+    );
+    for (const table of ['email_drafts', 'email_records', 'email_replies', 'email_threads']) {
+      await sequelize.query(
+        `UPDATE ${table} SET campaign_id = ?${table === 'email_records' ? '' : ', updated_at = CURRENT_TIMESTAMP'} WHERE campaign_id = ? AND customer_id = ?`,
+        { replacements: [targetCampaignId, sourceCampaignId, customerId], transaction, logging: false }
+      );
+    }
+    await sequelize.query(
+      `UPDATE campaign_kol_events SET campaign_id = ? WHERE campaign_kol_id = ?`,
+      { replacements: [targetCampaignId, campaignKolId], transaction, logging: false }
+    );
+    await sequelize.query('DELETE FROM campaign_kol_products WHERE campaign_kol_id = ?', {
+      replacements: [campaignKolId], transaction, logging: false
+    });
+    await sequelize.query(
+      `INSERT INTO campaign_kol_products
+       (campaign_kol_id, campaign_product_id, fit_status, assignment_status, created_at, updated_at)
+       VALUES (?, ?, 'approved', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      { replacements: [campaignKolId, targetProduct.campaign_product_id], transaction, logging: false }
+    );
+    await sequelize.query(
+      `UPDATE campaign_kols SET campaign_id = ?, sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      { replacements: [targetCampaignId, campaignKolId], transaction, logging: false }
+    );
+    await sequelize.query(
+      `UPDATE customers SET sync_status = 'sync_pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      { replacements: [customerId], transaction, logging: false }
+    );
+    await transaction.commit();
+    res.json({
+      success: true,
+      data: {
+        campaign_kol_id: campaignKolId,
+        source_campaign_id: sourceCampaignId,
+        target_campaign_id: targetCampaignId,
+        target_campaign_name: targetProduct.campaign_name,
+        product_id: productId,
+        product_sku: targetProduct.sku,
+        product_name: targetProduct.product_name
+      },
+      message: 'Campaign KOL migrated'
+    });
+  } catch (error) {
+    if (!transaction.finished) await transaction.rollback();
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

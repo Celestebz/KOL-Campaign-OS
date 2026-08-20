@@ -1007,12 +1007,16 @@ function applyFollowerGate(candidate, request) {
   const minFollowers = parseMetricNumber(handoff.minimum_followers || handoff.min_followers);
   const maxFollowers = parseMetricNumber(handoff.maximum_followers || handoff.max_followers);
   const minAvgViews = parseMetricNumber(handoff.minimum_avg_views || handoff.min_avg_views);
+  const maxAvgViews = parseMetricNumber(handoff.maximum_avg_views || handoff.max_avg_views);
   const followerCount = parseMetricNumber(candidate.followers);
   const avgViews = parseMetricNumber(candidate.avg_views);
   const failures = [];
 
   if ((minFollowers !== null || maxFollowers !== null) && followerCount === null) {
     failures.push('followers unavailable');
+  }
+  if ((minAvgViews !== null || maxAvgViews !== null) && avgViews === null) {
+    failures.push('avg views unavailable');
   }
 
   if (minFollowers !== null && followerCount !== null && followerCount < minFollowers) {
@@ -1023,6 +1027,9 @@ function applyFollowerGate(candidate, request) {
   }
   if (minAvgViews !== null && avgViews !== null && avgViews < minAvgViews) {
     failures.push(`avg views ${avgViews} < minimum ${minAvgViews}`);
+  }
+  if (maxAvgViews !== null && avgViews !== null && avgViews > maxAvgViews) {
+    failures.push(`avg views ${avgViews} > maximum ${maxAvgViews}`);
   }
 
   if (!failures.length) return candidate;
@@ -2071,51 +2078,59 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   let lowYieldStreak = 0;
   let stoppedForLowYield = false;
   const nextCursors = {};
+  const instagramPagesPerQuery = Math.max(1, Math.min(Number(request.instagram_pages_per_query || 1), 11));
+  const instagramDatePosted = clean(request.instagram_date_posted);
 
   for (const query of keywordQueries(request)) {
     if (candidates.length >= maxResults || stoppedForLowYield) break;
     if (request.target_platform === 'instagram') {
-      const endpoint = buildInstagramReelSearchUrl(baseUrl, query);
-      let data = await getCachedPlatformSearch('scrapecreators', 'instagram', query);
-      if (data) {
-        cacheHitCount += 1;
-      } else {
-        data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
-        externalRequestCount += 1;
-        await savePlatformSearchCache('scrapecreators', 'instagram', query, data);
-      }
-      lastEndpoint = endpoint;
-      const reels = extractInstagramReels(data);
-      instagramReelCount += reels.length;
-      const beforeCount = candidates.length;
-      const mapped = reels
-        .map((reel) => instagramReelToCandidate(reel, {
-          ...request,
-          discovery: { ...request.discovery, keywords: query }
-        }))
-        .filter(Boolean)
-        .filter((candidate) => {
-          const excluded = isExcludedPlatformCreator(
-            request.creator_exclusions || new Set(),
-            'instagram',
-            candidate.profile_url,
-            candidate.kol_name
-          );
-          if (excluded) excludedCreatorCount += 1;
-          return !excluded;
-        })
-        .filter((candidate) => {
-          const identity = creatorSearchIdentity('instagram', candidate);
-          if (!identity || seenCreatorIds.has(identity)) return false;
-          seenCreatorIds.add(identity);
-          return true;
-        });
-      candidates.push(...mapped.slice(0, maxResults - candidates.length));
-      const newCount = candidates.length - beforeCount;
-      lowYieldStreak = reels.length > 0 && newCount / reels.length < MIN_NEW_CREATOR_YIELD ? lowYieldStreak + 1 : 0;
-      if (lowYieldStreak >= LOW_YIELD_STREAK_LIMIT) {
-        stoppedForLowYield = true;
-        break;
+      for (let page = 1; page <= instagramPagesPerQuery && candidates.length < maxResults; page += 1) {
+        const pageToken = String(page);
+        const endpoint = buildInstagramReelSearchUrl(baseUrl, query, { page, datePosted: instagramDatePosted });
+        const variant = instagramDatePosted;
+        let data = await getCachedPlatformSearch('scrapecreators', 'instagram', query, pageToken, variant);
+        if (data) {
+          cacheHitCount += 1;
+        } else {
+          data = await fetchJson(endpoint, { headers: { 'x-api-key': setting.api_key } });
+          externalRequestCount += 1;
+          await savePlatformSearchCache('scrapecreators', 'instagram', query, data, pageToken, variant);
+        }
+        lastEndpoint = endpoint;
+        const reels = extractInstagramReels(data);
+        instagramReelCount += reels.length;
+        const beforeCount = candidates.length;
+        const mapped = reels
+          .map((reel) => instagramReelToCandidate(reel, {
+            ...request,
+            discovery: { ...request.discovery, keywords: query }
+          }))
+          .filter(Boolean)
+          .filter((candidate) => {
+            const excluded = isExcludedPlatformCreator(
+              request.creator_exclusions || new Set(),
+              'instagram',
+              candidate.profile_url,
+              candidate.kol_name
+            );
+            if (excluded) excludedCreatorCount += 1;
+            return !excluded;
+          })
+          .filter((candidate) => {
+            const identity = creatorSearchIdentity('instagram', candidate);
+            if (!identity || seenCreatorIds.has(identity)) return false;
+            seenCreatorIds.add(identity);
+            return true;
+          })
+          .map((candidate) => applyFinderGates(candidate, request))
+          .filter((candidate) => {
+            if (candidate.status === 'ignored') excludedCreatorCount += 1;
+            return candidate.status !== 'ignored';
+          });
+        candidates.push(...mapped.slice(0, maxResults - candidates.length));
+        const newCount = candidates.length - beforeCount;
+        lowYieldStreak = reels.length > 0 && newCount / reels.length < MIN_NEW_CREATOR_YIELD ? lowYieldStreak + 1 : 0;
+        if (!reels.length) break;
       }
       continue;
     }
@@ -3034,12 +3049,15 @@ async function processVideoEvidenceTask(taskId, options = {}) {
   const rawRequest = parseJson(task.raw_request, {});
   const targetPlatform = clean(rawRequest.target_platform || options.targetPlatform || task.platform);
   const limit = Math.max(1, Math.min(Number(rawRequest.limit || options.limit || 10), 50));
-  const keywords = discoveryKeywords(strategy);
+  const keywordOverride = parseList(rawRequest.discovery_keywords);
+  const keywords = keywordOverride.length ? keywordOverride.join(', ') : discoveryKeywords(strategy);
   // 优先使用任务创建时确定的发现路线（search_sources 首项），缺省回退到当前数据源设置
   const storedSource = parseJson(task.search_sources, [])[0];
   const searchSource = clean(storedSource) || await preferredSearchSourceForTargetPlatform(targetPlatform);
   const request = buildEvidenceDiscoveryRequest(strategy, keywords, searchSource, targetPlatform, limit);
   request.finder_task_id = task.id;
+  request.instagram_pages_per_query = Math.max(1, Math.min(Number(rawRequest.instagram_pages_per_query || 1), 11));
+  request.instagram_date_posted = clean(rawRequest.instagram_date_posted);
   if (['instagram', 'tiktok'].includes(targetPlatform)) {
     request.creator_exclusions = await loadPlatformExclusionSet(targetPlatform);
   }
@@ -3800,7 +3818,19 @@ router.get('/:id', async (req, res) => {
 
 // 创建 Finder 任务：Ready Strategy 绑定校验（requireActiveProduct）+ 事务插入 + 后台启动搜索。
 // 供 POST / 路由与工作台自动编排（workflowOrchestrator，策略批准后自动建任务）共用同一条创建路径。
-async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes = '', searchSource = '' } = {}) {
+async function createFinderTask({
+  strategyId,
+  targetPlatform,
+  limit = 10,
+  notes = '',
+  searchSource = '',
+  discoveryKeywords: discoveryKeywordOverride = [],
+  batchId = '',
+  shardIndex = null,
+  instagramPagesPerQuery = 1,
+  instagramDatePosted = '',
+  autoStart = true
+} = {}) {
   if (!TARGET_PLATFORMS.includes(targetPlatform)) {
     throw new Error('Finder requires exactly one target_platform: youtube, instagram, or tiktok');
   }
@@ -3814,13 +3844,21 @@ async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes 
       requireActiveProduct: true,
       transaction
     });
-    const keywords = discoveryKeywords(strategy);
+    const overrideKeywords = [...new Set(parseList(discoveryKeywordOverride).map(clean).filter(Boolean))].slice(0, 8);
+    const keywords = overrideKeywords.length ? overrideKeywords.join(', ') : discoveryKeywords(strategy);
     const rawRequest = {
       strategy_id: strategy.id,
       campaign_product_id: strategy.campaign_product_id,
       target_platform: targetPlatform,
       limit: safeLimit,
-      search_source: resolvedSearchSource
+      search_source: resolvedSearchSource,
+      ...(overrideKeywords.length ? { discovery_keywords: overrideKeywords } : {}),
+      ...(clean(batchId) ? { batch_id: clean(batchId) } : {}),
+      ...(Number.isInteger(shardIndex) ? { shard_index: shardIndex } : {}),
+      ...(targetPlatform === 'instagram' ? {
+        instagram_pages_per_query: Math.max(1, Math.min(Number(instagramPagesPerQuery || 1), 11)),
+        ...(clean(instagramDatePosted) ? { instagram_date_posted: clean(instagramDatePosted) } : {})
+      } : {})
     };
     const result = await scopedRun(
       'INSERT INTO finder_tasks ' +
@@ -3831,7 +3869,7 @@ async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes 
         strategy.campaign_id,
         strategy.campaign_product_id,
         strategy.id,
-        `${strategy.name} Finder ${new Date().toLocaleString()}`,
+        `${strategy.name} Finder${clean(batchId) ? ` Batch ${clean(batchId)}#${Number(shardIndex) + 1}` : ''} ${new Date().toLocaleString()}`,
         targetPlatform,
         keywords,
         'draft',
@@ -3845,7 +3883,7 @@ async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes 
     );
     return scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [result.id], transaction);
   });
-  if (process.env.NODE_ENV !== 'test') {
+  if (autoStart && process.env.NODE_ENV !== 'test') {
     setImmediate(() => {
       processVideoEvidenceTask(task.id, { targetPlatform, limit: safeLimit }).catch((error) => {
         updateTask(task.id, {
@@ -3858,6 +3896,78 @@ async function createFinderTask({ strategyId, targetPlatform, limit = 10, notes 
   }
   return task;
 }
+
+function normalizeKeywordShards(value) {
+  if (!Array.isArray(value) || !value.length) {
+    throw new Error('keyword_shards must be a non-empty array');
+  }
+  if (value.length > 12) throw new Error('keyword_shards supports at most 12 shards');
+  return value.map((shard, index) => {
+    const keywords = [...new Set(parseList(shard).map(clean).filter(Boolean))].slice(0, 8);
+    if (!keywords.length) throw new Error(`keyword_shards[${index}] must contain at least one keyword`);
+    return keywords;
+  });
+}
+
+async function runFinderTaskQueue(tasks, concurrency) {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
+    while (cursor < tasks.length) {
+      const task = tasks[cursor++];
+      try {
+        await processVideoEvidenceTask(task.id);
+      } catch (error) {
+        await updateTask(task.id, {
+          status: 'failed',
+          error_message: error.message,
+          finished_at: new Date().toISOString()
+        });
+      }
+    }
+  });
+  await Promise.all(workers);
+}
+
+router.post('/batch', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const targetPlatform = clean(body.target_platform);
+    const shards = normalizeKeywordShards(body.keyword_shards);
+    const concurrency = Math.max(1, Math.min(Number(body.concurrency || 3), 4));
+    const batchId = clean(body.batch_id) || crypto.randomUUID();
+    const tasks = [];
+    for (let index = 0; index < shards.length; index += 1) {
+      tasks.push(await createFinderTask({
+        strategyId: body.strategy_id,
+        targetPlatform,
+        limit: body.limit_per_shard || 50,
+        notes: body.notes,
+        searchSource: clean(body.search_source),
+        discoveryKeywords: shards[index],
+        batchId,
+        shardIndex: index,
+        instagramPagesPerQuery: body.instagram_pages_per_query,
+        instagramDatePosted: body.instagram_date_posted,
+        autoStart: false
+      }));
+    }
+    if (process.env.NODE_ENV !== 'test') {
+      setImmediate(() => runFinderTaskQueue(tasks, concurrency));
+    }
+    res.json({
+      success: true,
+      data: {
+        batch_id: batchId,
+        task_count: tasks.length,
+        concurrency,
+        tasks
+      },
+      message: 'Batch Video Evidence Finder tasks started'
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
 
 router.post('/', async (req, res) => {
   try {
@@ -3880,7 +3990,9 @@ router.post('/', async (req, res) => {
       targetPlatform: clean(body.target_platform),
       limit: body.limit,
       notes: body.notes,
-      searchSource: clean(body.search_source)
+      searchSource: clean(body.search_source),
+      instagramPagesPerQuery: body.instagram_pages_per_query,
+      instagramDatePosted: body.instagram_date_posted
     });
     res.json({ success: true, data: task, message: 'Video Evidence Finder task started' });
   } catch (error) {
@@ -3916,5 +4028,6 @@ module.exports.applyFinderGates = applyFinderGates;
 module.exports.youtubePreflightConfig = youtubePreflightConfig;
 module.exports.finderScanLimit = finderScanLimit;
 module.exports.createFinderTask = createFinderTask;
+module.exports.normalizeKeywordShards = normalizeKeywordShards;
 module.exports.markInterruptedFinderTasks = markInterruptedFinderTasks;
 module.exports.validateSearchSource = validateSearchSource;

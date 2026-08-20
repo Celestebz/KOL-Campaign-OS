@@ -229,7 +229,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     kolAgg: { kols_total: 5, contacted: 0, replied: 0, candidates: 3 },
     draftsPending: 1
   }));
-  assert.match(response.payload.data.next_step, /工作台处理/);
+  assert.match(response.payload.data.next_step, /达人策略页面处理/);
 
   // 有 candidate → 去审核达人（优先于草稿/回复）
   response = await callDetail(makeDetailDb({
@@ -238,7 +238,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     draftsPending: 1,
     repliesPending: 1
   }));
-  assert.match(response.payload.data.next_step, /工作台处理/);
+  assert.match(response.payload.data.next_step, /KOL 寻找页面处理/);
 
   // 无 candidate 有待审草稿 → 去审批台
   response = await callDetail(makeDetailDb({
@@ -247,7 +247,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     draftsPending: 2,
     repliesPending: 1
   }));
-  assert.match(response.payload.data.next_step, /工作台处理/);
+  assert.match(response.payload.data.next_step, /邮件中心处理/);
 
   // 只剩回复 → 去确认
   response = await callDetail(makeDetailDb({
@@ -255,7 +255,7 @@ test('GET /:id/detail next_step 推导分支', async () => {
     kolAgg: { kols_total: 5, contacted: 0, replied: 0, candidates: 0 },
     repliesPending: 1
   }));
-  assert.match(response.payload.data.next_step, /工作台处理/);
+  assert.match(response.payload.data.next_step, /邮件中心处理/);
 
   // 都没有且无达人 → 提示先找达人
   response = await callDetail(makeDetailDb({ ...base }));

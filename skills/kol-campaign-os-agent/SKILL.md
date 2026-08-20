@@ -59,6 +59,31 @@ Content-Type: application/json
 }
 ```
 
+For high-throughput discovery, shard distinct keyword families across one Ready Strategy instead of duplicating Strategies. Each shard accepts up to 8 keywords; one batch accepts up to 12 shards and runs 1-4 discovery workers. Finder still enforces one target platform and a maximum of 50 qualified creators per shard:
+
+```http
+POST {base_url}/api/finder-tasks/batch
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "strategy_id": 1,
+  "target_platform": "instagram",
+  "limit_per_shard": 50,
+  "concurrency": 3,
+  "instagram_pages_per_query": 5,
+  "instagram_date_posted": "last-year",
+  "keyword_shards": [
+    ["budget christmas tree review", "pre lit tree review"],
+    ["christmas living room makeover", "holiday home transformation"]
+  ]
+}
+```
+
+Use mutually distinct keyword families to reduce cache overlap. The shared Strategy applies follower and average-view minimum/maximum gates before evidence import and AI analysis. Analyze and generate candidates for successful child task IDs through the normal evidence endpoints; never approve generated Raw Candidates.
+
+Instagram Reel search supports manual pages 1-11 and optional `instagram_date_posted` values `last-hour`, `last-day`, `last-week`, `last-month`, or `last-year`. For long-tail discovery, use 3-5 pages first and increase to 11 only when needed. Each page is cached independently and hard metric gates run while paging so ineligible page-one results do not consume the task's qualified-creator limit.
+
 Import evidence:
 
 ```http

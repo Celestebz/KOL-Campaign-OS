@@ -188,7 +188,7 @@ const RUN_TERMINAL_STATUSES = ['success', 'partial_failed', 'failed'];
 const RUN_STATUS_LABEL = { running: '进行中', success: '已完成', partial_failed: '部分失败', failed: '失败' };
 const RUN_POLL_INTERVAL_MS = 5000;
 
-const CampaignKols = ({ view = 'cooperation' }) => {
+const CampaignKols = ({ view = 'cooperation', campaignId, embedded = false }) => {
   const isCandidatePool = view === 'candidate';
   const [rows, setRows] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -210,8 +210,12 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   const [draftRun, setDraftRun] = useState(null);
   const [draftRunError, setDraftRunError] = useState('');
   const draftPollTimerRef = useRef(null);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState(() => ({
+    campaign_id: campaignId ? Number(campaignId) : undefined
+  }));
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const [skuFilter, setSkuFilter] = useState();
+  const [campaignSkuOptions, setCampaignSkuOptions] = useState([]);
   const [editing, setEditing] = useState(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [confirmingId, setConfirmingId] = useState(null);
@@ -240,18 +244,39 @@ const CampaignKols = ({ view = 'cooperation' }) => {
 
   // SKU 筛选在前端做：候选行一次全量返回，SKU 选项也从当前行集合去重得出。
   const skuOptions = useMemo(() => (
-    [...new Set(rows.map((row) => row.product_sku).filter(Boolean))]
+    (campaignSkuOptions.length
+      ? campaignSkuOptions
+      : [...new Set(rows.map((row) => row.product_sku).filter(Boolean))])
       .map((sku) => ({ value: sku, label: sku }))
-  ), [rows]);
+  ), [campaignSkuOptions, rows]);
 
-  const visibleRows = useMemo(() => (
-    skuFilter ? rows.filter((row) => row.product_sku === skuFilter) : rows
-  ), [rows, skuFilter]);
+  const visibleRows = rows;
 
   useEffect(() => {
     fetchCampaigns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    setFilters((current) => ({ ...current, campaign_id: Number(campaignId) }));
+  }, [campaignId]);
+
+  useEffect(() => {
+    const selectedCampaignId = filters.campaign_id;
+    if (!selectedCampaignId) {
+      setCampaignSkuOptions([]);
+      return;
+    }
+    axios.get(`/api/campaigns/${selectedCampaignId}/products`)
+      .then((response) => {
+        const skus = [...new Set((response.data.data || [])
+          .map((item) => item.product?.sku || item.product_sku || item.sku)
+          .filter(Boolean))];
+        setCampaignSkuOptions(skus);
+      })
+      .catch(() => setCampaignSkuOptions([]));
+  }, [filters.campaign_id]);
 
   // 组件卸载时清理 AI 起草进度轮询定时器。
   useEffect(() => () => {
@@ -263,13 +288,25 @@ const CampaignKols = ({ view = 'cooperation' }) => {
     setCampaigns(res.data.data || []);
   };
 
-  const fetchRows = async () => {
+  const fetchRows = async ({ page = pagination.current, pageSize = pagination.pageSize } = {}) => {
     setLoading(true);
     try {
       const res = await axios.get('/api/campaign-kols', {
-        params: { ...filters, pipeline_stage: isCandidatePool ? 'candidate' : 'confirmed' }
+        params: {
+          ...filters,
+          pipeline_stage: isCandidatePool ? 'candidate' : 'confirmed',
+          product_sku: skuFilter,
+          page,
+          page_size: pageSize
+        }
       });
       setRows(res.data.data || []);
+      const serverPagination = res.data.pagination || {};
+      setPagination({
+        current: Number(serverPagination.page || page),
+        pageSize: Number(serverPagination.page_size || pageSize),
+        total: Number(serverPagination.total ?? (res.data.data || []).length)
+      });
     } catch (error) {
       message.error(error.response?.data?.error || '获取项目 KOL 失败');
     } finally {
@@ -282,8 +319,16 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   };
 
   const openEdit = async (record) => {
-    setEditing(record);
-    const values = { ...record };
+    let completeRecord = record;
+    try {
+      const response = await axios.get(`/api/campaign-kols/${record.id}`);
+      completeRecord = { ...record, ...(response.data.data || {}) };
+    } catch (error) {
+      message.error(error.response?.data?.error || '获取项目 KOL 详情失败');
+      return;
+    }
+    setEditing(completeRecord);
+    const values = { ...completeRecord };
     values.currency = normalizeCurrency(values.currency);
     values.expected_publish_at = values.expected_publish_at ? String(values.expected_publish_at).slice(0, 10) : undefined;
     values.shipping_date = values.shipping_date ? String(values.shipping_date).slice(0, 10) : undefined;
@@ -307,21 +352,20 @@ const CampaignKols = ({ view = 'cooperation' }) => {
       }
     }
     try {
-      const [productsResponse, campaignProductsResponse] = await Promise.all([
+      const [productsResponse, assignmentsResponse] = await Promise.all([
         axios.get('/api/products'),
-        axios.get(`/api/campaigns/${record.campaign_id}/products`)
+        axios.get(`/api/campaign-kols/${record.id}/products`)
       ]);
-      const attachedIds = new Set((campaignProductsResponse.data.data || []).map((item) => item.product_id));
       const productOptions = (productsResponse.data.data || [])
         .filter((item) => item.status !== 'archived')
         .map((item) => ({
           value: item.id,
-          label: `${item.sku || item.name}${attachedIds.has(item.id) ? '' : '（未挂项目）'}`,
+          label: item.sku || item.name,
           sku: item.sku
         }));
-      const currentSku = record.product_sku || splitCampaignName(record.campaign_name).product;
-      const current = productOptions.find((item) => item.sku === currentSku) || null;
-      values.product_id = current?.value;
+      const assignments = assignmentsResponse.data.data || [];
+      const currentAssignment = assignments.find((item) => item.assignment_status === 'active') || assignments[0] || null;
+      values.product_id = currentAssignment?.product_id;
       setEditProducts(productOptions);
     } catch (error) {
       setEditProducts([]);
@@ -331,9 +375,10 @@ const CampaignKols = ({ view = 'cooperation' }) => {
   };
 
   useEffect(() => {
-    fetchRows();
+    setSelectedRowKeys([]);
+    fetchRows({ page: 1 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.campaign_id, filters.status, filters.outreach_status, filters.sync_status, isCandidatePool]);
+  }, [filters.campaign_id, filters.status, filters.outreach_status, filters.sync_status, skuFilter, isCandidatePool]);
 
   const confirmCooperation = async (record) => {
     setConfirmingId(record.id);
@@ -435,7 +480,59 @@ const CampaignKols = ({ view = 'cooperation' }) => {
         values.final_fee = 0;
         values.currency = null;
       }
-      await axios.patch(`/api/campaign-kols/${editing.id}`, values);
+      if (values.product_id) {
+        const productCampaignsResponse = await axios.get(`/api/products/${values.product_id}/campaigns`);
+        const activeMappings = (productCampaignsResponse.data.data || []).filter((item) => item.status === 'active');
+        const belongsToCurrentCampaign = activeMappings.some((item) => Number(item.campaign_id) === Number(editing.campaign_id));
+        if (!belongsToCurrentCampaign) {
+          if (activeMappings.length !== 1) {
+            message.error(activeMappings.length
+              ? '该产品属于多个项目，无法自动判断迁移目标，请先整理产品项目归属'
+              : '该产品尚未归属任何进行中的项目，请先在项目管理中挂载产品');
+            return;
+          }
+          const target = activeMappings[0];
+          const confirmed = await new Promise((resolve) => {
+            Modal.confirm({
+              title: '确认迁移 KOL 合作项目',
+              content: `${editing.kol_name || editing.kol_name_snapshot || '该 KOL'} 将从「${editing.campaign_name || editing.campaign_id}」迁移到「${target.campaign_name}」，关联邮件、回复、时间线和产品分配会一起迁移。`,
+              okText: '确认迁移',
+              cancelText: '取消',
+              onOk: () => resolve(true),
+              onCancel: () => resolve(false)
+            });
+          });
+          if (!confirmed) return;
+          await axios.post(`/api/campaign-kols/${editing.id}/products/migrate`, {
+            product_id: values.product_id,
+            target_campaign_id: target.campaign_id
+          });
+          delete values.product_id;
+          setEditing((current) => current ? {
+            ...current,
+            campaign_id: target.campaign_id,
+            campaign_name: target.campaign_name
+          } : current);
+        }
+      }
+      const updateResponse = await axios.patch(`/api/campaign-kols/${editing.id}`, values);
+      if (detailRow?.id === editing.id) {
+        try {
+          const assignmentsResponse = await axios.get(`/api/campaign-kols/${editing.id}/products`);
+          const assignments = assignmentsResponse.data.data || [];
+          const activeAssignment = assignments.find((item) => item.assignment_status === 'active') || assignments[0] || null;
+          setProductAssignments(assignments);
+          setDetailRow((row) => ({
+            ...row,
+            ...(updateResponse.data.data || {}),
+            product_id: activeAssignment?.product_id,
+            product_name: activeAssignment?.product_name,
+            product_sku: activeAssignment?.product_sku
+          }));
+        } catch (refreshError) {
+          message.warning('合作信息已保存，但产品分配刷新失败；重新打开详情即可查看最新结果');
+        }
+      }
       if (isCandidatePool) {
         message.success('项目 KOL 已更新');
       } else {
@@ -823,16 +920,16 @@ const CampaignKols = ({ view = 'cooperation' }) => {
 
   return (
     <div>
-      <div className="page-header">
+      {!embedded && <div className="page-header">
         <h1 className="page-title">{isCandidatePool ? '项目候选池' : 'KOL 合作'}</h1>
         <p className="page-subtitle">{isCandidatePool
           ? '人工确认入池、正在联络与沟通的项目候选；确认合作后转入项目跟进。'
           : '仅显示已经人工确认合作、进入发货与内容履约流程的 KOL。'}</p>
-      </div>
+      </div>}
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Select allowClear placeholder="项目" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 160 }} />
+          {!embedded && <Select allowClear placeholder="项目" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 160 }} />}
           <Select allowClear showSearch placeholder="产品SKU" value={skuFilter} onChange={(v) => setSkuFilter(v || undefined)} options={skuOptions} style={{ width: 150 }} />
           {isCandidatePool ? (
             <>
@@ -869,7 +966,18 @@ const CampaignKols = ({ view = 'cooperation' }) => {
           loading={loading}
           rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, preserveSelectedRowKeys: true }}
           scroll={{ x: 2100 }}
-          pagination={{ defaultPageSize: 10, showSizeChanger: true }}
+          pagination={{
+            current: pagination.current,
+            pageSize: pagination.pageSize,
+            total: pagination.total,
+            showSizeChanger: true,
+            pageSizeOptions: [20, 50, 100],
+            showTotal: (total) => `共 ${total} 条`
+          }}
+          onChange={(nextPagination) => {
+            setSelectedRowKeys([]);
+            fetchRows({ page: nextPagination.current, pageSize: nextPagination.pageSize });
+          }}
         />
       </Card>
 

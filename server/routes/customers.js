@@ -882,7 +882,12 @@ router.post('/', async (req, res) => {
 
     const existing = await findExistingKol(data);
     if (existing) {
-      return res.status(400).json({ success: false, error: '该 KOL 或邮箱已存在' });
+      const dup = await dbOperations.get('SELECT id, name, email FROM customers WHERE id = ?', [existing.id]);
+      return res.status(400).json({
+        success: false,
+        error: '该 KOL 或邮箱已存在',
+        data: { existing_id: existing.id, existing_name: dup ? dup.name : '', existing_email: dup ? dup.email : '' }
+      });
     }
 
     const id = await insertKol(data);

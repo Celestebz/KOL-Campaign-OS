@@ -934,7 +934,12 @@ test('platform gates use Strategy semantics instead of built-in product keywords
     discovery: { keywords: 'strategy category phrase' },
     strategy: {
       persona_config: { positive_audience_signals: ['strategy category phrase'], negative_signals: ['configured exclusion'] },
-      finder_handoff: { minimum_followers: 10000, maximum_followers: 500000, minimum_avg_views: 5000 }
+      finder_handoff: {
+        minimum_followers: 10000,
+        maximum_followers: 500000,
+        minimum_avg_views: 5000,
+        maximum_avg_views: 10000
+      }
     }
   };
   const instagram = finderTaskRoutes.normalizeCandidate({
@@ -947,6 +952,57 @@ test('platform gates use Strategy semantics instead of built-in product keywords
     followers: 20000, avg_views: 8000, raw_data: { owner: { username: 'excluded', full_name: 'Configured Exclusion Account', post_count: 40 } }
   }, request, 'instagram_search');
   assert.equal(finderTaskRoutes.applyFinderGates(excluded, request).status, 'ignored');
+  const overViewLimit = finderTaskRoutes.normalizeCandidate({
+    platform: 'instagram', kol_name: 'High View Account', profile_url: 'https://instagram.com/highviews',
+    followers: 20000, avg_views: 10001, raw_data: { owner: { username: 'highviews', full_name: 'High View Account', post_count: 40 } }
+  }, request, 'instagram_search');
+  const gated = finderTaskRoutes.applyFinderGates(overViewLimit, request);
+  assert.equal(gated.status, 'ignored');
+  assert.match(gated.error_message, /avg views 10001 > maximum 10000/);
+  const missingViews = finderTaskRoutes.normalizeCandidate({
+    platform: 'instagram', kol_name: 'Missing Views Account', profile_url: 'https://instagram.com/missingviews',
+    followers: 20000, raw_data: { owner: { username: 'missingviews', full_name: 'Missing Views Account', post_count: 40 } }
+  }, request, 'instagram_search');
+  assert.match(finderTaskRoutes.applyFinderGates(missingViews, request).error_message, /avg views unavailable/);
+});
+
+test('batch Finder creates keyword-sharded tasks on one Ready Strategy', async () => {
+  await resetTestDatabase();
+  await initDatabase();
+  const app = await buildApp();
+  const request = supertest(app);
+  const { strategy } = await seedBaseData();
+  const response = await request.post('/api/finder-tasks/batch').send({
+    strategy_id: strategy.id,
+    target_platform: 'instagram',
+    limit_per_shard: 50,
+    concurrency: 2,
+    keyword_shards: [
+      ['budget christmas tree review', 'pre lit tree review'],
+      ['christmas living room makeover', 'holiday home transformation']
+    ]
+  }).expect(200);
+  assert.equal(response.body.data.task_count, 2);
+  assert.equal(response.body.data.concurrency, 2);
+  const tasks = await models.FinderTask.findAll({ order: [['id', 'ASC']] });
+  assert.equal(tasks.length, 2);
+  assert.match(tasks[0].keywords, /budget christmas tree review/);
+  assert.deepEqual(safeParseJson(tasks[1].raw_request).discovery_keywords, [
+    'christmas living room makeover',
+    'holiday home transformation'
+  ]);
+});
+
+test('batch Finder shard validation caps shards and keywords', () => {
+  assert.deepEqual(finderTaskRoutes.normalizeKeywordShards([
+    ['one', 'one', 'two'],
+    'three, four'
+  ]), [['one', 'two'], ['three', 'four']]);
+  assert.throws(() => finderTaskRoutes.normalizeKeywordShards([]), /non-empty array/);
+  assert.throws(
+    () => finderTaskRoutes.normalizeKeywordShards(Array.from({ length: 13 }, () => ['term'])),
+    /at most 12 shards/
+  );
 });
 
 test('Finder reuses a successful analysis for the same video and Strategy across tasks', async () => {

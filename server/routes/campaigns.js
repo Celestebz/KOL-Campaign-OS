@@ -152,16 +152,16 @@ function buildDetailNextStep({ strategy, candidates, summary }) {
     return '尚无达人策略，请先生成并完善达人策略';
   }
   if (strategy.status === 'draft') {
-    return '达人策略草案待审核，请到工作台处理';
+    return '达人策略草案待完善，请到项目的达人策略页面处理';
   }
   if (candidates > 0) {
-    return `有 ${candidates} 位候选达人待审核，请到工作台处理`;
+    return `有 ${candidates} 位候选达人待处理，请到 KOL 寻找页面处理`;
   }
   if (summary.drafts_pending > 0) {
-    return `有 ${summary.drafts_pending} 封邮件草稿待审批，请到工作台处理`;
+    return `有 ${summary.drafts_pending} 封邮件草稿待审批，请到邮件中心处理`;
   }
   if (summary.replies_pending > 0) {
-    return `有 ${summary.replies_pending} 条达人回复待确认，请到工作台处理`;
+    return `有 ${summary.replies_pending} 条达人回复待确认，请到邮件中心处理`;
   }
   if (summary.kols_total === 0) {
     return '项目下还没有达人，请先开始寻找达人';
@@ -699,8 +699,21 @@ router.get('/:campaignId/kols', async (req, res) => {
   try {
     const campaignId = Number(req.params.campaignId);
     const { status, search } = req.query;
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(req.query.page_size, 10) || 50));
+    const offset = (page - 1) * pageSize;
     let sql = `
-      SELECT ck.*, k.name as kol_name, k.contact_name, k.email, k.phone, k.country_region,
+      SELECT ck.id, ck.campaign_id, ck.customer_id, ck.platform_account_id,
+        ck.pipeline_stage, ck.project_status, ck.outreach_status, ck.priority_level,
+        ck.candidate_priority_score, ck.cooperation_type, ck.cooperation_platforms,
+        ck.final_fee, ck.currency, ck.price_rmb, ck.owner, ck.tracking_number,
+        ck.sync_status, ck.project_notes, ck.notes, ck.kol_name_snapshot,
+        ck.email_snapshot, ck.country_region_snapshot, ck.youtube_url_snapshot,
+        ck.youtube_followers_snapshot, ck.instagram_url_snapshot,
+        ck.instagram_followers_snapshot, ck.tiktok_url_snapshot,
+        ck.tiktok_followers_snapshot, ck.needs_reply, ck.last_inbound_at,
+        ck.created_at, ck.updated_at,
+        k.name as kol_name, k.contact_name, k.email, k.phone, k.country_region,
         k.cooperation_status as global_cooperation_status,
         k.cooperation_risk_category as global_cooperation_risk_category,
         k.cooperation_risk_reason as global_cooperation_risk_reason,
@@ -730,18 +743,30 @@ router.get('/:campaignId/kols', async (req, res) => {
       params.push(term, term, term, term, term, term, term, term, term);
     }
 
-    sql += ' ORDER BY ck.candidate_priority_score DESC, ck.created_at DESC, ck.id DESC';
-    const rows = await dbOperations.query(sql, params);
+    const countSql = `SELECT COUNT(*) AS total ${sql.slice(sql.indexOf('FROM campaign_kols'))}`;
+    sql += ' ORDER BY ck.candidate_priority_score DESC, ck.created_at DESC, ck.id DESC LIMIT ? OFFSET ?';
+    const [rows, countRows] = await Promise.all([
+      dbOperations.query(sql, [...params, pageSize, offset]),
+      dbOperations.query(countSql, params)
+    ]);
+    const countRow = countRows[0];
     res.json({
       success: true,
       data: rows.map((row) => ({
         ...row,
-        master_snapshot: safeParseJson(row.master_snapshot),
-        project_override: safeParseJson(row.project_override),
-        evidence_summary: safeParseJson(row.evidence_summary)
-      }))
+        cooperation_platforms: row.cooperation_platforms
+      })),
+      pagination: { page, page_size: pageSize, total: Number(countRow?.total || 0) }
     });
   } catch (error) {
+    console.error('[campaigns:kols-list]', {
+      code: error.code,
+      errno: error.errno,
+      campaign_id: req.params.campaignId,
+      page: req.query.page || 1,
+      page_size: req.query.page_size || 50,
+      message: error.message
+    });
     res.status(500).json({ success: false, error: error.message });
   }
 });

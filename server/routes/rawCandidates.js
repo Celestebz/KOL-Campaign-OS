@@ -510,7 +510,7 @@ async function approveCandidate(id, body = {}) {
 
 router.get('/', async (req, res) => {
   try {
-    const { campaign_id, strategy_id, platform, status, min_score, search, identity_status, campaign_product_id } = req.query;
+    const { campaign_id, strategy_id, platform, status, min_score, search, identity_status, campaign_product_id, actionable } = req.query;
     let sql = `
       SELECT rc.*, c.name as campaign_name, ft.name as finder_task_name,
         ks.name as strategy_name, ks.status as strategy_status,
@@ -575,6 +575,26 @@ router.get('/', async (req, res) => {
         sql += ' AND rc.status = ?';
         params.push(status);
       }
+    }
+    if (actionable === '1' || actionable === 'true') {
+      sql += ` AND rc.status IN (?, ?)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM campaign_kols existing_ck
+          JOIN customers existing_customer ON existing_customer.id = existing_ck.customer_id
+          WHERE existing_ck.campaign_id = rc.campaign_id
+            AND (
+              (rc.profile_url IS NOT NULL AND rc.profile_url != '' AND (
+                existing_customer.profile_url = rc.profile_url
+                OR existing_customer.youtube_url = rc.profile_url
+                OR existing_customer.instagram_url = rc.profile_url
+                OR existing_customer.tiktok_url = rc.profile_url
+              ))
+              OR (rc.email IS NOT NULL AND rc.email != '' AND existing_customer.email = rc.email)
+              OR (rc.kol_name IS NOT NULL AND rc.kol_name != '' AND existing_customer.name = rc.kol_name)
+            )
+        )`;
+      params.push('new', 'manual_review');
     }
     if (identity_status) {
       sql += ' AND rcpf.identity_status = ?';

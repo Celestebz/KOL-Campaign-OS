@@ -2,12 +2,14 @@ function clean(value) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
 
-function buildInstagramReelSearchUrl(baseUrl, query) {
+function buildInstagramReelSearchUrl(baseUrl, query, { page, datePosted } = {}) {
   const root = clean(baseUrl)
     .replace(/\/$/, '')
     .replace(/\/v[12]$/, '');
   const url = new URL(`${root}/v2/instagram/reels/search`);
   url.searchParams.set('query', clean(query));
+  if (page !== undefined && page !== null && page !== '') url.searchParams.set('page', String(page));
+  if (clean(datePosted)) url.searchParams.set('date_posted', clean(datePosted));
   return url.toString();
 }
 

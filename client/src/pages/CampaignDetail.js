@@ -8,6 +8,7 @@ import { bindReply, confirmReply, getCampaignReplies, getEmailRecords, getUnmatc
 import { subscribeCampaignProgressChanged } from './campaignProgressSync';
 import { deriveCampaignStage, deriveProgressText } from './campaignProgress';
 import { normalizeCampaignProductMaterial } from './campaignProductMaterial';
+import CampaignKols from './CampaignKols';
 
 const STRATEGY_STATUS = {
   draft: { label: '草稿', color: 'orange' },
@@ -474,6 +475,8 @@ const CampaignDetail = () => {
     </Space>
   );
 
+  // 旧进度与沟通面板暂时保留，供历史抽屉逻辑和后续迁移核对使用。
+  // eslint-disable-next-line no-unused-vars
   const progressTab = (
     <Card size="small" title={`项目达人（${filteredProgressKols.length}/${kols.length}）`}>
       <Space wrap style={{ marginBottom: 16 }}>
@@ -495,6 +498,7 @@ const CampaignDetail = () => {
     </Card>
   );
 
+  // eslint-disable-next-line no-unused-vars
   const communicationTab = (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Row gutter={[12, 12]}>
@@ -595,17 +599,45 @@ const CampaignDetail = () => {
         <Button icon={<ReloadOutlined />} onClick={fetchAll} loading={loading}>刷新</Button>
       </div>
       {error && detail && <Alert type="warning" showIcon style={{ marginBottom: 16 }} message={`部分数据刷新失败：${error}`} />}
-      <Card className="content-card">
-        <Tabs
-          defaultActiveKey="overview"
-          items={[
-            { key: 'overview', label: '概览', children: overviewTab },
-            { key: 'progress', label: '达人进展', children: progressTab },
-            { key: 'communication', label: '沟通进度', children: communicationTab },
-            { key: 'materials', label: '项目资料', children: materialsTab }
-          ]}
-        />
-      </Card>
+      <Tabs
+        defaultActiveKey="overview"
+        items={[
+          { key: 'overview', label: '项目概览', children: <Card className="content-card">{overviewTab}</Card> },
+          {
+            key: 'candidates',
+            label: `候选池（${summary.kols_candidate ?? 0}）`,
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="候选筛选区"
+                  description="集中审核当前项目候选；人工确认合作后，达人会进入合作区，候选记录仍会保留。"
+                  action={<Link to={`/finder?campaign_id=${campaign.id}`}><Button>继续寻找达人</Button></Link>}
+                />
+                <CampaignKols view="candidate" campaignId={campaign.id} embedded />
+              </Space>
+            )
+          },
+          {
+            key: 'cooperation',
+            label: `合作区（${summary.kols_confirmed ?? 0}）`,
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <Alert
+                  type="success"
+                  showIcon
+                  message="正式合作推进区"
+                  description="统一处理联系、沟通、报价、寄样、内容履约与发布进度。"
+                  action={<Link to={`/emails?campaign_id=${campaign.id}`}><Button icon={<MailOutlined />}>项目邮件</Button></Link>}
+                />
+                <CampaignKols view="cooperation" campaignId={campaign.id} embedded />
+              </Space>
+            )
+          },
+          { key: 'settings', label: '项目设置', children: materialsTab }
+        ]}
+      />
       <Drawer
         title={selectedKol ? `${selectedKol.kol_name || selectedKol.kol_name_snapshot || '达人'} · 沟通详情` : '沟通详情'}
         width={760}

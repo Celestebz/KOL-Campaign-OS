@@ -134,6 +134,45 @@ test('未识别回复列表支持绑定 KOL', async () => {
   await waitFor(() => expect(message.success).toHaveBeenCalledWith('已绑定 KOL，AI 摘要生成中'));
 }, 30000);
 
+test('邮件待办为 AI 摘要保留可读宽度，并可悬浮查看完整内容', async () => {
+  render(<Emails />);
+  await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
+
+  const summary = await screen.findByText('对合作有意向');
+  const summaryTable = summary.closest('table');
+  const headers = Array.from(summaryTable.querySelectorAll('thead th'));
+  const summaryColumnIndex = headers.findIndex((header) => header.textContent.includes('AI 摘要'));
+  const summaryColumn = summaryTable.querySelectorAll('colgroup col')[summaryColumnIndex];
+  expect(summaryColumn).toHaveStyle({ width: '280px' });
+
+  await userEvent.hover(summary);
+  await waitFor(() => expect(screen.getAllByText('对合作有意向')).toHaveLength(2));
+}, 30000);
+
+test('确认意向后列表优先显示人工确认值', async () => {
+  const defaultGet = axios.get.getMockImplementation();
+  axios.get.mockImplementation((url, config) => {
+    if (url === '/api/emails/replies') {
+      return Promise.resolve({ data: { data: [{
+        id: 6, kol_name: 'Bob', campaign_name: '人工确认项目', subject: 'Re: 条款',
+        received_at: '2026-08-17T06:00:00Z', ai_status: 'success',
+        ai_summary: 'AI 原始摘要', ai_intent: 'interested',
+        confirmed_summary: '人工修改后的摘要', confirmed_intent: 'rejected',
+        confirm_status: 'confirmed', mailbox_label: '默认邮箱'
+      }] } });
+    }
+    return defaultGet(url, config);
+  });
+
+  render(<Emails />);
+  await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
+
+  expect(await screen.findByText('人工修改后的摘要')).toBeInTheDocument();
+  expect(screen.getByText('已拒绝')).toBeInTheDocument();
+  expect(screen.queryByText('AI 原始摘要')).not.toBeInTheDocument();
+  expect(screen.queryByText('有意向')).not.toBeInTheDocument();
+}, 30000);
+
 test('邮箱配置以列表展示邮箱，支持测试 IMAP 和立即同步', async () => {
   render(<Emails />);
   await userEvent.click(await screen.findByText('邮箱配置'));

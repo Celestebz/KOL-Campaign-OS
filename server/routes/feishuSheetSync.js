@@ -1,5 +1,6 @@
 const express = require('express');
 const { dbOperations } = require('../database');
+const { fetchContentStats } = require('../services/contentStats');
 
 const router = express.Router();
 const FEISHU_PROVIDER_KEY = 'cloud.feishu_bitable';
@@ -60,7 +61,7 @@ async function getConfig(purpose = 'cooperation_tracking', campaignId = 61) {
     ? savedTargets.find((item) => Number(item?.campaign_id) === Number(campaignId) && compact(item?.purpose) === purpose)
     : null;
   const legacyMap = !Array.isArray(savedTargets) ? savedTargets : {};
-  const defaultMap = { candidate_pool: '6nUDXq', cooperation_tracking: compact(extra.sheet_id) || 'uSIrMc' };
+  const defaultMap = { candidate_pool: '6nUDXq', cooperation_tracking: compact(extra.sheet_id) || 'uSIrMc', content_area: '1GtPUh' };
   const config = {
     baseUrl: compact(row?.base_url || extra.base_url || 'https://open.feishu.cn').replace(/\/$/, ''),
     appId: compact(extra.app_id),
@@ -188,6 +189,26 @@ function mapCandidateRow(row) {
   };
 }
 
+function mapRawCandidateRow(row, options = {}) {
+  const platform = normalizePlatform(row.platform || row.target_platform || '');
+  const profileUrl = compact(row.profile_url);
+  const name = compact(row.kol_name) || normalizeHandle(profileUrl);
+  const email = compact(row.email);
+  const all = [
+    platform, name, richLink(profileUrl || name, profileUrl),
+    email ? richLink(email, `mailto:${email}`) : '', '',
+    row.followers || '', row.avg_views || '',
+    '', compact(options.create_owner), '未触达'
+  ];
+  return {
+    id: row.id,
+    customerId: null,
+    key: profileKey(platform, profileUrl || name),
+    systemId: '',
+    values: { all, append: all }
+  };
+}
+
 function applyFieldPolicies(systemValues, sheetValues, policies = {}, columnCount = 25) {
   const output = Array.from({ length: columnCount }, (_, index) => sheetValues[index] ?? '');
   for (const [column, requestedMode] of Object.entries(policies || {})) {
@@ -244,8 +265,28 @@ async function loadRows(ids = [], campaignId = null, purpose = 'cooperation_trac
   return rows.map(purpose === 'candidate_pool' ? mapCandidateRow : mapSystemRow);
 }
 
+async function loadRawCandidateRows(ids = [], campaignId = null, options = {}) {
+  const selectedIds = [...new Set(ids.map(Number).filter(Number.isFinite))];
+  if (!campaignId) throw new Error('请先选择项目，再同步飞书普通表格');
+  if (!selectedIds.length) throw new Error('Raw Candidates 同步必须提供明确的 raw_candidate_ids');
+  const params = [campaignId, ...selectedIds];
+  const rows = await dbOperations.query(`
+    SELECT id, campaign_id, platform, target_platform, kol_name, profile_url,
+      followers, avg_views, email, status
+    FROM raw_candidates
+    WHERE campaign_id = ? AND id IN (${selectedIds.map(() => '?').join(',')})
+    ORDER BY id DESC
+  `, params);
+  const seen = new Set();
+  return rows.map((row) => mapRawCandidateRow(row, options)).filter((row) => {
+    if (!row.key || seen.has(row.key)) return false;
+    seen.add(row.key);
+    return true;
+  });
+}
+
 async function readSheet(config, context) {
-  const range = encodeURIComponent(`${config.sheetId}!A1:Y5000`);
+  const range = encodeURIComponent(`${config.sheetId}!A1:${config.endColumn || 'Y'}5000`);
   const data = await fetchJson(`${config.baseUrl}/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(context.spreadsheetToken)}/values/${range}`, { headers: context.headers });
   return data?.data?.valueRange?.values || [];
 }
@@ -301,21 +342,42 @@ async function appendRows(config, context, values) {
 
 async function prepare(req) {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : [];
+  const rawCandidateIds = Array.isArray(req.body?.raw_candidate_ids)
+    ? req.body.raw_candidate_ids.map(Number).filter(Number.isFinite)
+    : [];
   const campaignId = Number(req.body?.campaign_id) || null;
   const purpose = compact(req.body?.sheet_purpose) || 'cooperation_tracking';
+  const sourceType = compact(req.body?.source_type) || 'campaign_kols';
   if (!campaignId) throw new Error('请先选择项目，再同步飞书普通表格');
+  if (!['campaign_kols', 'raw_candidates'].includes(sourceType)) throw new Error('不支持的飞书同步数据源');
+  if (sourceType === 'raw_candidates' && purpose !== 'candidate_pool') {
+    throw new Error('Raw Candidates 只能同步到候选池工作表');
+  }
   const config = await getConfig(purpose, campaignId);
   config.endColumn = purpose === 'candidate_pool' ? 'J' : 'Y';
   const context = await getSheetContext(config);
-  const [systemRows, sheetRows] = await Promise.all([loadRows(ids, campaignId, purpose), readSheet(config, context)]);
-  return { config, context, purpose, preview: buildPreview(systemRows, sheetRows, purpose) };
+  const sourceRowsPromise = sourceType === 'raw_candidates'
+    ? loadRawCandidateRows(rawCandidateIds, campaignId, { create_owner: req.body?.create_owner })
+    : loadRows(ids, campaignId, purpose);
+  const [systemRows, sheetRows] = await Promise.all([sourceRowsPromise, readSheet(config, context)]);
+  return { config, context, purpose, sourceType, preview: buildPreview(systemRows, sheetRows, purpose) };
 }
 
-async function pushToSheet(ids, campaignId, purpose = 'cooperation_tracking', fieldPolicies = null) {
+async function pushToSheet(ids, campaignId, purpose = 'cooperation_tracking', fieldPolicies = null, options = {}) {
+  const sourceType = compact(options.source_type) || 'campaign_kols';
+  const rawCandidateIds = Array.isArray(options.raw_candidate_ids) ? options.raw_candidate_ids : [];
+  const skipExisting = options.skip_existing === true;
+  if (!['campaign_kols', 'raw_candidates'].includes(sourceType)) throw new Error('不支持的飞书同步数据源');
+  if (sourceType === 'raw_candidates' && purpose !== 'candidate_pool') {
+    throw new Error('Raw Candidates 只能同步到候选池工作表');
+  }
   const config = await getConfig(purpose, campaignId);
   config.endColumn = purpose === 'candidate_pool' ? 'J' : 'Y';
   const context = await getSheetContext(config);
-  const [systemRows, sheetRows] = await Promise.all([loadRows(ids, campaignId, purpose), readSheet(config, context)]);
+  const sourceRowsPromise = sourceType === 'raw_candidates'
+    ? loadRawCandidateRows(rawCandidateIds, campaignId, { create_owner: options.create_owner })
+    : loadRows(ids, campaignId, purpose);
+  const [systemRows, sheetRows] = await Promise.all([sourceRowsPromise, readSheet(config, context)]);
   const preview = buildPreview(systemRows, sheetRows, purpose);
   const updates = [];
   const creates = [];
@@ -325,6 +387,7 @@ async function pushToSheet(ids, campaignId, purpose = 'cooperation_tracking', fi
       creates.push(item.row.values.append);
       continue;
     }
+    if (skipExisting) continue;
     const n = item.sheetRow;
     if (hasFieldPolicies) {
       const endColumn = purpose === 'candidate_pool' ? 'J' : 'Y';
@@ -347,7 +410,12 @@ async function pushToSheet(ids, campaignId, purpose = 'cooperation_tracking', fi
   }
   await batchUpdate(config, context, updates);
   await appendRows(config, context, creates);
-  return { created: creates.length, updated: preview.updated, skipped: preview.skipped };
+  return {
+    created: creates.length,
+    updated: skipExisting ? 0 : preview.updated,
+    skipped: preview.skipped,
+    skipped_existing: skipExisting ? preview.updated : 0
+  };
 }
 
 router.post('/test', async (req, res) => {
@@ -363,8 +431,21 @@ router.post('/test', async (req, res) => {
 
 router.post('/preview', async (req, res) => {
   try {
-    const { preview } = await prepare(req);
-    res.json({ success: true, data: { created: preview.created, updated: preview.updated, skipped: preview.skipped } });
+    const { preview, sourceType } = await prepare(req);
+    const items = preview.plan.map((item) => ({
+      id: item.row.id,
+      key: item.row.key,
+      sheet_row: item.sheetRow,
+      action: item.sheetRow ? 'update' : 'create'
+    }));
+    res.json({ success: true, data: {
+      source_type: sourceType,
+      selected: preview.plan.length,
+      created: preview.created,
+      updated: preview.updated,
+      skipped: preview.skipped,
+      items
+    } });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -376,8 +457,71 @@ router.post('/push', async (req, res) => {
     const campaignId = Number(req.body?.campaign_id) || null;
     const purpose = compact(req.body?.sheet_purpose) || 'cooperation_tracking';
     if (!campaignId) throw new Error('请先选择项目，再同步飞书普通表格');
-    const data = await pushToSheet(ids, campaignId, purpose, req.body?.field_policies);
+    const data = await pushToSheet(ids, campaignId, purpose, req.body?.field_policies, {
+      source_type: req.body?.source_type,
+      raw_candidate_ids: req.body?.raw_candidate_ids,
+      create_owner: req.body?.create_owner,
+      skip_existing: req.body?.skip_existing
+    });
     res.json({ success: true, data });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/content-stats', async (req, res) => {
+  try {
+    const campaignId = Number(req.body?.campaign_id) || 61;
+    const specificRows = Array.isArray(req.body?.rows) ? req.body.rows.map(Number).filter(Number.isFinite) : null;
+    const dryRun = req.body?.dry_run === true;
+    const force = req.body?.force === true;
+
+    const config = await getConfig('content_area', campaignId);
+    config.endColumn = 'I';
+    const context = await getSheetContext(config);
+    const rows = await readSheet(config, context);
+
+    const pending = [];
+    for (let i = 1; i < rows.length; i++) {
+      const rowNumber = i + 1;
+      if (specificRows && !specificRows.includes(rowNumber)) continue;
+      const row = [...(rows[i] || [])];
+      const link = parseCellText(row[4]);
+      if (!link) continue;
+      const views = parseCellText(row[6]);
+      const likes = parseCellText(row[7]);
+      if (!force && views) continue;
+      pending.push({ rowNumber, link, platform: parseCellText(row[0]), kolName: parseCellText(row[1]) });
+    }
+
+    if (dryRun) {
+      return res.json({ success: true, data: { scanned: rows.length - 1, pending: pending.length, items: pending } });
+    }
+
+    const results = [];
+    const updates = [];
+    for (const item of pending) {
+      try {
+        const stats = await fetchContentStats(item.link);
+        results.push({ row: item.rowNumber, link: item.link, kol_name: item.kolName, status: 'updated', stats });
+        updates.push({
+          range: `${config.sheetId}!F${item.rowNumber}:I${item.rowNumber}`,
+          values: [[stats.published_at, stats.play_count, stats.like_count, stats.comment_count]]
+        });
+      } catch (error) {
+        results.push({ row: item.rowNumber, link: item.link, kol_name: item.kolName, status: 'failed', error: error.message });
+      }
+    }
+
+    if (updates.length) await batchUpdate(config, context, updates);
+
+    res.json({ success: true, data: {
+      scanned: rows.length - 1,
+      pending: pending.length,
+      updated: results.filter((r) => r.status === 'updated').length,
+      failed: results.filter((r) => r.status === 'failed').length,
+      results
+    } });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -387,10 +531,13 @@ module.exports = router;
 module.exports.profileKey = profileKey;
 module.exports.mapSystemRow = mapSystemRow;
 module.exports.mapCandidateRow = mapCandidateRow;
+module.exports.mapRawCandidateRow = mapRawCandidateRow;
 module.exports.buildPreview = buildPreview;
 module.exports.applyFieldPolicies = applyFieldPolicies;
 module.exports.getConfig = getConfig;
 module.exports.getSheetContext = getSheetContext;
 module.exports.readSheet = readSheet;
+module.exports.batchUpdate = batchUpdate;
 module.exports.loadRows = loadRows;
+module.exports.loadRawCandidateRows = loadRawCandidateRows;
 module.exports.pushToSheet = pushToSheet;

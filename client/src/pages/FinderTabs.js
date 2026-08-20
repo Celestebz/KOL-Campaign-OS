@@ -4,14 +4,12 @@ import { useNavigate } from 'react-router-dom';
 
 const tabItems = [
   { key: 'finder', label: '原始候选' },
-  { key: 'candidate', label: '项目候选池' },
   { key: 'strategy', label: '策略管理' },
   { key: 'tasks', label: '寻找任务' }
 ];
 
 const tabPaths = {
   finder: '/finder',
-  candidate: '/candidate-pool',
   strategy: '/strategy',
   tasks: '/finder-tasks'
 };

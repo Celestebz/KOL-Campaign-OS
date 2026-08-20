@@ -1,15 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Layout, Menu, Spin } from 'antd';
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { Button, Layout, Menu, Space, Spin } from 'antd';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
-  DashboardOutlined,
   DatabaseOutlined,
   LogoutOutlined,
   ProjectOutlined,
-  SettingOutlined
+  SettingOutlined,
+  TeamOutlined
 } from '@ant-design/icons';
 
-import Workbench from './pages/workbench/Workbench';
 import Customers from './pages/Customers';
 import Templates from './pages/Templates';
 import VideoAnalysis from './pages/VideoAnalysis';
@@ -24,6 +23,7 @@ import Products from './pages/Products';
 import Campaigns from './pages/Campaigns';
 import CampaignDetail from './pages/CampaignDetail';
 import Login from './pages/Login';
+import UserManagement from './pages/UserManagement';
 
 const { Header, Sider, Content } = Layout;
 
@@ -31,6 +31,8 @@ function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [authState, setAuthState] = useState('loading'); // 'loading' | 'authed' | 'guest'
   const [authRequired, setAuthRequired] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [needsBootstrap, setNeedsBootstrap] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -41,6 +43,8 @@ function App() {
       .then((data) => {
         if (cancelled) return;
         setAuthRequired(Boolean(data.authRequired));
+        setCurrentUser(data.user || null);
+        setNeedsBootstrap(Boolean(data.needsBootstrap));
         setAuthState(data.authenticated ? 'authed' : 'guest');
       })
       .catch(() => {
@@ -54,11 +58,11 @@ function App() {
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     setAuthState('guest');
+    setCurrentUser(null);
   };
 
   // 一级导航收缩为 4 项；/records 不进菜单，路由保留；/send 以「内容分析」归入资料库。
   const menuItems = [
-    { key: '/', icon: <DashboardOutlined />, label: '工作台' },
     {
       key: 'project',
       icon: <ProjectOutlined />,
@@ -66,7 +70,6 @@ function App() {
       children: [
         { key: '/campaigns', label: '项目管理' },
         { key: '/finder', label: 'KOL 寻找' },
-        { key: '/campaign-kols', label: 'KOL 合作' },
         { key: '/emails', label: '邮件中心' }
       ]
     },
@@ -88,7 +91,8 @@ function App() {
         { key: '/settings', label: 'API 设置' },
         { key: '/templates', label: 'AI Prompt 模板' }
       ]
-    }
+    },
+    ...(currentUser?.role === 'admin' ? [{ key: '/users', icon: <TeamOutlined />, label: '用户与邀请' }] : [])
   ];
 
   // 子菜单路由 → 所属父级菜单 key，用于选中态和自动展开。
@@ -96,6 +100,7 @@ function App() {
     '/campaigns': 'project',
     '/strategy': 'project',
     '/finder': 'project',
+    '/finder-tasks': 'project',
     '/candidate-pool': 'project',
     '/campaign-kols': 'project',
     '/emails': 'project',
@@ -103,15 +108,18 @@ function App() {
     '/customers': 'library',
     '/send': 'library',
     '/settings': 'system',
-    '/templates': 'system'
+    '/templates': 'system',
+    '/users': 'system'
   };
   // 项目详情（/campaigns/:id）不进菜单，归属 project 分组并保持「项目管理」选中态。
   const resolveMenuGroup = (pathname) => (
     pathToGroup[pathname] || (pathname.startsWith('/campaigns/') ? 'project' : undefined)
   );
-  const menuPathKeys = new Set(['/', ...Object.keys(pathToGroup)]);
-  // /strategy 已并入「KOL 寻找」入口（页面内 Tab 切换），菜单选中态归并到 /finder。
-  const selectedPath = ['/strategy', '/candidate-pool'].includes(location.pathname) ? '/finder' : location.pathname;
+  const menuPathKeys = new Set(Object.keys(pathToGroup));
+  // 策略与任务属于「KOL 寻找」内部 Tab；候选池旧地址也继续归到该入口。
+  const selectedPath = ['/strategy', '/finder-tasks', '/candidate-pool'].includes(location.pathname)
+    ? '/finder'
+    : location.pathname;
   const selectedKey = menuPathKeys.has(selectedPath)
     ? selectedPath
     : (location.pathname.startsWith('/campaigns/') ? '/campaigns' : null);
@@ -138,7 +146,7 @@ function App() {
   }
 
   if (authState === 'guest') {
-    return <Login onSuccess={() => setAuthState('authed')} />;
+    return <Login needsBootstrap={needsBootstrap} onSuccess={(user) => { setCurrentUser(user); setNeedsBootstrap(false); setAuthState('authed'); }} />;
   }
 
   return (
@@ -163,6 +171,8 @@ function App() {
             KOL Campaign OS
           </div>
           {authRequired && (
+            <Space>
+              <span>{currentUser?.display_name || currentUser?.username}</span>
             <Button
               type="text"
               icon={<LogoutOutlined />}
@@ -171,11 +181,12 @@ function App() {
             >
               退出登录
             </Button>
+            </Space>
           )}
         </Header>
         <Content style={{ margin: '0 16px' }}>
           <Routes>
-            <Route path="/" element={<Workbench />} />
+            <Route path="/" element={<Navigate to="/campaigns" replace />} />
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/campaigns/:id" element={<CampaignDetail />} />
             <Route path="/products" element={<Products />} />
@@ -190,6 +201,7 @@ function App() {
             <Route path="/records" element={<Records />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/settings" element={<Settings />} />
+            {currentUser?.role === 'admin' && <Route path="/users" element={<UserManagement />} />}
           </Routes>
         </Content>
       </Layout>

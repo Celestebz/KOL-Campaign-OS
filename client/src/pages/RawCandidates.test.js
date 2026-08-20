@@ -108,9 +108,11 @@ describe('RawCandidates product-scoped UI', () => {
   });
 
   test('keeps the original candidate view focused on the candidate list', async () => {
-    render(<RawCandidates />);
+    const { container } = render(<RawCandidates />);
 
     expect(await screen.findByRole('heading', { name: '原始候选' })).toBeInTheDocument();
+    expect(Array.from(container.querySelectorAll('.ant-select-selection-placeholder')).some((node) => node.textContent === '状态')).toBe(false);
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/raw-candidates', { params: { actionable: 1 } }));
     expect(screen.queryByText('最近寻找任务')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /创建寻找任务/ })).not.toBeInTheDocument();
   });

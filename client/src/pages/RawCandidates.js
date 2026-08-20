@@ -181,7 +181,11 @@ const RawCandidates = ({ view = 'candidates' }) => {
   const [taskLoading, setTaskLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
-  const [filters, setFilters] = useState({ status: 'pending' });
+  const [rawSheetSyncOpen, setRawSheetSyncOpen] = useState(false);
+  const [rawSheetSyncIds, setRawSheetSyncIds] = useState('');
+  const [rawSheetSyncOwner, setRawSheetSyncOwner] = useState('');
+  const [rawSheetSyncCampaignId, setRawSheetSyncCampaignId] = useState(null);
+  const [filters, setFilters] = useState({});
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [videoEvidence, setVideoEvidence] = useState([]);
   const [videoEvidenceLoading, setVideoEvidenceLoading] = useState(false);
@@ -288,7 +292,7 @@ const RawCandidates = ({ view = 'candidates' }) => {
   const fetchCandidates = async () => {
     setLoading(true);
     try {
-      const res = await axios.get('/api/raw-candidates', { params: filters });
+      const res = await axios.get('/api/raw-candidates', { params: { ...filters, actionable: 1 } });
       setCandidates(res.data.data || []);
     } catch (error) {
       message.error(error.response?.data?.error || '获取候选池失败');
@@ -474,6 +478,41 @@ const RawCandidates = ({ view = 'candidates' }) => {
     }
   };
 
+  const openRawSheetSync = () => {
+    setRawSheetSyncIds(selectedRowKeys.join(','));
+    setRawSheetSyncOwner('Celeste');
+    setRawSheetSyncCampaignId(Number(filters.campaign_id || candidates[0]?.campaign_id) || null);
+    setRawSheetSyncOpen(true);
+  };
+
+  const syncRawCandidatesToSheet = async () => {
+    const ids = [...new Set(String(rawSheetSyncIds || '').split(/[^0-9]+/).map(Number).filter(Number.isFinite).filter(Boolean))];
+    if (!rawSheetSyncCampaignId || !ids.length) {
+      message.warning('请填写项目 ID 和至少一个 Raw Candidate ID');
+      return;
+    }
+    setSyncing(true);
+    try {
+      const res = await axios.post('/api/sync/feishu-sheet/push', {
+        campaign_id: rawSheetSyncCampaignId,
+        sheet_purpose: 'candidate_pool',
+        source_type: 'raw_candidates',
+        raw_candidate_ids: ids,
+        create_owner: rawSheetSyncOwner,
+        skip_existing: true
+      });
+      const data = res.data.data;
+      message.success(`飞书同步完成：新增 ${data.created}，已有跳过 ${data.skipped_existing || 0}`);
+      setRawSheetSyncOpen(false);
+      setSelectedRowKeys([]);
+      fetchCandidates();
+    } catch (error) {
+      message.warning(error.response?.data?.error || '飞书同步失败');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const ignoreOne = async (record) => {
     await axios.post(`/api/raw-candidates/${record.id}/ignore`);
     message.success('已忽略本项目');
@@ -631,7 +670,6 @@ const RawCandidates = ({ view = 'candidates' }) => {
             { value: 'known_kol_new_product_fit', label: '已有 KOL · 新产品匹配' },
             { value: 'existing_product_fit_updated', label: '已有 KOL · 产品匹配更新' }
           ]} style={{ width: 200 }} /> : null}
-          {!isTaskView ? <Select allowClear placeholder="状态" value={filters.status} onChange={(v) => updateFilter('status', v)} options={statusOptions} style={{ width: 140 }} /> : null}
           {!isTaskView ? <InputNumber placeholder="最低评分" min={0} max={100} value={filters.min_score} onChange={(v) => updateFilter('min_score', v)} style={{ width: 120 }} /> : null}
           {!isTaskView ? <Input.Search allowClear placeholder="搜索 KOL、链接、关键词、国家" value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} onSearch={fetchCandidates} style={{ width: 300 }} /> : null}
           {!isTaskView ? <Button icon={<ReloadOutlined />} onClick={fetchCandidates}>刷新</Button> : null}
@@ -725,6 +763,7 @@ const RawCandidates = ({ view = 'candidates' }) => {
             <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>批量删除</Button>
           </Popconfirm>
           <Button icon={<CloudUploadOutlined />} loading={syncing} onClick={syncCandidatePool}>同步到飞书候选池</Button>
+          <Button icon={<CloudUploadOutlined />} loading={syncing} onClick={openRawSheetSync}>按 Raw Candidate ID 同步</Button>
         </Space>
       </Card>
 
@@ -740,6 +779,22 @@ const RawCandidates = ({ view = 'candidates' }) => {
         />
       </Card>
       </> : null}
+
+      {!isTaskView ? <Modal
+        title="按 Raw Candidate ID 同步到飞书"
+        open={rawSheetSyncOpen}
+        onCancel={() => setRawSheetSyncOpen(false)}
+        onOk={syncRawCandidatesToSheet}
+        confirmLoading={syncing}
+        okText="新增并跳过已存在账号"
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <InputNumber aria-label="同步项目 ID" placeholder="项目 ID" value={rawSheetSyncCampaignId} onChange={setRawSheetSyncCampaignId} style={{ width: '100%' }} />
+          <TextArea aria-label="Raw Candidate IDs" placeholder="Raw Candidate IDs，以逗号或换行分隔" rows={4} value={rawSheetSyncIds} onChange={(event) => setRawSheetSyncIds(event.target.value)} />
+          <Input aria-label="新增行负责人" placeholder="新增行负责人" value={rawSheetSyncOwner} onChange={(event) => setRawSheetSyncOwner(event.target.value)} />
+          <span style={{ color: '#666' }}>已存在账号将完全跳过，不更新任何单元格。</span>
+        </Space>
+      </Modal> : null}
 
       {isTaskView ? <Modal title="创建视频证据寻找任务" open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} onOk={startFinderTask} confirmLoading={taskLoading} okText="开始找视频" width={520}>
         <Form form={taskForm} layout="vertical">

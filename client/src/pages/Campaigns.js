@@ -259,7 +259,7 @@ function Campaigns() {
       <div className="page-header project-page-header">
         <div>
           <h1 className="page-title">项目管理</h1>
-          <p className="page-subtitle">这里只展示项目推进情况，决策事项统一在工作台处理。</p>
+          <p className="page-subtitle">集中查看项目进度，并进入对应业务页面处理待办事项。</p>
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => fetchCampaigns()} loading={loading}>刷新进度</Button>

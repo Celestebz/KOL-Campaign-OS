@@ -678,8 +678,9 @@ function RepliesTab() {
 
   const openConfirm = (record) => {
     setConfirming(record);
-    setEditedSummary(record.ai_summary || '');
-    setEditedIntent(record.ai_intent === 'other' ? 'unclear' : (record.ai_intent || 'unclear'));
+    setEditedSummary(record.confirmed_summary || record.ai_summary || '');
+    const currentIntent = record.confirmed_intent || record.ai_intent;
+    setEditedIntent(currentIntent === 'other' ? 'unclear' : (currentIntent || 'unclear'));
   };
 
   const handleConfirm = async () => {
@@ -811,23 +812,25 @@ function RepliesTab() {
         </Button>
       ) },
     {
-      title: 'AI 摘要', dataIndex: 'ai_summary', ellipsis: true,
+      title: 'AI 摘要', dataIndex: 'ai_summary', width: 280, ellipsis: true,
       render: (v, record) => {
         const ai = AI_STATUS_LABELS[record.ai_status] || {};
         if (record.ai_status === 'failed') {
           return <Space><Tooltip title={record.ai_error || '暂无详细错误'}><Tag color={ai.color}>{ai.text}</Tag></Tooltip><Button type="link" size="small" onClick={() => handleRetry(record)}>重试</Button></Space>;
         }
         return (
-          <span style={{ cursor: 'pointer' }} onClick={() => openThreadDrawer(record)}>
-            {v || <Tag color={ai.color}>{ai.text}</Tag>}
-          </span>
+          <Tooltip title={record.confirmed_summary || v || undefined}>
+            <span style={{ cursor: 'pointer' }} onClick={() => openThreadDrawer(record)}>
+              {record.confirmed_summary || v || <Tag color={ai.color}>{ai.text}</Tag>}
+            </span>
+          </Tooltip>
         );
       }
     },
     {
       title: '意向', dataIndex: 'ai_intent', width: 90,
-      render: (v) => {
-        const intent = INTENT_LABELS[v];
+      render: (v, record) => {
+        const intent = INTENT_LABELS[record.confirmed_intent || v];
         return intent ? <Tag color={intent.color}>{intent.text}</Tag> : '-';
       }
     },
@@ -944,7 +947,7 @@ function RepliesTab() {
           ? unmatchedColumns
           : (viewMode === 'blocked' ? blockedColumns : (viewMode === 'system' ? systemColumns : pendingColumns))}
         dataSource={replies}
-        scroll={viewMode === 'pending' ? { x: 1350 } : undefined}
+        scroll={viewMode === 'pending' ? { x: 1660 } : undefined}
         expandable={{
           expandedRowRender: (record) => (
             <div style={{ whiteSpace: 'pre-wrap' }}>{record.clean_body_text || record.body_text || '（无正文）'}</div>

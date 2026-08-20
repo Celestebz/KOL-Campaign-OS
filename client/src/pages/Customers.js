@@ -268,16 +268,37 @@ const Customers = () => {
 
   const handleSubmit = async () => {
     const values = await form.validateFields();
-    if (editingKol) {
-      await axios.put(`/api/customers/${editingKol.id}`, values);
-      message.success('更新成功');
-    } else {
-      await axios.post('/api/customers', values);
-      message.success('创建成功');
+    try {
+      if (editingKol) {
+        await axios.put(`/api/customers/${editingKol.id}`, values);
+        message.success('更新成功');
+      } else {
+        await axios.post('/api/customers', values);
+        message.success('创建成功');
+      }
+      setModalVisible(false);
+      await fetchKols();
+      if (drawerOpen && editingKol) await openDrawer(editingKol);
+    } catch (error) {
+      const detail = error.response?.data || {};
+      const status = error.response?.status;
+      if (status === 400 && detail.data?.existing_id) {
+        const { existing_id, existing_name, existing_email } = detail.data;
+        Modal.confirm({
+          title: '该 KOL 已存在',
+          content: `「${existing_name || existing_email || '同名记录'}」已在客户库中（ID: ${existing_id}）。要改为编辑这条已有记录吗？`,
+          okText: '打开编辑',
+          cancelText: '取消',
+          onOk: async () => {
+            const res = await axios.get(`/api/customers/${existing_id}`);
+            const record = res.data.data || res.data;
+            if (record) handleEdit(record);
+          }
+        });
+        return;
+      }
+      message.error(detail.error || '保存失败');
     }
-    setModalVisible(false);
-    await fetchKols();
-    if (drawerOpen && editingKol) await openDrawer(editingKol);
   };
 
   const handleDownloadTemplate = () => {

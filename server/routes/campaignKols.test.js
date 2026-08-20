@@ -311,7 +311,7 @@ test('published-video endpoints reject candidate-stage records', async () => {
   }
 });
 
-test('POST /:id/products/switch attaches a new product and pauses the previous active assignment', async () => {
+test('POST /:id/products/switch assigns a Product already attached to the Campaign and pauses the previous assignment', async () => {
   const originalGet = dbOperations.get;
   const originalRun = dbOperations.run;
   const writes = [];
@@ -324,7 +324,7 @@ test('POST /:id/products/switch attaches a new product and pauses the previous a
       return { id: 42, sku: 'TMB-1404', name: '53-inch PTO Flail Mower', status: 'active' };
     }
     if (text.includes('FROM campaign_products WHERE campaign_id = ? AND product_id = ?')) {
-      return null;
+      return { id: 9, status: 'active' };
     }
     if (text.includes('FROM campaign_kol_products WHERE campaign_kol_id = ? AND campaign_product_id = ?')) {
       return null;
@@ -356,7 +356,8 @@ test('POST /:id/products/switch attaches a new product and pauses the previous a
     });
     assert.equal(response.statusCode, 200);
     assert.equal(response.payload.data.product_sku, 'TMB-1404');
-    assert.ok(writes.some((item) => /INSERT INTO campaign_products\b/.test(item.sql)));
+    assert.ok(!writes.some((item) => /INSERT INTO campaign_products\b/.test(item.sql)));
+    assert.ok(writes.some((item) => /INSERT INTO campaign_kol_products\b/.test(item.sql)));
     assert.ok(writes.some((item) => item.sql.includes("assignment_status = 'paused'")));
     assert.ok(writes.some((item) => item.sql.includes("campaign_kols SET sync_status = 'sync_pending'")));
   } finally {
@@ -378,7 +379,7 @@ test('PATCH /:id switches communication product when product_id is provided', as
       return { id: 42, sku: 'TMB-1404', name: '53-inch PTO Flail Mower', status: 'active' };
     }
     if (text.includes('FROM campaign_products WHERE campaign_id = ? AND product_id = ?')) {
-      return null;
+      return { id: 9, status: 'active' };
     }
     if (text.includes('FROM campaign_kol_products WHERE campaign_kol_id = ? AND campaign_product_id = ?')) {
       return null;
@@ -409,7 +410,7 @@ test('PATCH /:id switches communication product when product_id is provided', as
       body: { product_id: 42, project_notes: 'switch to flail mower' }
     });
     assert.equal(response.statusCode, 200);
-    assert.ok(writes.some((item) => /INSERT INTO campaign_products\b/.test(item.sql)));
+    assert.ok(!writes.some((item) => /INSERT INTO campaign_products\b/.test(item.sql)));
     assert.ok(writes.some((item) => item.sql.includes("assignment_status = 'paused'")));
     assert.ok(writes.some((item) => item.sql.includes('project_notes = ?')));
   } finally {
@@ -430,16 +431,38 @@ test('GET / filters by outreach_status with legacy alias expansion', async () =>
 
     await callHandler(handler, { query: { outreach_status: 'waiting_reply' } });
     assert.ok(queries[0].sql.includes('ck.outreach_status IN (?, ?)'), 'waiting_reply expands to legacy alias');
-    assert.deepEqual(queries[0].params, ['waiting_reply', 'replied']);
+    assert.deepEqual(queries[0].params, ['waiting_reply', 'replied', 50, 0]);
 
     queries.length = 0;
     await callHandler(handler, { query: { outreach_status: 'contacted' } });
     assert.ok(queries[0].sql.includes('ck.outreach_status = ?'));
-    assert.deepEqual(queries[0].params, ['contacted']);
+    assert.deepEqual(queries[0].params, ['contacted', 50, 0]);
 
     queries.length = 0;
     await callHandler(handler, { query: { outreach_status: 'bogus' } });
-    assert.ok(!queries[0].sql.includes('ck.outreach_status'), 'invalid outreach_status is ignored');
+    assert.ok(!queries[0].sql.includes('AND ck.outreach_status'), 'invalid outreach_status is ignored');
+  } finally {
+    dbOperations.query = originalQuery;
+  }
+});
+
+test('GET / uses bounded server pagination and a narrow list projection', async () => {
+  const queries = [];
+  const originalQuery = dbOperations.query;
+  dbOperations.query = async (sql, params = []) => {
+    queries.push({ sql: String(sql), params });
+    if (String(sql).includes('COUNT(*) AS total')) return [{ total: 1220 }];
+    return [{ ...candidateRow, kol_name: 'Alice' }];
+  };
+  try {
+    const response = await callHandler(findHandler(require('./campaignKols'), 'get', '/'), {
+      query: { campaign_id: '3', pipeline_stage: 'candidate', page: '2', page_size: '200' }
+    });
+    const listQuery = queries.find((item) => item.sql.includes('LIMIT ? OFFSET ?'));
+    assert.ok(listQuery);
+    assert.ok(!/SELECT\s+ck\.\*/i.test(listQuery.sql));
+    assert.deepEqual(listQuery.params.slice(-2), [100, 100], 'page size is capped at 100');
+    assert.deepEqual(response.payload.pagination, { page: 2, page_size: 100, total: 1220 });
   } finally {
     dbOperations.query = originalQuery;
   }

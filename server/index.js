@@ -29,6 +29,7 @@ const workbenchRoutes = require('./routes/workbench');
 const approvalRoutes = require('./routes/approvals');
 const automationRunRoutes = require('./routes/automationRuns');
 const { startEmailSync } = require('./services/emailLiveSync');
+const { startFollowUpTimer } = require('./services/emailFollowUp');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -112,8 +113,8 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   try {
-    if (!process.env.APP_ACCESS_PASSWORD) {
-      console.warn('[auth] APP_ACCESS_PASSWORD is not set; access control is DISABLED. Set it in .env before exposing the server on the LAN.');
+    if (!process.env.SESSION_SECRET && !process.env.APP_ACCESS_PASSWORD && process.env.NODE_ENV === 'production') {
+      throw new Error('SESSION_SECRET must be set in production');
     }
     await initDatabase();
     // 测试环境（NODE_ENV=test）不启动真实 IMAP 轮询与跟进定时器
@@ -127,6 +128,7 @@ async function startServer() {
         console.log(`[recovery] 服务重启中断标记：automation_runs ${interruptedRuns} 条，finder_tasks ${interruptedFinderTasks} 条`);
       }
       await startEmailSync();
+      startFollowUpTimer();
     }
     app.listen(PORT, () => {
       console.log(`KOL Campaign OS server is running on http://localhost:${PORT}`);

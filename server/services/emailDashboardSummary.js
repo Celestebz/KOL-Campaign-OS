@@ -65,6 +65,33 @@ async function countFirstTouchKols(db, windowStart, windowEndExclusive) {
   return Number(row?.total || 0);
 }
 
+// 今日联络口径：系统内 KOL 当天只要有一次成功发送，或登记过一次人工联络，
+// 就计入一次。两种来源通过 UNION 去重，人工登记即使同时写入 email_records
+// 也不会重复计数；没有 customer_id 的系统外联系人不会进入统计。
+async function countContactedKols(db, windowStart) {
+  const startParam = toMysqlDatetime(windowStart);
+  const row = await db.get(
+    `SELECT COUNT(DISTINCT contacted.customer_id) AS total
+     FROM (
+       SELECT er.customer_id
+       FROM email_records er
+       WHERE er.status = 'success'
+         AND er.customer_id IS NOT NULL
+         AND er.created_at >= ?
+       UNION
+       SELECT ck.customer_id
+       FROM campaign_kol_events cke
+       INNER JOIN campaign_kols ck ON ck.id = cke.campaign_kol_id
+       WHERE cke.event_type = 'manual_outreach'
+         AND cke.source_type = 'manual'
+         AND ck.customer_id IS NOT NULL
+         AND cke.occurred_at >= ?
+     ) contacted`,
+    [startParam, startParam]
+  );
+  return Number(row?.total || 0);
+}
+
 // 30 天回复率分母：窗口内至少有一封 status='success' 记录的独立 customer_id 数。
 // 当前没有退信字段；待退信匹配完成后，应在此处剔除"已知硬退信"的 KOL。
 async function countDeliveredKols(db, windowStart) {
@@ -135,7 +162,7 @@ async function buildSummary(db = dbOperations, now = new Date()) {
 
   const [todayContactedKols, weekContactedKols, previousWeekContactedKols,
     deliveredKols30d, repliedKols30d, bounceSummary30d] = await Promise.all([
-    countFirstTouchKols(db, todayStart),
+    countContactedKols(db, todayStart),
     countFirstTouchKols(db, weekStart),
     countFirstTouchKols(db, previousWeekStart, currentWeekStart),
     countDeliveredKols(db, replyWindowStart),
@@ -176,6 +203,7 @@ module.exports = {
   buildSummary,
   // 导出供单测覆盖边界 / 复用
   countFirstTouchKols,
+  countContactedKols,
   countDeliveredKols,
   countRepliedKols,
   countBounceSummary

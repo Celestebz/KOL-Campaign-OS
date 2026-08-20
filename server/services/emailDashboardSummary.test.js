@@ -30,11 +30,12 @@ test('buildSummary aggregates today/week/previous/reply window in parallel and c
     'COUNT(DISTINCT er.customer_id)': [{ total: 60 }],
     'COUNT(DISTINCT r.customer_id)': [{ total: 9 }]
   });
-  // 三次 first-touch 调用分别返回 5、12、9
+  // 今日联络返回 5；本周/上周首次联络分别返回 12、9
   let firstTouchIdx = 0;
-  const firstTouchReturns = [5, 12, 9];
+  const firstTouchReturns = [12, 9];
   db.get = async (sql, params) => {
     db.calls.push({ sql: String(sql), params });
+    if (sql.includes('campaign_kol_events')) return { total: 5 };
     if (sql.includes('NOT EXISTS')) {
       return { total: firstTouchReturns[firstTouchIdx++] };
     }
@@ -71,9 +72,10 @@ test('buildSummary returns null replyRate30d when deliveredKols30d is 0', async 
 
 test('buildSummary reports negative weekDifference when this week lags', async () => {
   let idx = 0;
-  const returns = [3, 6, 12]; // today=3, week=6, previous=12
+  const returns = [6, 12]; // week=6, previous=12
   const db = {
     async get(sql) {
+      if (sql.includes('campaign_kol_events')) return { total: 3 };
       if (sql.includes('NOT EXISTS')) return { total: returns[idx++] };
       if (sql.includes('COUNT(DISTINCT er.customer_id)')) return { total: 0 };
       if (sql.includes('COUNT(DISTINCT r.customer_id)')) return { total: 0 };
@@ -86,9 +88,10 @@ test('buildSummary reports negative weekDifference when this week lags', async (
 
 test('buildSummary computes weekDifference=0 when week matches previous', async () => {
   let idx = 0;
-  const returns = [2, 8, 8];
+  const returns = [8, 8];
   const db = {
     async get(sql) {
+      if (sql.includes('campaign_kol_events')) return { total: 2 };
       if (sql.includes('NOT EXISTS')) return { total: returns[idx++] };
       if (sql.includes('COUNT(DISTINCT er.customer_id)')) return { total: 0 };
       if (sql.includes('COUNT(DISTINCT r.customer_id)')) return { total: 0 };
@@ -103,8 +106,7 @@ test('buildSummary passes Shanghai-day-start ISO timestamp as the SQL parameter'
   const seenStarts = [];
   const db = {
     async get(sql, params = []) {
-      if (sql.includes('NOT EXISTS')) {
-        // 三次调用：today / week / previous+current 边界
+      if (sql.includes('campaign_kol_events')) {
         seenStarts.push(params[0]);
         return { total: 0 };
       }
@@ -128,8 +130,8 @@ test('buildSummary uses Monday as the start of the Shanghai week', async () => {
     }
   };
   await buildSummary(db, NOW);
-  // 第二次调用：上海本周一起点 = 2026-07-26 周一 16:00 UTC
-  assert.equal(seenStarts[1], '2026-07-26 16:00:00');
+  // 第一次首次联络查询：上海本周一起点 = 2026-07-26 周一 16:00 UTC
+  assert.equal(seenStarts[0], '2026-07-26 16:00:00');
 });
 
 test('buildSummary passes rolling 30-day window for reply rate denominator and numerator', async () => {
@@ -169,9 +171,10 @@ test('buildSummary excludes auto-replies (ai_intent=other) from numerator and in
 
 test('buildSummary rounds replyRate30d to one decimal place', async () => {
   let idx = 0;
-  const returns = [10, 10, 10]; // first-touch 不影响
+  const returns = [10, 10]; // first-touch 不影响
   const db = {
     async get(sql) {
+      if (sql.includes('campaign_kol_events')) return { total: 10 };
       if (sql.includes('NOT EXISTS')) return { total: returns[idx++] };
       if (sql.includes('COUNT(DISTINCT er.customer_id)')) return { total: 70 };
       if (sql.includes('COUNT(DISTINCT r.customer_id)')) return { total: 6 };
@@ -187,7 +190,8 @@ test('buildSummary computes 30-day bounce rate and hard/soft counts by sent reco
   let idx = 0;
   const db = {
     async get(sql) {
-      if (sql.includes('NOT EXISTS')) return { total: [1, 2, 1][idx++] };
+      if (sql.includes('campaign_kol_events')) return { total: 1 };
+      if (sql.includes('NOT EXISTS')) return { total: [2, 1][idx++] };
       if (sql.includes('COUNT(DISTINCT er.customer_id)')) return { total: 20 };
       if (sql.includes('COUNT(DISTINCT r.customer_id)')) return { total: 4 };
       if (sql.includes('COUNT(DISTINCT er.id) AS sent_total')) {
@@ -202,4 +206,29 @@ test('buildSummary computes 30-day bounce rate and hard/soft counts by sent reco
   assert.equal(summary.hardBounces30d, 2);
   assert.equal(summary.softBounces30d, 1);
   assert.equal(summary.sentEmails30d, 50);
+});
+
+test('today contacted KOLs combine successful sends and manual outreach by system customer id', async () => {
+  let capturedSql = '';
+  let capturedParams = [];
+  const db = {
+    async get(sql, params = []) {
+      if (sql.includes('campaign_kol_events')) {
+        capturedSql = String(sql);
+        capturedParams = params;
+        return { total: 4 };
+      }
+      return { total: 0 };
+    }
+  };
+
+  const summary = await buildSummary(db, NOW);
+
+  assert.equal(summary.todayContactedKols, 4);
+  assert.match(capturedSql, /email_records/);
+  assert.match(capturedSql, /event_type = 'manual_outreach'/);
+  assert.match(capturedSql, /source_type = 'manual'/);
+  assert.match(capturedSql, /INNER JOIN campaign_kols/);
+  assert.match(capturedSql, /COUNT\(DISTINCT contacted\.customer_id\)/);
+  assert.deepEqual(capturedParams, ['2026-07-27 16:00:00', '2026-07-27 16:00:00']);
 });

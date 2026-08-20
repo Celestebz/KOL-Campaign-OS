@@ -43,6 +43,7 @@ function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, fee
     ? `This is the first contact. Its only goal is to ask whether the creator is interested in learning more.
 - Do not state or promise shipping, a free unit, commission, fees, a contract, deliverables, or a deadline.
 - Do not imply that the collaboration is already agreed or that a unit will be shipped after one reply.
+- Do not claim or imply the product is new, recently released, newly launched, or a new arrival. The product is an existing product; we are seeking creators to collaborate with.
 - Briefly identify the product and ask a low-pressure interest question. Offer to share specifications and collaboration details if interested.`
     : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
   // 会话上下文（kind='reply' 且有 thread）：完整时间线+滚动摘要+已确认合作事实。
@@ -88,7 +89,7 @@ Requirements:
 ${evidenceRules}
 - Do not infer property conditions, cleanup needs, equipment, or use cases that the cited titles do not explicitly support.
 - Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
-- Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", and "get one shipped your way".
+- Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", "get one shipped your way", "recently released", "newly launched", "our newest product", and "just hit the market".
 - Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
 - After the greeting, write exactly three short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
 - Keep body under 140 English words and write in English.`;

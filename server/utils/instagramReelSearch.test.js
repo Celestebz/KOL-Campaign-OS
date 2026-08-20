@@ -18,6 +18,16 @@ test('builds the public Instagram Reel keyword-search endpoint', () => {
   );
 });
 
+test('adds supported manual pagination and date filters', () => {
+  assert.equal(
+    buildInstagramReelSearchUrl('https://api.scrapecreators.com', 'christmas tree', {
+      page: 5,
+      datePosted: 'last-year'
+    }),
+    'https://api.scrapecreators.com/v2/instagram/reels/search?query=christmas+tree&page=5&date_posted=last-year'
+  );
+});
+
 test('never constructs the legacy Instagram Profile Search endpoint', () => {
   const url = buildInstagramReelSearchUrl('https://api.scrapecreators.com', 'creator tools');
   assert.equal(url.includes('/instagram/search/profiles'), false);

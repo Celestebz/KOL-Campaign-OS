@@ -141,3 +141,25 @@ skills-lock.json
 
 # Temporary work outputs (candidate lists, verification JSONs, decks)
 outputs/
+
+# Local standalone services deployed outside the main application
+/webhook-service/
+
+# Accidental nested workspace copies
+/Celeste/
+
+# Local creator research, outreach, and automation artifacts
+/scratch_*.json
+/scratch_*.md
+/b-group-*.json
+/batch_creators.csv
+/kol_us_candidates.csv
+/nox-*.csv
+/noxinfluencer-*.json
+/mays_*.html
+/send_results.json
+/field-*.json
+/workflow*.json
+
+# One-off local verification utilities
+/server/verify-bitable.cjs
