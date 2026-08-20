@@ -89,7 +89,7 @@ function evaluateDraft({ customer, strategy, bodyText, citedVideoIds = [], evide
     if (ageDays > staleDays) push('STALE_SNAPSHOT', `起草所用快照已 ${Math.floor(ageDays)} 天，超过 ${staleDays} 天阈值`);
   }
 
-  if (kind !== 'first_touch' && (!COMMISSION_PATTERN.test(bodyText || '') || !NO_FIXED_FEE_PATTERN.test(bodyText || ''))) {
+  if (kind === 'reply' && (!COMMISSION_PATTERN.test(bodyText || '') || !NO_FIXED_FEE_PATTERN.test(bodyText || ''))) {
     push('MISSING_REQUIRED_TERM', '缺少佣金说明或"无固定费"表述');
   }
 

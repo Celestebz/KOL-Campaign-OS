@@ -48,7 +48,7 @@ test('metric mismatch detects wrong view counts in body', () => {
 });
 
 test('missing required terms is low risk', () => {
-  const missing = evaluateDraft({ ...base, kind: 'follow_up', bodyText: 'Hi, your content is great. Want to try our product?' });
+  const missing = evaluateDraft({ ...base, kind: 'reply', bodyText: 'Hi, your content is great. Want to try our product?' });
   assert.ok(missing.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
 
@@ -63,6 +63,11 @@ test('previous hard bounce is high risk', () => {
 
 test('first touch does not require commission or fee terms', () => {
   const result = evaluateDraft({ ...base, kind: 'first_touch', bodyText: 'Hi, your content is great. Would you be interested in learning more?' });
+  assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
+});
+
+test('follow-up does not require repeating commission or fee terms', () => {
+  const result = evaluateDraft({ ...base, kind: 'follow_up', bodyText: 'Hi, I wanted to follow up about our collaboration idea. Interested in learning more?' });
   assert.ok(!result.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
 
