@@ -89,8 +89,13 @@ const clientBuildPath = getClientBuildPath();
 console.log(`Client build path: ${clientBuildPath}`);
 
 if (fs.existsSync(clientBuildPath)) {
-  app.use(express.static(clientBuildPath));
+  app.use('/static', express.static(path.join(clientBuildPath, 'static'), {
+    maxAge: '1y',
+    immutable: true
+  }));
+  app.use(express.static(clientBuildPath, { maxAge: 0 }));
   app.get('*', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(clientBuildPath, 'index.html'));
   });
 } else {
