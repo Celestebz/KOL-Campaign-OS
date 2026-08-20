@@ -33,8 +33,14 @@ function normalizeNumber(text) {
 
 function countryMatchesMarket(country, targetMarket) {
   if (!country || !targetMarket) return true; // 数据缺失不判
-  const c = String(country).toUpperCase();
-  const markets = String(targetMarket).toUpperCase().split(/[,，、\s]+/).filter(Boolean);
+  const canonical = (value) => {
+    const compact = String(value).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (['US', 'USA', 'UNITEDSTATES', 'UNITEDSTATESOFAMERICA'].includes(compact)) return 'US';
+    if (['GB', 'GBR', 'UK', 'UNITEDKINGDOM', 'GREATBRITAIN'].includes(compact)) return 'GB';
+    return compact;
+  };
+  const c = canonical(country);
+  const markets = String(targetMarket).split(/[,，、;；/]+/).map(canonical).filter(Boolean);
   if (!markets.length) return true;
   return markets.some((m) => c.includes(m) || m.includes(c));
 }

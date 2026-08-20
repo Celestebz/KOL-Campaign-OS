@@ -52,6 +52,15 @@ test('missing required terms is low risk', () => {
   assert.ok(missing.riskReasons.some((r) => r.code === 'MISSING_REQUIRED_TERM'));
 });
 
+test('country aliases US and United States match the same market', () => {
+  const result = evaluateDraft({
+    ...base,
+    customer: { ...base.customer, country_region: 'US' },
+    strategy: { target_market: 'United States' }
+  });
+  assert.ok(!result.riskReasons.some((r) => r.code === 'MARKET_MISMATCH'));
+});
+
 test('previous hard bounce is high risk', () => {
   const result = evaluateDraft({
     customer: {}, strategy: {}, bodyText: 'Hello', hasEmail: true,
