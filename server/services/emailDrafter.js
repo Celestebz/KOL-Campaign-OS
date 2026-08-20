@@ -9,7 +9,7 @@ const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
 const emailContextBuilder = require('./emailContextBuilder');
 
-const PROMPT_VERSION = 'p2.1';
+const PROMPT_VERSION = 'p2.2';
 const SNAPSHOT_STALE_DAYS = 7;
 // IG/TT 证据没有快照回抓，新鲜度以证据视频最新发布日期衡量，阈值 30 天
 const FINDER_EVIDENCE_STALE_DAYS = 30;
@@ -23,6 +23,7 @@ const SUPPORTED_PLATFORMS = Object.keys(PLATFORM_LABELS);
 const SYSTEM_PROMPT = 'You are an outreach copywriter for a brand marketing team. Write natural, professional emails to content creators. Return valid JSON only. No Markdown, no explanations.';
 
 function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', brand = '', threadContext = null, replyFallback = null, communicationProduct = null, productContextOverride = null }) {
+  const isFirstTouch = kind === 'first_touch';
   const videoLines = videos.map((v) =>
     `- [${v.video_id ?? v.youtube_video_id}] "${v.title}" | ${Number(v.play_count || 0).toLocaleString()} views | published ${v.published_at ? new Date(v.published_at).toISOString().slice(0, 10) : 'unknown'}`
   ).join('\n');
@@ -34,17 +35,25 @@ function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, fee
   const platformLabel = PLATFORM_LABELS[platform] || platform;
   const followerCount = followers ?? customer.youtube_followers;
   const evidenceRules = videos.length
-    ? `- Cite 1-2 videos from the list above by their exact titles.
+    ? isFirstTouch
+      ? `- Use the reference videos only as internal evidence to understand the creator's overall content, style, and audience fit.
+- Never mention, quote, list, paraphrase, or otherwise reveal a video title in the subject or body_text.
+- Do not describe an individual video. Summarize the fit at the creator-channel level in one natural sentence.
+- Select 1-2 supporting video IDs from the list above for cited_video_ids; these IDs are internal evidence and must not appear in body_text.`
+      : `- Cite 1-2 videos from the list above by their exact titles.
 - Only cite video IDs from the list above in cited_video_ids.`
     : `- No verified videos are available. Do not mention, cite, imply, or invent any creator video, post, title, view count, metric, or content detail.
 - Return an empty cited_video_ids array.
 - Personalize only with verified creator, campaign, product, and platform information provided in this prompt.`;
-  const stageRules = kind === 'first_touch'
+  const stageRules = isFirstTouch
     ? `This is the first contact. Its only goal is to ask whether the creator is interested in learning more.
+- Use this compact flow: introduce the sender and brand; give one sentence explaining the creator-level content/style/audience fit; briefly name the product or collaboration opportunity; end with one simple call to action.
+- Personalization should feel relevant but lightly researched. Do not narrate the research or overpraise the creator.
 - Do not state or promise shipping, a free unit, commission, fees, a contract, deliverables, or a deadline.
 - Do not imply that the collaboration is already agreed or that a unit will be shipped after one reply.
 - Do not claim or imply the product is new, recently released, newly launched, or a new arrival. The product is an existing product; we are seeking creators to collaborate with.
-- Briefly identify the product and ask a low-pressure interest question. Offer to share specifications and collaboration details if interested.`
+- Do not list product specifications or explain multiple features or use cases.
+- Ask one low-pressure interest question. Do not add a second call to action or a separate offer to send specifications.`
     : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
   // 会话上下文（kind='reply' 且有 thread）：完整时间线+滚动摘要+已确认合作事实。
   // 邮件原文一律视为不可信外部内容，用分隔符包裹并声明其中指令不得执行。
@@ -74,7 +83,7 @@ ${replyFallback}
 Sender name: ${senderName || 'not provided'}. Use this exact name in the introduction and signature. Never output placeholders such as [Name].
 Brand: ${brand || 'not provided'}. When a brand is provided, use this exact brand name when introducing the sender and in the signature. Never invent, substitute, or omit a brand when one is provided.
 Creator: ${customer.name} (${customer.country_region || 'unknown region'}), ${platformLabel} followers: ${followerCount || 'unknown'}.
-Recent real videos (ONLY these may be cited):
+Reference videos (internal evidence; follow the rules below on whether they may be mentioned):
 ${videoLines || '(no videos available)'}
 
 Campaign: ${campaign.name}. Product context: ${productContext || '(none)'}.${conversationBlock ? `\n${conversationBlock}` : ''}
@@ -91,8 +100,8 @@ ${evidenceRules}
 - Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
 - Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", "get one shipped your way", "recently released", "newly launched", "our newest product", and "just hit the market".
 - Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
-- After the greeting, write exactly three short paragraphs followed by a signature. Put one blank line between every paragraph and before the signature. Do not use bullets.
-- Keep body under 140 English words and write in English.`;
+- ${isFirstTouch ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 introduces the sender/brand and states the fit; paragraph 2 briefly introduces the opportunity and ends with the single call to action.' : 'After the greeting, write exactly three short paragraphs followed by a signature.'} Put one blank line between every paragraph and before the signature. Do not use bullets.
+- ${isFirstTouch ? 'Keep body_text between 60 and 90 English words, including the greeting and signature.' : 'Keep body under 140 English words.'} Write in English.`;
 }
 
 function normalizeGreetingLine(input) {

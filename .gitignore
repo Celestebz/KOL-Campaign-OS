@@ -151,6 +151,7 @@ outputs/
 # Local creator research, outreach, and automation artifacts
 /scratch_*.json
 /scratch_*.md
+/tmp_*.json
 /b-group-*.json
 /batch_creators.csv
 /kol_us_candidates.csv

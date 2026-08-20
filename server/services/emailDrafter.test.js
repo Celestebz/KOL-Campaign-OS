@@ -93,6 +93,13 @@ test('first-touch prompt uses configured sender and asks interest before commerc
   assert.match(prompt, /never continue the first sentence on the greeting line/);
   assert.match(prompt, /one blank line between every paragraph/);
   assert.match(prompt, /override any conflicting general style-guide instruction/);
+  assert.match(prompt, /reference videos only as internal evidence/i);
+  assert.match(prompt, /Never mention, quote, list, paraphrase, or otherwise reveal a video title/);
+  assert.match(prompt, /exactly two short paragraphs/);
+  assert.match(prompt, /between 60 and 90 English words/);
+  assert.match(prompt, /one simple call to action/);
+  assert.match(prompt, /Do not list product specifications/);
+  assert.doesNotMatch(prompt, /Cite 1-2 videos from the list above by their exact titles/);
 });
 
 test('communication product overrides the campaign product in the AI prompt', () => {
@@ -425,7 +432,7 @@ test('reply 起草：有 thread 时走会话上下文并落库新列', async () 
 
   const insert = draftInsert(fake.statements);
   assert.equal((insert.sql.match(/\?/g) || []).length, insert.params.length, 'INSERT 占位符与参数数量一致');
-  assert.equal(insert.params[10], 'p2.1', 'prompt_version 升级');
+  assert.equal(insert.params[10], 'p2.2', 'prompt_version 升级');
   assert.equal(insert.params[14], 33, 'thread_id');
   assert.equal(insert.params[15], '<r2@x>', 'reply_to_message_id 为最新来信');
   assert.deepEqual(JSON.parse(insert.params[16]), ['<r1@x>', '<r2@x>'], 'context_message_ids');
