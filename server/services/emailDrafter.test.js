@@ -348,6 +348,11 @@ test('follow-up reuses the first-touch product snapshot instead of current campa
   const result = await runDraft(fake, { kind: 'follow_up' });
   assert.equal(result.ok, true);
   assert.match(seenPrompt, /CTA-4050 \| 9ft Evercrest/);
+  assert.match(seenPrompt, /Briefly reintroduce the sender and brand/);
+  assert.match(seenPrompt, /between 45 and 70 English words/);
+  assert.match(seenPrompt, /exactly one low-pressure question/);
+  assert.match(seenPrompt, /No verified videos are available/);
+  assert.doesNotMatch(seenPrompt, /Cite 1-2 videos from the list above by their exact titles/);
   const evidence = JSON.parse(draftInsert(fake.statements).params[7]);
   assert.equal(evidence.product_context, 'CTA-4050 | 9ft Evercrest');
 });
@@ -432,7 +437,7 @@ test('reply 起草：有 thread 时走会话上下文并落库新列', async () 
 
   const insert = draftInsert(fake.statements);
   assert.equal((insert.sql.match(/\?/g) || []).length, insert.params.length, 'INSERT 占位符与参数数量一致');
-  assert.equal(insert.params[10], 'p2.2', 'prompt_version 升级');
+  assert.equal(insert.params[10], 'p2.3', 'prompt_version 升级');
   assert.equal(insert.params[14], 33, 'thread_id');
   assert.equal(insert.params[15], '<r2@x>', 'reply_to_message_id 为最新来信');
   assert.deepEqual(JSON.parse(insert.params[16]), ['<r1@x>', '<r2@x>'], 'context_message_ids');

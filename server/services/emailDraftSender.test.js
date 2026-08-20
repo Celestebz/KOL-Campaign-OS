@@ -459,6 +459,57 @@ test('sendApprovedDraft falls back to the default mailbox when the bound one is 
   assert.equal(record.params.at(-1), 1);
 });
 
+test('buildFollowUpSendContext threads under the previous successful outreach without quoting it', () => {
+  const ctx = emailDraftSender.buildFollowUpSendContext(
+    { subject: 'New follow-up subject', body_text: 'Short follow-up body' },
+    {
+      subject: 'Creator collaboration',
+      smtp_message_id: '<first@x>',
+      references_json: JSON.stringify(['<root@x>'])
+    }
+  );
+  assert.equal(ctx.subject, 'Re: Creator collaboration');
+  assert.equal(ctx.text, 'Short follow-up body');
+  assert.equal(ctx.inReplyTo, '<first@x>');
+  assert.deepEqual(ctx.references, ['<root@x>', '<first@x>']);
+  assert.equal(ctx.text.includes('wrote:'), false);
+  assert.equal(ctx.threadingMissing, false);
+});
+
+test('sendApprovedDraft sends follow-up in the most recent successful outreach thread', async () => {
+  const writes = [];
+  dbOperations.run = async (sql, params) => {
+    writes.push({ sql, params });
+    if (sql.includes('INSERT INTO email_records')) return { changes: 1, id: 101 };
+    return { changes: 1 };
+  };
+  dbOperations.get = async (sql) => {
+    if (sql.includes('FROM email_drafts')) {
+      return { id: 30, status: 'sending', kind: 'follow_up', campaign_id: 2, customer_id: 3, subject: 'Follow up', body_text: 'Concise reminder' };
+    }
+    if (sql.includes('FROM email_records')) {
+      return { subject: 'BILT HARD collaboration', smtp_message_id: '<first@x>', references_json: null };
+    }
+    if (sql.includes('FROM email_settings')) return { username: 'sender@example.com', default_cc: '' };
+    if (sql.includes('FROM customers')) return { id: 3, name: 'Creator', email: 'creator@example.com' };
+    return null;
+  };
+  let mailOptions = null;
+  mailer.sendMail = async (opts) => { mailOptions = opts; return { messageId: '<follow@x>' }; };
+  emailThreader.assignRecordThread = async () => ({ threadId: 1 });
+
+  const result = await emailDraftSender.sendApprovedDraft(30);
+
+  assert.equal(mailOptions.subject, 'Re: BILT HARD collaboration');
+  assert.equal(mailOptions.text, 'Concise reminder');
+  assert.equal(mailOptions.inReplyTo, '<first@x>');
+  assert.deepEqual(mailOptions.references, ['<first@x>']);
+  assert.equal(result.threading_missing, undefined);
+  const recordInsert = writes.find(({ sql }) => sql.includes('INSERT INTO email_records'));
+  assert.equal(recordInsert.params[9], '<first@x>');
+  assert.equal(recordInsert.params[10], JSON.stringify(['<first@x>']));
+});
+
 test('sendApprovedDraft uses the campaign-bound mailbox when the draft has no mailbox binding', async () => {
   const writes = [];
   dbOperations.run = async (sql, params) => { writes.push({ sql, params }); return { id: 903, changes: 1 }; };

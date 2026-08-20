@@ -100,6 +100,23 @@ function buildReplySendContext(draft, reply) {
   };
 }
 
+// 跟进信接在最近一封成功外发邮件之后，不附加引用正文；邮件客户端会通过
+// In-Reply-To / References 将首联与最多两次跟进聚合到同一会话。
+function buildFollowUpSendContext(draft, previousRecord) {
+  if (!previousRecord) return null;
+  const messageId = previousRecord.smtp_message_id || null;
+  const references = messageId
+    ? [...new Set([...emailThreader.extractMessageIds(previousRecord.references_json), messageId])]
+    : [];
+  return {
+    subject: normalizeReplySubject(previousRecord.subject || draft.subject),
+    text: draft.body_text || '',
+    inReplyTo: messageId,
+    references,
+    threadingMissing: !messageId
+  };
+}
+
 async function sendApprovedDraft(draftId) {
   const claim = await dbOperations.run(
     `UPDATE email_drafts SET status = 'sending', updated_at = NOW()
@@ -156,13 +173,25 @@ async function sendApprovedDraft(draftId) {
     );
     replyCtx = buildReplySendContext(draft, reply);
   }
-  const subject = replyCtx ? replyCtx.subject : draft.subject;
-  const text = replyCtx ? replyCtx.text : draft.body_text;
+  let followUpCtx = null;
+  if (draft.kind === 'follow_up') {
+    const previousRecord = await dbOperations.get(
+      `SELECT subject, smtp_message_id, references_json
+       FROM email_records
+       WHERE campaign_id = ? AND customer_id = ? AND status = 'success'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [draft.campaign_id, draft.customer_id]
+    );
+    followUpCtx = buildFollowUpSendContext(draft, previousRecord);
+  }
+  const sendCtx = replyCtx || followUpCtx;
+  const subject = sendCtx ? sendCtx.subject : draft.subject;
+  const text = sendCtx ? sendCtx.text : draft.body_text;
   let messageId;
   try {
     const mailOptions = { settings, to: customer.email, cc, subject, text };
-    if (replyCtx && replyCtx.inReplyTo) mailOptions.inReplyTo = replyCtx.inReplyTo;
-    if (replyCtx && replyCtx.references.length) mailOptions.references = replyCtx.references;
+    if (sendCtx && sendCtx.inReplyTo) mailOptions.inReplyTo = sendCtx.inReplyTo;
+    if (sendCtx && sendCtx.references.length) mailOptions.references = sendCtx.references;
     if (replyCtx) mailOptions.html = replyCtx.html;
     ({ messageId } = await mailer.sendMail(mailOptions));
   } catch (sendError) {
@@ -189,8 +218,8 @@ async function sendApprovedDraft(draftId) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, NOW())`,
     [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
      cc.join(',') || null, subject, text, messageId,
-     replyCtx ? replyCtx.inReplyTo : null,
-     replyCtx && replyCtx.references.length ? JSON.stringify(replyCtx.references) : null,
+     sendCtx ? sendCtx.inReplyTo : null,
+     sendCtx && sendCtx.references.length ? JSON.stringify(sendCtx.references) : null,
      mailboxId]
   );
   // 发送记录挂会话：按 In-Reply-To/References 命中来信复用 thread，失败仅记日志不影响发送结果
@@ -208,7 +237,7 @@ async function sendApprovedDraft(draftId) {
   );
   await markOutreachAfterSend(draft);
   const result = { draft_id: draft.id, message_id: messageId, to: customer.email, warning: sendWarning };
-  if (replyCtx && replyCtx.threadingMissing) result.threading_missing = true;
+  if (sendCtx && sendCtx.threadingMissing) result.threading_missing = true;
   return result;
 }
 
@@ -288,7 +317,7 @@ async function confirmNotSent(draftId) {
 
 module.exports = {
   sendApprovedDraft,
-  buildReplySendContext,
+  buildReplySendContext, buildFollowUpSendContext,
   isAmbiguousSendError,
   confirmManuallySent,
   confirmNotSent,

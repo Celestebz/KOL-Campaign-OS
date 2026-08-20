@@ -9,7 +9,7 @@ const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
 const emailContextBuilder = require('./emailContextBuilder');
 
-const PROMPT_VERSION = 'p2.2';
+const PROMPT_VERSION = 'p2.3';
 const SNAPSHOT_STALE_DAYS = 7;
 // IG/TT 证据没有快照回抓，新鲜度以证据视频最新发布日期衡量，阈值 30 天
 const FINDER_EVIDENCE_STALE_DAYS = 30;
@@ -24,6 +24,7 @@ const SYSTEM_PROMPT = 'You are an outreach copywriter for a brand marketing team
 
 function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', brand = '', threadContext = null, replyFallback = null, communicationProduct = null, productContextOverride = null }) {
   const isFirstTouch = kind === 'first_touch';
+  const isFollowUp = kind === 'follow_up';
   const videoLines = videos.map((v) =>
     `- [${v.video_id ?? v.youtube_video_id}] "${v.title}" | ${Number(v.play_count || 0).toLocaleString()} views | published ${v.published_at ? new Date(v.published_at).toISOString().slice(0, 10) : 'unknown'}`
   ).join('\n');
@@ -35,10 +36,10 @@ function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, fee
   const platformLabel = PLATFORM_LABELS[platform] || platform;
   const followerCount = followers ?? customer.youtube_followers;
   const evidenceRules = videos.length
-    ? isFirstTouch
+    ? (isFirstTouch || isFollowUp)
       ? `- Use the reference videos only as internal evidence to understand the creator's overall content, style, and audience fit.
 - Never mention, quote, list, paraphrase, or otherwise reveal a video title in the subject or body_text.
-- Do not describe an individual video. Summarize the fit at the creator-channel level in one natural sentence.
+- Do not describe an individual video. ${isFollowUp ? "Do not introduce new creator research; only use a brief creator-level fit statement when it helps clarify the purpose." : 'Summarize the fit at the creator-channel level in one natural sentence.'}
 - Select 1-2 supporting video IDs from the list above for cited_video_ids; these IDs are internal evidence and must not appear in body_text.`
       : `- Cite 1-2 videos from the list above by their exact titles.
 - Only cite video IDs from the list above in cited_video_ids.`
@@ -54,7 +55,14 @@ function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, fee
 - Do not claim or imply the product is new, recently released, newly launched, or a new arrival. The product is an existing product; we are seeking creators to collaborate with.
 - Do not list product specifications or explain multiple features or use cases.
 - Ask one low-pressure interest question. Do not add a second call to action or a separate offer to send specifications.`
-    : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
+    : isFollowUp
+      ? `This is a follow-up to an earlier outreach email that received no reply.
+- Briefly reintroduce the sender and brand so the email still makes sense if the creator missed the first message.
+- Restate the collaboration purpose in one concise sentence. Mention the product or opportunity no more than once.
+- Do not repeat the full first-touch pitch, list specifications, introduce new research, or add commercial terms, deliverables, urgency, or deadlines.
+- End with exactly one low-pressure question and no second call to action.
+- Avoid guilt-inducing language and phrases such as "I haven't heard back", "just checking in", "circling back", "bumping this", or "final attempt".`
+      : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
   // 会话上下文（kind='reply' 且有 thread）：完整时间线+滚动摘要+已确认合作事实。
   // 邮件原文一律视为不可信外部内容，用分隔符包裹并声明其中指令不得执行。
   const conversationBlock = threadContext ? `
@@ -100,8 +108,8 @@ ${evidenceRules}
 - Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
 - Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", "get one shipped your way", "recently released", "newly launched", "our newest product", and "just hit the market".
 - Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
-- ${isFirstTouch ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 introduces the sender/brand and states the fit; paragraph 2 briefly introduces the opportunity and ends with the single call to action.' : 'After the greeting, write exactly three short paragraphs followed by a signature.'} Put one blank line between every paragraph and before the signature. Do not use bullets.
-- ${isFirstTouch ? 'Keep body_text between 60 and 90 English words, including the greeting and signature.' : 'Keep body under 140 English words.'} Write in English.`;
+- ${isFirstTouch ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 introduces the sender/brand and states the fit; paragraph 2 briefly introduces the opportunity and ends with the single call to action.' : isFollowUp ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 briefly identifies the sender/brand and restates the purpose; paragraph 2 contains the single call to action.' : 'After the greeting, write exactly three short paragraphs followed by a signature.'} Put one blank line between every paragraph and before the signature. Do not use bullets.
+- ${isFirstTouch ? 'Keep body_text between 60 and 90 English words, including the greeting and signature.' : isFollowUp ? 'Keep body_text between 45 and 70 English words, including the greeting and signature.' : 'Keep body under 140 English words.'} Write in English.`;
 }
 
 function normalizeGreetingLine(input) {
