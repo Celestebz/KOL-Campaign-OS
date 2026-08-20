@@ -78,8 +78,16 @@ function parseToken(token) {
   return timingSafeEqual(parts[4], sign(payload)) ? parsed : null;
 }
 
-function cookieHeader(token, clear = false) {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+function isSecureRequest(req) {
+  const override = String(process.env.COOKIE_SECURE || '').trim().toLowerCase();
+  if (override === 'true') return true;
+  if (override === 'false') return false;
+  const forwardedProto = String(req?.headers?.['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return Boolean(req?.secure) || forwardedProto === 'https';
+}
+
+function cookieHeader(token, clear = false, req = null) {
+  const secure = isSecureRequest(req) ? '; Secure' : '';
   return `${COOKIE_NAME}=${clear ? '' : encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${clear ? 0 : Math.floor(TOKEN_TTL_MS / 1000)}${secure}`;
 }
 
@@ -192,7 +200,7 @@ function createAuthRouter(store = defaultStore) {
       if (error) return res.status(400).json({ success: false, error });
       const user = await store.createBootstrap({ username, displayName, passwordHash: await hashPassword(req.body.password) });
       if (!user) return res.status(409).json({ success: false, error: '管理员已初始化，请直接登录' });
-      res.setHeader('Set-Cookie', cookieHeader(issueToken(user)));
+      res.setHeader('Set-Cookie', cookieHeader(issueToken(user), false, req));
       return res.status(201).json({ success: true, user });
     } catch (error) { return handleAccountError(error, res, next); }
   });
@@ -207,7 +215,7 @@ function createAuthRouter(store = defaultStore) {
       if (!code) return res.status(400).json({ success: false, error: '请输入邀请码' });
       const user = await store.createFromInvite({ username, displayName, passwordHash: await hashPassword(req.body.password), code });
       if (!user) return res.status(400).json({ success: false, error: '邀请码无效、已过期或使用次数已满' });
-      res.setHeader('Set-Cookie', cookieHeader(issueToken(user)));
+      res.setHeader('Set-Cookie', cookieHeader(issueToken(user), false, req));
       return res.status(201).json({ success: true, user });
     } catch (error) { return handleAccountError(error, res, next); }
   });
@@ -228,13 +236,13 @@ function createAuthRouter(store = defaultStore) {
       }
       loginFailures.delete(key);
       await store.touchLogin(user.id);
-      res.setHeader('Set-Cookie', cookieHeader(issueToken(user)));
+      res.setHeader('Set-Cookie', cookieHeader(issueToken(user), false, req));
       return res.json({ success: true, user: publicUser(user) });
     } catch (error) { next(error); }
   });
 
   router.post('/logout', (req, res) => {
-    res.setHeader('Set-Cookie', cookieHeader('', true));
+    res.setHeader('Set-Cookie', cookieHeader('', true, req));
     res.json({ success: true });
   });
 

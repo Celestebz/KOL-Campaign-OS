@@ -90,6 +90,18 @@ test('logs in with personal credentials and rejects invalid passwords', async ()
   assert.equal(me.body.user.username, 'alice');
 });
 
+test('session cookie is usable over HTTP and secure behind HTTPS proxy', async () => {
+  const store = makeStore();
+  store.users.push({ id: 1, username: 'alice', display_name: 'Alice', password_hash: await hashPassword('correct-pass'), role: 'admin', status: 'active', token_version: 1 });
+  const app = buildApp(store);
+
+  const httpLogin = await request(app).post('/api/auth/login').send({ username: 'alice', password: 'correct-pass' }).expect(200);
+  assert.doesNotMatch(String(httpLogin.headers['set-cookie']), /; Secure/i);
+
+  const httpsLogin = await request(app).post('/api/auth/login').set('X-Forwarded-Proto', 'https').send({ username: 'alice', password: 'correct-pass' }).expect(200);
+  assert.match(String(httpsLogin.headers['set-cookie']), /; Secure/i);
+});
+
 test('admin creates invite and member registers once', async () => {
   const store = makeStore();
   store.users.push({ id: 1, username: 'admin', display_name: 'Admin', password_hash: await hashPassword('admin-pass'), role: 'admin', status: 'active', token_version: 1 });
