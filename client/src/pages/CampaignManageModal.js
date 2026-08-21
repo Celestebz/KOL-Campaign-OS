@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { Button, Form, Input, message, Modal, Select, Table, Tag } from 'antd';
-import { EditOutlined } from '@ant-design/icons';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Button, Form, Input, message, Modal, Popconfirm, Select, Space, Table, Tag } from 'antd';
+import { EditOutlined, InboxOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { getEmailSettings } from './emailApi';
 
@@ -20,12 +20,14 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [mailboxes, setMailboxes] = useState([]);
+  const [scope, setScope] = useState('active');
+  const [archivingId, setArchivingId] = useState(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const [campaignResponse, productResponse] = await Promise.all([
-        axios.get('/api/campaigns'),
+        axios.get('/api/campaigns', { params: { scope } }),
         axios.get('/api/products')
       ]);
       setCampaigns(campaignResponse.data.data || []);
@@ -35,11 +37,11 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [scope]);
 
   useEffect(() => {
     if (open) loadData();
-  }, [open]);
+  }, [open, loadData]);
 
   useEffect(() => {
     if (!open) return;
@@ -119,25 +121,71 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
     }
   };
 
+  const archiveProject = async (campaign) => {
+    setArchivingId(campaign.id);
+    try {
+      await axios.post(`/api/campaigns/${campaign.id}/archive`);
+      message.success('项目已归档，历史数据已保留');
+      await loadData();
+      await onChanged?.();
+    } catch (error) {
+      message.error(error.response?.data?.error || '归档项目失败');
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
   const columns = [
     { title: '项目名称', dataIndex: 'name', key: 'name' },
     { title: '品牌', dataIndex: 'brand', key: 'brand', render: (value) => value || '-' },
     { title: '产品', dataIndex: 'product', key: 'product', render: (value) => value || '-' },
     { title: '周期', dataIndex: 'period', key: 'period', render: (value) => value || '-' },
-    { title: '状态', dataIndex: 'status', key: 'status', render: () => <Tag color="green">进行中</Tag> },
+    {
+      title: '状态', dataIndex: 'status', key: 'status',
+      render: (value, record) => (
+        <Tag color={value === 'archived' || record.campaign_type === 'historical_archive' ? 'default' : 'green'}>
+          {value === 'archived' || record.campaign_type === 'historical_archive' ? '已归档' : '进行中'}
+        </Tag>
+      )
+    },
     {
       title: '操作',
       key: 'action',
-      width: 100,
-      render: (_, record) => (
-        <Button type="link" icon={<EditOutlined />} onClick={() => openEditor(record)}>编辑</Button>
-      )
+      width: 180,
+      render: (_, record) => {
+        const archived = record.status === 'archived' || record.campaign_type === 'historical_archive';
+        return archived ? (
+          <Button type="link" onClick={() => openEditor(record)}>查看</Button>
+        ) : (
+          <Space size={0}>
+            <Button type="link" icon={<EditOutlined />} onClick={() => openEditor(record)}>编辑</Button>
+            <Popconfirm
+              title="确定归档该项目？"
+              description="项目将移出进行中列表，达人、邮件、视频等历史数据会保留。"
+              okText="归档"
+              cancelText="取消"
+              onConfirm={() => archiveProject(record)}
+            >
+              <Button type="link" danger icon={<InboxOutlined />} loading={archivingId === record.id}>归档</Button>
+            </Popconfirm>
+          </Space>
+        );
+      }
     }
   ];
 
   return (
     <>
       <Modal title="管理项目" open={open} onCancel={onCancel} footer={null} width={900}>
+        <Select
+          value={scope}
+          onChange={setScope}
+          style={{ width: 160, marginBottom: 16 }}
+          options={[
+            { value: 'active', label: '进行中的项目' },
+            { value: 'historical', label: '已归档项目' }
+          ]}
+        />
         <Table
           rowKey="id"
           columns={columns}
@@ -147,14 +195,15 @@ const CampaignManageModal = ({ open, onCancel, onChanged }) => {
         />
       </Modal>
       <Modal
-        title={`编辑项目${editing ? `：${editing.campaign.name}` : ''}`}
+        title={`${editing?.campaign?.status === 'archived' || editing?.campaign?.campaign_type === 'historical_archive' ? '查看' : '编辑'}项目${editing ? `：${editing.campaign.name}` : ''}`}
         open={Boolean(editing)}
         onCancel={() => setEditing(null)}
-        onOk={saveProject}
+        onOk={editing?.campaign?.status === 'archived' || editing?.campaign?.campaign_type === 'historical_archive' ? () => setEditing(null) : saveProject}
         confirmLoading={saving}
-        okText="保存"
+        okText={editing?.campaign?.status === 'archived' || editing?.campaign?.campaign_type === 'historical_archive' ? '关闭' : '保存'}
+        cancelButtonProps={{ style: editing?.campaign?.status === 'archived' || editing?.campaign?.campaign_type === 'historical_archive' ? { display: 'none' } : undefined }}
       >
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" disabled={editing?.campaign?.status === 'archived' || editing?.campaign?.campaign_type === 'historical_archive'}>
           <Form.Item label="项目名称" name="name" rules={[{ required: true, whitespace: true, message: '请输入项目名称' }]}>
             <Input />
           </Form.Item>

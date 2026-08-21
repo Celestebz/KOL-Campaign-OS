@@ -96,7 +96,9 @@ router.get('/', async (req, res) => {
     // 项目通过 ?scope=historical / ?scope=all 显式查询。
     const scope = ['active', 'historical', 'all'].includes(req.query.scope) ? req.query.scope : 'active';
     let where = "c.campaign_type = 'active_project' AND c.status = 'active'";
-    if (scope === 'historical') where = "c.campaign_type = 'historical_archive'";
+    if (scope === 'historical') {
+      where = "c.campaign_type = 'historical_archive' OR (c.campaign_type = 'active_project' AND c.status = 'archived')";
+    }
     if (scope === 'all') where = '1=1';
     const rows = await dbOperations.query(`
       SELECT c.*,
@@ -611,6 +613,47 @@ router.put('/:id', async (req, res) => {
     res.json({ success: true, data: updated, message: '产品/活动已重命名' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/archive', async (req, res) => {
+  try {
+    const id = parsePathId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, error: 'Campaign id must be a positive integer' });
+    }
+    if (id === 1) {
+      return res.status(400).json({ success: false, error: 'Default Campaign 不能归档' });
+    }
+
+    const campaign = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [id]);
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: '项目不存在' });
+    }
+    if (campaign.campaign_type !== 'active_project') {
+      return res.status(400).json({ success: false, error: '只有当前业务项目可以归档' });
+    }
+
+    const result = await dbOperations.run(
+      `UPDATE campaigns
+       SET status = 'archived', updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND campaign_type = 'active_project' AND status <> 'archived'`,
+      [id]
+    );
+    const archived = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [id]);
+    if (!archived) {
+      return res.status(404).json({ success: false, error: '项目不存在' });
+    }
+    if (archived.status !== 'archived') {
+      return res.status(409).json({ success: false, error: '项目归档与其他更新发生冲突' });
+    }
+    return res.json({
+      success: true,
+      data: archived,
+      message: result.changes === 0 ? '项目已经归档' : '项目已归档'
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

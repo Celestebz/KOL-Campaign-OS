@@ -292,7 +292,7 @@ test('GET / 默认只返回进行中的当前项目，历史项目需显式 scop
     response = await callHandler(handler, { query: { scope: 'historical' } });
     assert.equal(response.statusCode, 200);
     assert.match(captured[1], /c\.campaign_type = 'historical_archive'/);
-    assert.doesNotMatch(captured[1], /active_project/);
+    assert.match(captured[1], /c\.campaign_type = 'active_project' AND c\.status = 'archived'/);
 
     response = await callHandler(handler, { query: { scope: 'all' } });
     assert.equal(response.statusCode, 200);
@@ -302,6 +302,43 @@ test('GET / 默认只返回进行中的当前项目，历史项目需显式 scop
     assert.equal(response.statusCode, 200);
     assert.match(captured[3], /active_project/, 'unknown scope falls back to active projects');
   });
+});
+
+test('POST /:id/archive archives an active project without deleting history', async () => {
+  const handler = findHandler(require('./campaigns'), 'post', '/:id/archive');
+  const writes = [];
+  let campaign = { id: 8, name: 'Summer Launch', campaign_type: 'active_project', status: 'active' };
+  const response = await withPatchedDb({
+    get: async (sql) => (/SELECT \* FROM campaigns WHERE id/.test(String(sql)) ? campaign : null),
+    run: async (sql, params) => {
+      writes.push({ sql: String(sql), params });
+      campaign = { ...campaign, status: 'archived' };
+      return { changes: 1 };
+    }
+  }, () => callHandler(handler, { params: { id: '8' } }));
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.data.status, 'archived');
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].sql, /^UPDATE campaigns/m);
+  assert.doesNotMatch(writes[0].sql, /DELETE/i);
+});
+
+test('POST /:id/archive validates id, existence and campaign type', async () => {
+  const handler = findHandler(require('./campaigns'), 'post', '/:id/archive');
+
+  let response = await callHandler(handler, { params: { id: 'abc' } });
+  assert.equal(response.statusCode, 400);
+
+  response = await withPatchedDb({ get: async () => null }, () => (
+    callHandler(handler, { params: { id: '9' } })
+  ));
+  assert.equal(response.statusCode, 404);
+
+  response = await withPatchedDb({
+    get: async () => ({ id: 9, campaign_type: 'historical_archive', status: 'archived' })
+  }, () => callHandler(handler, { params: { id: '9' } }));
+  assert.equal(response.statusCode, 400);
 });
 
 // ---- 多邮箱：Campaign 绑定发件邮箱 ----
