@@ -9,7 +9,8 @@ description: Connect to and operate KOL Campaign OS for campaign strategy, one-p
 
 Use app HTTP APIs only. Never access MySQL directly.
 
-- Default `base_url`: `http://localhost:5001`
+- Default `base_url`: `http://59.110.45.218`
+- Treat `http://59.110.45.218` as the production `base_url` and source of truth. Use localhost only for code development and tests.
 - Check `GET {base_url}/api/health` first.
 - For `/api/agent/*` and the Finder/configuration endpoints documented below, send `Authorization: Bearer <External Agent API Token>`.
 - Obtain a missing base URL or token from the user's secure configuration. Never print, persist, or repeat the token.
@@ -141,6 +142,8 @@ TikTok; the API rejects that combination instead of applying YouTube metrics.
 
 ## Add Existing KOLs to Candidate Pool
 
+For a newly discovered creator not yet in KOL Master, call `POST /api/agent/campaigns/{campaign_id}/kol-master/batch-upsert` with `dry_run: true` and `items` containing `client_ref`, `name`, `platform`, `profile_url`, and only verified optional data such as `email`, `followers`, `country_region`, `creator_type`, `audience_fit`, and `notes`. The API matches profile URL first and email second, returns a `customer_id` for duplicates, and never overwrites an existing KOL. After the user confirms the preview, repeat with `dry_run: false` and a unique `idempotency_key`; use returned `customer_id` values in the candidate-pool request.
+
 Always preview first:
 
 ```http
@@ -201,6 +204,7 @@ Report created, updated, skipped, and rejected items. Never approve, send, rejec
 - Never fabricate evidence, metrics, identity, contact data, country, price, or engagement.
 - Never create or approve Raw Candidates without analyzed video evidence and human review.
 - Add existing KOL Master records to a campaign only after preview and user confirmation.
+- Newly discovered KOLs may enter production only through the previewed, idempotent Agent API; never use SQL imports.
 - Email automation stops at `pending_review`; approval and sending remain human actions.
 - If access or configuration is blocked, report the blocker instead of inventing results.
 

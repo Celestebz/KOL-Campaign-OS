@@ -7,6 +7,7 @@ const emailMailboxes = require('./emailMailboxes');
 const ALLOWED_PLATFORMS = new Set(['youtube', 'instagram', 'tiktok', 'facebook', 'x']);
 const MAX_CANDIDATE_BATCH = 100;
 const MAX_DRAFT_BATCH = 50;
+const MAX_KOL_BATCH = 100;
 const SEARCH_PLATFORMS = {
   youtube: { url: 'youtube_url', followers: 'youtube_followers' },
   instagram: { url: 'instagram_url', followers: 'instagram_followers' },
@@ -22,6 +23,126 @@ function positiveInt(value, name) {
 function clean(value) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
+
+function normalizeProfileUrl(value) {
+  const raw = clean(value);
+  if (!raw) return '';
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch (error) {
+    throw new Error('profile_url must be a valid http(s) URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('profile_url must be a valid http(s) URL');
+  parsed.hash = '';
+  parsed.search = '';
+  parsed.hostname = parsed.hostname.toLowerCase();
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+  return parsed.toString().replace(/\/$/, '');
+}
+
+function normalizeKolItem(item) {
+  const platform = clean(item?.platform).toLowerCase();
+  if (!SEARCH_PLATFORMS[platform]) throw new Error('platform must be youtube, instagram, or tiktok');
+  const name = clean(item?.name);
+  if (!name || name.length > 255) throw new Error('name is required and must be at most 255 characters');
+  const profileUrl = normalizeProfileUrl(item?.profile_url || item?.[SEARCH_PLATFORMS[platform].url]);
+  if (!profileUrl) throw new Error('profile_url is required');
+  const email = clean(item?.email).toLowerCase();
+  if (email && (email.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    throw new Error('email must be a valid address with at most 255 characters');
+  }
+  return {
+    name, email, platform, profileUrl,
+    followers: clean(item?.followers),
+    countryRegion: clean(item?.country_region),
+    creatorType: clean(item?.creator_type),
+    audienceFit: clean(item?.audience_fit),
+    notes: clean(item?.notes)
+  };
+}
+
+async function findKolDuplicate(normalized) {
+  const comparableUrl = normalized.profileUrl.toLowerCase();
+  const byUrl = await dbOperations.get(
+    `SELECT id, name, email FROM customers
+     WHERE LOWER(TRIM(TRAILING '/' FROM COALESCE(profile_url, ''))) = ?
+        OR LOWER(TRIM(TRAILING '/' FROM COALESCE(youtube_url, ''))) = ?
+        OR LOWER(TRIM(TRAILING '/' FROM COALESCE(instagram_url, ''))) = ?
+        OR LOWER(TRIM(TRAILING '/' FROM COALESCE(tiktok_url, ''))) = ?
+     LIMIT 1`,
+    [comparableUrl, comparableUrl, comparableUrl, comparableUrl]
+  );
+  if (byUrl) return { row: byUrl, matched_by: 'profile_url' };
+  if (!normalized.email) return null;
+  const byEmail = await dbOperations.get(
+    'SELECT id, name, email FROM customers WHERE LOWER(email) = ? LIMIT 1',
+    [normalized.email]
+  );
+  return byEmail ? { row: byEmail, matched_by: 'email' } : null;
+}
+
+async function previewKol(item) {
+  try {
+    const normalized = normalizeKolItem(item);
+    const duplicate = await findKolDuplicate(normalized);
+    return {
+      client_ref: clean(item?.client_ref) || null,
+      customer_id: duplicate?.row.id || null,
+      action: duplicate ? 'duplicate' : 'create',
+      matched_by: duplicate?.matched_by || null,
+      normalized: { name: normalized.name, email: normalized.email || null,
+        platform: normalized.platform, profile_url: normalized.profileUrl }
+    };
+  } catch (error) {
+    return { client_ref: clean(item?.client_ref) || null, customer_id: null, action: 'rejected', error: error.message };
+  }
+}
+
+async function createKol(item) {
+  const preview = await previewKol(item);
+  if (preview.action !== 'create') return preview;
+  const normalized = normalizeKolItem(item);
+  const platformConfig = SEARCH_PLATFORMS[normalized.platform];
+  const columns = ['name', 'email', 'platform', 'profile_url', platformConfig.url, platformConfig.followers,
+    'country_region', 'creator_type', 'audience_fit', 'notes', 'status', 'sync_status', 'created_at', 'updated_at'];
+  const values = [normalized.name, normalized.email || null, normalized.platform, normalized.profileUrl,
+    normalized.profileUrl, normalized.followers || null, normalized.countryRegion || null,
+    normalized.creatorType || null, normalized.audienceFit || null, normalized.notes || null,
+    'active', 'sync_pending'];
+  try {
+    const result = await dbOperations.run(
+      `INSERT INTO customers (${columns.join(', ')}) VALUES (${values.map(() => '?').join(', ')}, NOW(), NOW())`, values
+    );
+    return { ...preview, customer_id: result.id, action: 'created' };
+  } catch (error) {
+    const duplicate = await findKolDuplicate(normalized);
+    if (duplicate) return { ...preview, customer_id: duplicate.row.id, action: 'duplicate', matched_by: duplicate.matched_by };
+    return { ...preview, action: 'rejected', error: error.message };
+  }
+}
+
+async function batchKols(campaignId, body) {
+  await assertActiveCampaign(campaignId);
+  if (!Array.isArray(body.items) || !body.items.length) throw new Error('items must be a non-empty array');
+  if (body.items.length > MAX_KOL_BATCH) throw new Error(`items cannot exceed ${MAX_KOL_BATCH}`);
+  if (body.dry_run === true) {
+    const items = [];
+    for (const item of body.items) items.push(await previewKol(item));
+    return { dry_run: true, items };
+  }
+  const operation = 'kol_master.batch_upsert';
+  const state = await getIdempotentResult(operation, body.idempotency_key, body);
+  if (state.existing) return { ...state.existing, idempotent_replay: true };
+  const requestId = await saveRequestStart(operation, campaignId, state, body);
+  if (requestId?.replay) return { ...requestId.replay, idempotent_replay: true };
+  const items = [];
+  for (const item of body.items) items.push(await createKol(item));
+  const response = { dry_run: false, items };
+  await saveRequestResult(requestId, response);
+  return response;
+}
+
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -431,6 +552,7 @@ async function listDrafts(campaignId, query) {
 
 module.exports = {
   searchKols,
+  batchKols,
   batchCandidates,
   batchDrafts,
   listDrafts,

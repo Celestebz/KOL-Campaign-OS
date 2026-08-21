@@ -181,6 +181,15 @@ router.get('/campaigns/:campaignId/kol-master/search', requireAgentToken, async 
   }
 });
 
+router.post('/campaigns/:campaignId/kol-master/batch-upsert', requireAgentToken, async (req, res) => {
+  try {
+    const data = await agentCampaignOps.batchKols(campaignId(req), req.body || {});
+    res.json({ success: true, data });
+  } catch (error) {
+    sendAgentError(res, error);
+  }
+});
+
 router.post('/campaigns/:campaignId/candidate-pool/batch', requireAgentToken, async (req, res) => {
   try {
     const data = await agentCampaignOps.batchCandidates(campaignId(req), req.body || {});

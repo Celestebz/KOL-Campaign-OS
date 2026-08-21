@@ -126,6 +126,56 @@ test('restricted agent campaign API searches, previews, writes candidates and pe
   const request = supertest(app);
   const auth = { Authorization: 'Bearer agent-token' };
 
+  const kolBody = {
+    idempotency_key: 'kol-test-1',
+    items: [{
+      client_ref: 'source-creator-1',
+      name: 'New Creator',
+      platform: 'youtube',
+      profile_url: 'https://YouTube.com/@NewCreator/?utm_source=test#about',
+      email: 'NEW@example.com',
+      followers: '30K',
+      country_region: 'US'
+    }]
+  };
+  const kolPreview = await request
+    .post(`/api/agent/campaigns/${campaign.id}/kol-master/batch-upsert`)
+    .set(auth)
+    .send({ ...kolBody, dry_run: true })
+    .expect(200);
+  assert.equal(kolPreview.body.data.items[0].action, 'create');
+  assert.equal(kolPreview.body.data.items[0].normalized.profile_url, 'https://youtube.com/@NewCreator');
+
+  const kolCreated = await request
+    .post(`/api/agent/campaigns/${campaign.id}/kol-master/batch-upsert`)
+    .set(auth)
+    .send(kolBody)
+    .expect(200);
+  assert.equal(kolCreated.body.data.items[0].action, 'created');
+  assert.ok(kolCreated.body.data.items[0].customer_id);
+
+  const kolReplay = await request
+    .post(`/api/agent/campaigns/${campaign.id}/kol-master/batch-upsert`)
+    .set(auth)
+    .send(kolBody)
+    .expect(200);
+  assert.equal(kolReplay.body.data.idempotent_replay, true);
+
+  const duplicatePreview = await request
+    .post(`/api/agent/campaigns/${campaign.id}/kol-master/batch-upsert`)
+    .set(auth)
+    .send({ dry_run: true, items: [{ name: 'Duplicate', platform: 'youtube', profile_url: 'https://youtube.com/@NewCreator/' }] })
+    .expect(200);
+  assert.equal(duplicatePreview.body.data.items[0].action, 'duplicate');
+  assert.equal(duplicatePreview.body.data.items[0].customer_id, kolCreated.body.data.items[0].customer_id);
+
+  const rejectedPreview = await request
+    .post(`/api/agent/campaigns/${campaign.id}/kol-master/batch-upsert`)
+    .set(auth)
+    .send({ dry_run: true, items: [{ name: 'Bad URL', platform: 'youtube', profile_url: 'not-a-url' }] })
+    .expect(200);
+  assert.equal(rejectedPreview.body.data.items[0].action, 'rejected');
+
   await request
     .get(`/api/agent/campaigns/${campaign.id}/kol-master/search`)
     .set({ 'x-agent-token': 'agent-token' })
