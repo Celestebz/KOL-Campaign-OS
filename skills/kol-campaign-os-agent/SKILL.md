@@ -9,11 +9,29 @@ description: Connect to and operate KOL Campaign OS for campaign strategy, one-p
 
 Use app HTTP APIs only. Never access MySQL directly.
 
-- Default `base_url`: `http://59.110.45.218`
-- Treat `http://59.110.45.218` as the production `base_url` and source of truth. Use localhost only for code development and tests.
+- Production `base_url`: `http://59.110.45.218`. Override it only with `KOL_CAMPAIGN_OS_BASE_URL` when the user explicitly selects another environment.
+- Treat production as the source of truth. Use localhost only for code development and tests.
 - Check `GET {base_url}/api/health` first.
 - For `/api/agent/*` and the Finder/configuration endpoints documented below, send `Authorization: Bearer <External Agent API Token>`.
-- Obtain a missing base URL or token from the user's secure configuration. Never print, persist, or repeat the token.
+- Read the token from `KOL_CAMPAIGN_OS_AGENT_TOKEN` in the process environment or an existing gitignored local secret configuration. Never search chat history for it; never print, log, persist, repeat, or reveal any prefix of it.
+- If the token is unavailable, stop before authenticated calls and ask the user to configure `KOL_CAMPAIGN_OS_AGENT_TOKEN` outside the conversation. Do not ask the user to paste it into chat and do not fall back to SSH, SQL, a local database, or a guessed token.
+
+Use the HTTP API for all campaign, creator, candidate, Finder, and draft reads or writes. A `401 Invalid External Agent API Token` proves the production route and token configuration exist, but it does not grant access. A `403 External Agent API Token is not configured` means production configuration is missing.
+
+## SSH Diagnostics
+
+Use SSH only for production service status, logs, release inspection, performance diagnosis, and an explicitly approved deployment. Never use SSH to bypass the Agent API for business data.
+
+- Host: `codexdiag@59.110.45.218`
+- Windows key: `C:\Users\Administrator\.ssh\codexdiag_kol_59_110_45_218`
+- Connect non-interactively with `ssh -i <key> -o BatchMode=yes codexdiag@59.110.45.218 <command>`.
+- Main release link: `/opt/kol-campaign-os/current`
+- Releases: `/opt/kol-campaign-os/releases/`
+- Main service: `kol-campaign-os.service`
+
+If the key is unavailable or rejected, report the access blocker; never request or handle the root password. Default to read-only SSH commands. Modify code only in the local Git workspace, then test, commit, push GitHub, and deploy as a new release after explicit user confirmation. `sudo` is temporary for deployments only and must be revoked and verified afterward.
+
+`/opt/webhook-service` and PM2 process `feishu-webhook` are independent. Do not modify, move, overwrite, restart, or deploy them during main-system work. After a main release, only verify that the process and its health endpoint remain online.
 
 Prefer the restricted `/api/agent` endpoints for KOL Master, candidate-pool, and email-draft operations. Use browser interaction only when an equivalent API is unavailable.
 

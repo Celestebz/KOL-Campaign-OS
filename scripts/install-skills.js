@@ -183,7 +183,7 @@ function main() {
   }
   console.log('');
   console.log('Next: start KOL Campaign OS, then choose the entry skill in your agent.');
-  console.log('Backend URL: http://localhost:5001');
+  console.log('Production URL: http://59.110.45.218');
 }
 
 try {
