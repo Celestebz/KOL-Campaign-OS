@@ -190,6 +190,15 @@ router.post('/campaigns/:campaignId/kol-master/batch-upsert', requireAgentToken,
   }
 });
 
+router.post('/campaigns/:campaignId/kol-master/batch-update-email', requireAgentToken, async (req, res) => {
+  try {
+    const data = await agentCampaignOps.batchUpdateKolEmail(campaignId(req), req.body || {});
+    res.json({ success: true, data });
+  } catch (error) {
+    sendAgentError(res, error);
+  }
+});
+
 router.post('/campaigns/:campaignId/candidate-pool/batch', requireAgentToken, async (req, res) => {
   try {
     const data = await agentCampaignOps.batchCandidates(campaignId(req), req.body || {});

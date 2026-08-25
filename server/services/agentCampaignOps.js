@@ -503,6 +503,45 @@ async function closeCandidateApproval(campaignId, customerId) {
   );
 }
 
+async function batchUpdateKolEmail(campaignId, body) {
+  await assertActiveCampaign(campaignId);
+  if (!Array.isArray(body.items) || !body.items.length) throw new Error('items must be a non-empty array');
+  if (body.items.length > MAX_KOL_BATCH) throw new Error(`items cannot exceed ${MAX_KOL_BATCH}`);
+  const operation = 'kol_master.batch_update_email';
+  const state = await getIdempotentResult(operation, body.idempotency_key, body);
+  if (state.existing) return { ...state.existing, idempotent_replay: true };
+  const requestId = await saveRequestStart(operation, campaignId, state, body);
+  const items = [];
+  for (const item of body.items) {
+    let customerId;
+    try {
+      customerId = positiveInt(item.customer_id, 'customer_id');
+    } catch (error) {
+      items.push({ customer_id: item?.customer_id ?? null, action: 'rejected', error: error.message });
+      continue;
+    }
+    const email = clean(item.email).toLowerCase();
+    if (!email) {
+      items.push({ customer_id: customerId, action: 'rejected', error: 'email is required' });
+      continue;
+    }
+    if (email.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      items.push({ customer_id: customerId, action: 'rejected', error: 'email must be a valid address' });
+      continue;
+    }
+    const customer = await dbOperations.get('SELECT id FROM customers WHERE id = ?', [customerId]);
+    if (!customer) {
+      items.push({ customer_id: customerId, action: 'rejected', error: 'KOL not found' });
+      continue;
+    }
+    await dbOperations.run('UPDATE customers SET email = ?, updated_at = NOW() WHERE id = ?', [email, customerId]);
+    items.push({ customer_id: customerId, action: 'updated', email });
+  }
+  const response = { items };
+  await saveRequestResult(requestId, response);
+  return response;
+}
+
 async function batchDrafts(campaignId, body) {
   await assertActiveCampaign(campaignId);
   if (body.kind && body.kind !== 'first_touch') throw new Error('Only first_touch drafts are supported');
@@ -553,6 +592,7 @@ async function listDrafts(campaignId, query) {
 module.exports = {
   searchKols,
   batchKols,
+  batchUpdateKolEmail,
   batchCandidates,
   batchDrafts,
   listDrafts,
