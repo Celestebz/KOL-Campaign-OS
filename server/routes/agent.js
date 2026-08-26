@@ -1,11 +1,34 @@
 const express = require('express');
 const { dbOperations } = require('../database');
 const agentCampaignOps = require('../services/agentCampaignOps');
+const { getTikTokMedianExposure } = require('../services/tiktokCreatorMetrics');
 const { requireAgentToken } = require('../middleware/agentAuth');
 
 const router = express.Router();
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
 
+
+const creatorMetricRequests = new Map();
+function allowCreatorMetricRequest(req) {
+  const key = req.ip || req.socket?.remoteAddress || 'unknown';
+  const now = Date.now();
+  const recent = (creatorMetricRequests.get(key) || []).filter((time) => now - time < 60000);
+  if (recent.length >= 5) return false;
+  recent.push(now);
+  creatorMetricRequests.set(key, recent);
+  return true;
+}
+
+router.get('/creator-metrics/tiktok', async (req, res) => {
+  try {
+    if (!allowCreatorMetricRequest(req)) return res.status(429).json({ success: false, error: 'Too many creator metric requests; retry in one minute' });
+    const input = req.query.profile_url || req.query.handle;
+    const data = await getTikTokMedianExposure(input);
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message });
+  }
+});
 function clean(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
