@@ -4,6 +4,7 @@ const { toV3ChannelItem, toV3VideoItems } = require('../utils/scrapecreatorsYout
 
 const GOOGLE_PROVIDER = 'youtube.google_official';
 const MATON_PROVIDER = 'youtube.maton_gateway';
+const SNAPSHOT_VIDEO_LIMIT = 10;
 
 function scIdentityFromLookup(lookup = {}) {
   if (lookup.id) return { channelId: lookup.id };
@@ -27,6 +28,20 @@ function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+function isIncludedLongVideo(item = {}) {
+  const seconds = durationSeconds(item.contentDetails?.duration);
+  const isLive = item.snippet?.liveBroadcastContent !== 'none' || Boolean(item.liveStreamingDetails);
+  const isShort = seconds > 0 && seconds <= 180;
+  return !isLive && !isShort;
+}
+
+function latestLongVideoItems(items = [], limit = SNAPSHOT_VIDEO_LIMIT) {
+  return [...items]
+    .filter(isIncludedLongVideo)
+    .sort((a, b) => new Date(b.snippet?.publishedAt || 0).getTime() - new Date(a.snippet?.publishedAt || 0).getTime())
+    .slice(0, limit);
 }
 
 async function fetchJson(url, options = {}) {
@@ -105,22 +120,17 @@ async function runYoutubeIntakeSnapshot(customerId) {
       const channelData = await scYoutube.channel(config.setting, identity);
       channel = toV3ChannelItem(channelData);
       if (!channel.id) throw new Error('YouTube 未找到对应频道');
-      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-      // SC channel-videos 单页 30 条，翻页已实测可用：上限 3 页，遇到早于截止线的条目即停
+      // SC channel-videos 单页 30 条；继续翻页，直到收集到最近 10 条长视频。
       const scItems = [];
       let continuationToken = '';
       for (let page = 0; page < 3; page += 1) {
         const data = await scYoutube.channelVideos(config.setting, identity, continuationToken);
         const pageItems = toV3VideoItems(data);
         scItems.push(...pageItems);
-        const reachedCutoff = pageItems.some((item) => {
-          const published = new Date(item.snippet.publishedAt || 0).getTime();
-          return published > 0 && published < cutoff;
-        });
         continuationToken = String(data.continuationToken || '').trim();
-        if (reachedCutoff || !continuationToken || !pageItems.length) break;
+        if (latestLongVideoItems(scItems).length >= SNAPSHOT_VIDEO_LIMIT || !continuationToken || !pageItems.length) break;
       }
-      videoItems = scItems.filter((item) => new Date(item.snippet.publishedAt || 0).getTime() >= cutoff);
+      videoItems = latestLongVideoItems(scItems);
     } else {
       let lookup = channelLookup(profileUrl);
       if (lookup.videoId) {
@@ -139,8 +149,8 @@ async function runYoutubeIntakeSnapshot(customerId) {
       const uploads = channel.contentDetails?.relatedPlaylists?.uploads;
       if (!uploads) throw new Error('YouTube 频道没有 uploads 播放列表');
 
-      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-      const playlistItems = [];
+      // Maton / Google v3：逐页补齐详情，直到得到最近 10 条长视频。
+      videoItems = [];
       let pageToken = '';
       for (let page = 0; page < 10; page += 1) {
         const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
@@ -149,26 +159,18 @@ async function runYoutubeIntakeSnapshot(customerId) {
           config.options
         );
         const items = playlistData.items || [];
-        playlistItems.push(...items);
-        const reachedCutoff = items.some((item) => {
-          const publishedAt = item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt;
-          return publishedAt && new Date(publishedAt).getTime() < cutoff;
-        });
+        const ids = items.map((item) => item.contentDetails?.videoId).filter(Boolean);
+        if (ids.length) {
+          const details = await fetchJson(
+            config.endpoint('videos', `part=snippet,statistics,contentDetails,liveStreamingDetails&id=${encodeURIComponent(ids.join(','))}`),
+            config.options
+          );
+          videoItems.push(...(details.items || []));
+        }
         pageToken = playlistData.nextPageToken || '';
-        if (reachedCutoff || !pageToken) break;
+        if (latestLongVideoItems(videoItems).length >= SNAPSHOT_VIDEO_LIMIT || !pageToken || !items.length) break;
       }
-      const recent = playlistItems.filter((item) => new Date(item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt).getTime() >= cutoff);
-      const ids = recent.map((item) => item.contentDetails?.videoId).filter(Boolean);
-      // videos.list accepts at most 50 ids per call; chunk to avoid invalidFilters on busy channels.
-      videoItems = [];
-      for (let offset = 0; offset < ids.length; offset += 50) {
-        const chunk = ids.slice(offset, offset + 50);
-        const chunkData = await fetchJson(
-          config.endpoint('videos', `part=snippet,statistics,contentDetails,liveStreamingDetails&id=${encodeURIComponent(chunk.join(','))}`),
-          config.options
-        );
-        videoItems.push(...(chunkData.items || []));
-      }
+      videoItems = latestLongVideoItems(videoItems);
     }
     const videosData = { items: videoItems };
     const snapshotAt = new Date();
@@ -235,4 +237,4 @@ async function runYoutubeIntakeSnapshot(customerId) {
   }
 }
 
-module.exports = { runYoutubeIntakeSnapshot, durationSeconds, median, scIdentityFromLookup };
+module.exports = { runYoutubeIntakeSnapshot, durationSeconds, median, scIdentityFromLookup, latestLongVideoItems };

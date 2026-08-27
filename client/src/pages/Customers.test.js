@@ -73,7 +73,7 @@ test('shows platform home links and follower counts in the KOL management table'
   expect(screen.queryByRole('columnheader', { name: '合作平台' })).not.toBeInTheDocument();
   expect(screen.queryByRole('columnheader', { name: '平台账号名' })).not.toBeInTheDocument();
   expect(screen.queryByRole('columnheader', { name: '平台主页链接' })).not.toBeInTheDocument();
-  expect(screen.getByRole('columnheader', { name: 'YouTube近30天数据' })).toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'YouTube近10条数据' })).toBeInTheDocument();
   expect(screen.queryByRole('columnheader', { name: '近30天平均曝光' })).not.toBeInTheDocument();
   expect(screen.queryByRole('columnheader', { name: '近30天中位曝光' })).not.toBeInTheDocument();
   expect(screen.queryByRole('columnheader', { name: '近30天作品数' })).not.toBeInTheDocument();

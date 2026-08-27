@@ -340,7 +340,7 @@ const Customers = () => {
       } else if (feishuSync?.candidate_count > 0) {
         message.success(`YouTube数据已更新，并同步 ${feishuSync.candidate_count} 条候选记录`);
       } else {
-        message.success('YouTube近30天数据已更新');
+        message.success('YouTube近10条长视频数据已更新');
       }
     } catch (error) {
       message.error(error.response?.data?.error || 'YouTube数据抓取失败');
@@ -545,7 +545,7 @@ const Customers = () => {
     { title: 'YouTube', key: 'youtube', width: 130, render: (_, record) => platformLink(record.youtube_url, record.youtube_followers) },
     { title: 'Instagram', key: 'instagram', width: 130, render: (_, record) => platformLink(record.instagram_url, record.instagram_followers) },
     { title: 'TikTok', key: 'tiktok', width: 130, render: (_, record) => platformLink(record.tiktok_url, record.tiktok_followers) },
-    { title: 'YouTube近30天数据', key: 'youtube_recent_metrics', width: 180, render: (_, record) => youtubeRecentMetrics(record) },
+    { title: 'YouTube近10条数据', key: 'youtube_recent_metrics', width: 180, render: (_, record) => youtubeRecentMetrics(record) },
     { title: '合作状态', key: 'cooperation_status', width: 125, render: (_, record) => record.cooperation_status === 'do_not_contact' ? <Tag color="red">不建议合作</Tag> : <Tag color="green">可合作</Tag> },
     { title: '匹配SKU', dataIndex: 'current_target_sku', key: 'current_target_sku', width: 125, render: (value) => value || '-' },
     { title: 'SKU匹配分', dataIndex: 'current_fit_score', key: 'current_fit_score', width: 105, align: 'right', render: (value) => value ?? '-' },
@@ -703,7 +703,7 @@ const Customers = () => {
             </Descriptions>
             <div><h3>平台账号</h3>{accountLinks(drawerKol.platform_accounts)}</div>
             <div>
-              <h3>YouTube近30天长视频快照</h3>
+              <h3>YouTube长视频快照（近10条）</h3>
               <Descriptions bordered column={2} size="small">
                 <Descriptions.Item label="作品数">{youtubeSnapshot?.posts_30d ?? '-'}</Descriptions.Item>
                 <Descriptions.Item label="平均曝光">{youtubeSnapshot?.avg_views_30d ?? '-'}</Descriptions.Item>
@@ -712,7 +712,7 @@ const Customers = () => {
                 <Descriptions.Item label="更新时间">{youtubeSnapshot?.updated_at || '-'}</Descriptions.Item>
                 <Descriptions.Item label="抓取状态">{youtubeSnapshot?.status || '待抓取'}</Descriptions.Item>
                 <Descriptions.Item label="失败原因" span={2}>{youtubeSnapshot?.error || '-'}</Descriptions.Item>
-                <Descriptions.Item label="数据口径" span={2}>近30天YouTube长视频，不含Shorts和直播</Descriptions.Item>
+                <Descriptions.Item label="数据口径" span={2}>最近发布的10条YouTube长视频，不含Shorts和直播</Descriptions.Item>
               </Descriptions>
               <Table size="small" pagination={false} rowKey="youtube_video_id" dataSource={youtubeSnapshot?.videos || []} columns={[
                 { title: '视频', dataIndex: 'title', render: (value, row) => <a href={row.video_url} target="_blank" rel="noreferrer">{value || row.youtube_video_id}</a> },
