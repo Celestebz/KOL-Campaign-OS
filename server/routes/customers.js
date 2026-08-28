@@ -1019,14 +1019,7 @@ router.post('/:id/candidate-pool', async (req, res) => {
 router.post('/:id/youtube-snapshot', async (req, res) => {
   try {
     const data = await runYoutubeIntakeSnapshot(Number(req.params.id));
-    let feishu_sync = null;
-    try {
-      const { syncRefreshedKolAndCandidates } = require('./sync');
-      feishu_sync = await syncRefreshedKolAndCandidates(Number(req.params.id));
-    } catch (error) {
-      feishu_sync = { error: error.message };
-    }
-    res.json({ success: true, data: { ...data, feishu_sync } });
+    res.json({ success: true, data });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
@@ -1058,14 +1051,7 @@ router.post('/:id/social-snapshot/:platform', async (req, res) => {
   try {
     const platform = String(req.params.platform || '').toLowerCase();
     const data = await runSocialIntakeSnapshot(Number(req.params.id), platform);
-    let feishu_sync = null;
-    try {
-      const { syncRefreshedKolAndCandidates } = require('./sync');
-      feishu_sync = await syncRefreshedKolAndCandidates(Number(req.params.id));
-    } catch (error) {
-      feishu_sync = { error: error.message };
-    }
-    res.json({ success: true, data: { ...data, feishu_sync } });
+    res.json({ success: true, data });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }

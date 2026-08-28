@@ -344,7 +344,7 @@ const Customers = () => {
     setSnapshotRefreshing(true);
     try {
       const base = platform === 'youtube' ? 'youtube-snapshot' : `social-snapshot/${platform}`;
-      const refreshResponse = await axios.post(`/api/customers/${drawerKol.id}/${base}`);
+      await axios.post(`/api/customers/${drawerKol.id}/${base}`);
       const [response] = await Promise.all([
         axios.get(`/api/customers/${drawerKol.id}/${base}`),
         fetchKols()
@@ -354,15 +354,8 @@ const Customers = () => {
         ? { ...raw, posts: raw.posts_30d, avg_views: raw.avg_views_30d, median_views: raw.median_views_30d }
         : raw;
       setPlatformSnapshots((current) => ({ ...current, [platform]: snapshot }));
-      const feishuSync = refreshResponse.data?.data?.feishu_sync;
       const label = ({ youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' })[platform];
-      if (feishuSync?.error || feishuSync?.failed_count > 0) {
-        message.warning(`${label}数据已更新，飞书联动同步失败，可稍后重试`);
-      } else if (feishuSync?.candidate_count > 0) {
-        message.success(`${label}数据已更新，并同步 ${feishuSync.candidate_count} 条候选记录`);
-      } else {
-        message.success(`${label}近10条视频数据已更新`);
-      }
+      message.success(`${label}近10条视频数据已更新`);
     } catch (error) {
       message.error(error.response?.data?.error || '平台数据抓取失败');
     } finally {
