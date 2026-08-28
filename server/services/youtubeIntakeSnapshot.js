@@ -224,7 +224,7 @@ async function runYoutubeIntakeSnapshot(customerId) {
        WHERE customer_id = ? AND project_status IN ('candidate', 'pending_confirmation')`,
       [aggregate.averageViews, aggregate.medianViews, aggregate.posts, aggregate.engagementRate, snapshotAt, customerId]
     );
-    if (account && followers) {
+    if (account && followers !== null) {
       await dbOperations.run('UPDATE kol_platform_accounts SET followers_count = ?, followers_text = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [followers, String(followers), account.id]);
     }
     return { customerId, profileUrl, followers, fetched: videos.length, excluded: videos.length - included.length, ...aggregate, updatedAt: snapshotAt };

@@ -345,8 +345,9 @@ const Customers = () => {
     try {
       const base = platform === 'youtube' ? 'youtube-snapshot' : `social-snapshot/${platform}`;
       await axios.post(`/api/customers/${drawerKol.id}/${base}`);
-      const [response] = await Promise.all([
+      const [response, detail] = await Promise.all([
         axios.get(`/api/customers/${drawerKol.id}/${base}`),
+        axios.get(`/api/customers/${drawerKol.id}`),
         fetchKols()
       ]);
       const raw = response.data.data || {};
@@ -354,6 +355,7 @@ const Customers = () => {
         ? { ...raw, posts: raw.posts_30d, avg_views: raw.avg_views_30d, median_views: raw.median_views_30d }
         : raw;
       setPlatformSnapshots((current) => ({ ...current, [platform]: snapshot }));
+      setDrawerKol(detail.data.data);
       const label = ({ youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' })[platform];
       message.success(`${label}近10条视频数据已更新`);
     } catch (error) {

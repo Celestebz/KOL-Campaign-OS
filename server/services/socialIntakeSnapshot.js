@@ -129,6 +129,12 @@ async function runSocialIntakeSnapshot(customerId, platform) {
       await dbOperations.run('INSERT INTO kol_social_snapshot_videos (customer_id, platform, platform_video_id, title, video_url, published_at, play_count, like_count, comment_count, snapshot_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)', [customerId, platform, video.id, video.title, video.url, publishedAtDate(video.publishedAt), video.views, video.likes, video.comments, snapshotAt]);
     }
     await dbOperations.run('UPDATE customers SET ' + platform + '_avg_views_10 = ?, ' + platform + '_median_views_10 = ?, ' + platform + '_posts_10 = ?, ' + platform + "_engagement_rate_10 = ?, " + platform + "_snapshot_status = 'success', " + platform + '_snapshot_error = NULL, ' + platform + '_snapshot_updated_at = ?, ' + platform + '_followers = COALESCE(?, ' + platform + "_followers), sync_status = 'sync_pending' WHERE id = ?", [aggregate.averageViews, aggregate.medianViews, aggregate.posts, aggregate.engagementRate, snapshotAt, fetched.followers, customerId]);
+    if (account && fetched.followers !== null) {
+      await dbOperations.run(
+        'UPDATE kol_platform_accounts SET followers_count = ?, followers_text = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [fetched.followers, String(fetched.followers), account.id]
+      );
+    }
     return { customerId, platform, profileUrl, followers: fetched.followers, videos, ...aggregate, updatedAt: snapshotAt };
   } catch (error) {
     await dbOperations.run('UPDATE customers SET ' + platform + "_snapshot_status = 'failed', " + platform + '_snapshot_error = ?, ' + platform + '_snapshot_updated_at = CURRENT_TIMESTAMP WHERE id = ?', [error.message, customerId]);
