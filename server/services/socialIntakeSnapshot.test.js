@@ -1,11 +1,19 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { median, profileHandle, instagramVideo, tiktokVideo } = require('./socialIntakeSnapshot');
+const { median, publishedAtDate, profileHandle, instagramVideo, tiktokVideo } = require('./socialIntakeSnapshot');
 
 test('median calculates odd and even platform exposure values', () => {
   assert.equal(median([30, 10, 20]), 20);
   assert.equal(median([10, 20, 30, 40]), 25);
   assert.equal(median([]), null);
+});
+
+test('publishedAtDate converts ISO timestamps to a MySQL-bindable Date', () => {
+  const value = publishedAtDate('2026-08-22T16:34:12.000Z');
+  assert.ok(value instanceof Date);
+  assert.equal(value.toISOString(), '2026-08-22T16:34:12.000Z');
+  assert.equal(publishedAtDate('not-a-date'), null);
+  assert.equal(publishedAtDate(null), null);
 });
 
 test('profileHandle normalizes Instagram and TikTok profile URLs', () => {

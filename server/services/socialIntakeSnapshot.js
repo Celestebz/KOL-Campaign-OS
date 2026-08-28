@@ -5,6 +5,11 @@ const LIMIT = 10;
 
 function clean(value) { return String(value ?? '').trim(); }
 function number(value) { const n = Number(value); return Number.isFinite(n) ? n : 0; }
+function publishedAtDate(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 function median(values) {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -121,7 +126,7 @@ async function runSocialIntakeSnapshot(customerId, platform) {
     const aggregate = { posts: videos.length, averageViews: videos.length ? Math.round(totalViews / videos.length) : null, medianViews: median(views), engagementRate: totalViews ? totalEngagement / totalViews : null };
     await dbOperations.run('DELETE FROM kol_social_snapshot_videos WHERE customer_id = ? AND platform = ?', [customerId, platform]);
     for (const video of videos) {
-      await dbOperations.run('INSERT INTO kol_social_snapshot_videos (customer_id, platform, platform_video_id, title, video_url, published_at, play_count, like_count, comment_count, snapshot_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)', [customerId, platform, video.id, video.title, video.url, video.publishedAt, video.views, video.likes, video.comments, snapshotAt]);
+      await dbOperations.run('INSERT INTO kol_social_snapshot_videos (customer_id, platform, platform_video_id, title, video_url, published_at, play_count, like_count, comment_count, snapshot_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)', [customerId, platform, video.id, video.title, video.url, publishedAtDate(video.publishedAt), video.views, video.likes, video.comments, snapshotAt]);
     }
     await dbOperations.run('UPDATE customers SET ' + platform + '_avg_views_10 = ?, ' + platform + '_median_views_10 = ?, ' + platform + '_posts_10 = ?, ' + platform + "_engagement_rate_10 = ?, " + platform + "_snapshot_status = 'success', " + platform + '_snapshot_error = NULL, ' + platform + '_snapshot_updated_at = ?, ' + platform + '_followers = COALESCE(?, ' + platform + "_followers), sync_status = 'sync_pending' WHERE id = ?", [aggregate.averageViews, aggregate.medianViews, aggregate.posts, aggregate.engagementRate, snapshotAt, fetched.followers, customerId]);
     return { customerId, platform, profileUrl, followers: fetched.followers, videos, ...aggregate, updatedAt: snapshotAt };
@@ -131,4 +136,4 @@ async function runSocialIntakeSnapshot(customerId, platform) {
   }
 }
 
-module.exports = { LIMIT, median, profileHandle, instagramVideo, tiktokVideo, runSocialIntakeSnapshot };
+module.exports = { LIMIT, median, publishedAtDate, profileHandle, instagramVideo, tiktokVideo, runSocialIntakeSnapshot };
