@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, message, Modal, Popconfirm, Select, Space, Spin, Statistic, Table, Tag, Upload } from 'antd';
+import { Alert, Button, Card, Collapse, Descriptions, Drawer, Empty, Form, Input, message, Modal, Popconfirm, Select, Space, Spin, Statistic, Table, Tabs, Tag, Upload } from 'antd';
 import {
   CloudDownloadOutlined,
   CloudUploadOutlined,
@@ -74,8 +74,9 @@ const Customers = () => {
   const [filterOptions, setFilterOptions] = useState({ countries: [], platforms: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerKol, setDrawerKol] = useState(null);
-  const [youtubeSnapshot, setYoutubeSnapshot] = useState(null);
-  const [youtubeRefreshing, setYoutubeRefreshing] = useState(false);
+  const [platformSnapshots, setPlatformSnapshots] = useState({});
+  const [activeSnapshotPlatform, setActiveSnapshotPlatform] = useState('youtube');
+  const [snapshotRefreshing, setSnapshotRefreshing] = useState(false);
   const [projectHistory, setProjectHistory] = useState([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [drawerError, setDrawerError] = useState('');
@@ -143,19 +144,32 @@ const Customers = () => {
     const requestId = ++drawerRequest.current;
     setDrawerOpen(true);
     setDrawerKol(record);
+    const listedPlatforms = new Set((record.platform_accounts || []).map((item) => String(item.platform || '').toLowerCase()));
+    setActiveSnapshotPlatform(
+      record.youtube_url || listedPlatforms.has('youtube') ? 'youtube'
+        : record.instagram_url || listedPlatforms.has('instagram') ? 'instagram'
+          : record.tiktok_url || listedPlatforms.has('tiktok') ? 'tiktok' : 'youtube'
+    );
     setProjectHistory([]);
     setDrawerError('');
     setDrawerLoading(true);
     try {
-      const [detail, history, snapshot] = await Promise.all([
+      const [detail, history, youtube, instagram, tiktok] = await Promise.all([
         axios.get(`/api/customers/${record.id}`),
         axios.get(`/api/customers/${record.id}/project-history`),
-        axios.get(`/api/customers/${record.id}/youtube-snapshot`)
+        axios.get(`/api/customers/${record.id}/youtube-snapshot`),
+        axios.get(`/api/customers/${record.id}/social-snapshot/instagram`),
+        axios.get(`/api/customers/${record.id}/social-snapshot/tiktok`)
       ]);
       if (requestId !== drawerRequest.current) return;
       setDrawerKol(detail.data.data);
       setProjectHistory(history.data.data || []);
-      setYoutubeSnapshot(snapshot.data.data || null);
+      const yt = youtube.data.data || {};
+      setPlatformSnapshots({
+        youtube: { ...yt, posts: yt.posts_30d, avg_views: yt.avg_views_30d, median_views: yt.median_views_30d },
+        instagram: instagram.data.data || {},
+        tiktok: tiktok.data.data || {}
+      });
     } catch (error) {
       if (requestId === drawerRequest.current) setDrawerError('详情加载失败，请稍后重试');
     } finally {
@@ -324,28 +338,35 @@ const Customers = () => {
     }
   };
 
-  const refreshYoutubeSnapshot = async () => {
+  const refreshPlatformSnapshot = async () => {
     if (!drawerKol) return;
-    setYoutubeRefreshing(true);
+    const platform = activeSnapshotPlatform;
+    setSnapshotRefreshing(true);
     try {
-      const refreshResponse = await axios.post(`/api/customers/${drawerKol.id}/youtube-snapshot`);
-      const [snapshot] = await Promise.all([
-        axios.get(`/api/customers/${drawerKol.id}/youtube-snapshot`),
+      const base = platform === 'youtube' ? 'youtube-snapshot' : `social-snapshot/${platform}`;
+      const refreshResponse = await axios.post(`/api/customers/${drawerKol.id}/${base}`);
+      const [response] = await Promise.all([
+        axios.get(`/api/customers/${drawerKol.id}/${base}`),
         fetchKols()
       ]);
-      setYoutubeSnapshot(snapshot.data.data || null);
+      const raw = response.data.data || {};
+      const snapshot = platform === 'youtube'
+        ? { ...raw, posts: raw.posts_30d, avg_views: raw.avg_views_30d, median_views: raw.median_views_30d }
+        : raw;
+      setPlatformSnapshots((current) => ({ ...current, [platform]: snapshot }));
       const feishuSync = refreshResponse.data?.data?.feishu_sync;
+      const label = ({ youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' })[platform];
       if (feishuSync?.error || feishuSync?.failed_count > 0) {
-        message.warning('YouTube数据已更新，飞书联动同步失败，可稍后重试');
+        message.warning(`${label}数据已更新，飞书联动同步失败，可稍后重试`);
       } else if (feishuSync?.candidate_count > 0) {
-        message.success(`YouTube数据已更新，并同步 ${feishuSync.candidate_count} 条候选记录`);
+        message.success(`${label}数据已更新，并同步 ${feishuSync.candidate_count} 条候选记录`);
       } else {
-        message.success('YouTube近10条长视频数据已更新');
+        message.success(`${label}近10条视频数据已更新`);
       }
     } catch (error) {
-      message.error(error.response?.data?.error || 'YouTube数据抓取失败');
+      message.error(error.response?.data?.error || '平台数据抓取失败');
     } finally {
-      setYoutubeRefreshing(false);
+      setSnapshotRefreshing(false);
     }
   };
 
@@ -562,6 +583,18 @@ const Customers = () => {
     columns[columns.length - 1]
   ];
 
+  const snapshotPlatformLabels = { youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' };
+  const activeSnapshot = platformSnapshots[activeSnapshotPlatform] || {};
+  const snapshotScope = {
+    youtube: '最近发布的10条YouTube长视频，不含Shorts和直播',
+    instagram: '最近发布的10条Instagram Reels；公开播放量仅含Instagram，不含Facebook联合播放',
+    tiktok: '最近发布的10条TikTok公开视频，不含图文内容'
+  }[activeSnapshotPlatform];
+  const snapshotAccounts = new Set((drawerKol?.platform_accounts || []).map((item) => String(item.platform || '').toLowerCase()));
+  for (const platform of ['youtube', 'instagram', 'tiktok']) {
+    if (drawerKol?.[platform + '_url']) snapshotAccounts.add(platform);
+  }
+
   return (
     <div>
       <div className="page-header">
@@ -683,7 +716,10 @@ const Customers = () => {
 
       <Drawer title={drawerKol?.name || 'KOL 详情'} width={720} open={drawerOpen} onClose={closeDrawer}
         extra={drawerKol && <Space>
-          <Button icon={<ReloadOutlined />} loading={youtubeRefreshing} onClick={refreshYoutubeSnapshot}>重新抓取YouTube</Button>
+          <Button icon={<ReloadOutlined />} loading={snapshotRefreshing} onClick={refreshPlatformSnapshot}
+            disabled={!snapshotAccounts.has(activeSnapshotPlatform)}>
+            抓取{snapshotPlatformLabels[activeSnapshotPlatform]}
+          </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openAddToProject([drawerKol.id])}>加入项目候选池</Button>
           <Button icon={<EditOutlined />} onClick={() => handleEdit(drawerKol)}>编辑基本资料</Button>
         </Space>}>
@@ -703,25 +739,37 @@ const Customers = () => {
             </Descriptions>
             <div><h3>平台账号</h3>{accountLinks(drawerKol.platform_accounts)}</div>
             <div>
-              <h3>YouTube长视频快照（近10条）</h3>
+              <h3>平台内容表现</h3>
+              <Tabs activeKey={activeSnapshotPlatform} onChange={setActiveSnapshotPlatform}
+                items={['youtube', 'instagram', 'tiktok'].map((platform) => ({
+                  key: platform,
+                  label: snapshotPlatformLabels[platform],
+                  disabled: !snapshotAccounts.has(platform)
+                }))} />
+              {!snapshotAccounts.has(activeSnapshotPlatform) ? <Empty description={`未填写${snapshotPlatformLabels[activeSnapshotPlatform]}主页`} /> : <>
+              <h3>{snapshotPlatformLabels[activeSnapshotPlatform]}内容快照（近10条）</h3>
               <Descriptions bordered column={2} size="small">
-                <Descriptions.Item label="作品数">{youtubeSnapshot?.posts_30d ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="平均曝光">{youtubeSnapshot?.avg_views_30d ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="中位曝光">{youtubeSnapshot?.median_views_30d ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="互动率">{youtubeSnapshot?.engagement_rate_30d != null ? `${(Number(youtubeSnapshot.engagement_rate_30d) * 100).toFixed(2)}%` : '-'}</Descriptions.Item>
-                <Descriptions.Item label="更新时间">{youtubeSnapshot?.updated_at || '-'}</Descriptions.Item>
-                <Descriptions.Item label="抓取状态">{youtubeSnapshot?.status || '待抓取'}</Descriptions.Item>
-                <Descriptions.Item label="失败原因" span={2}>{youtubeSnapshot?.error || '-'}</Descriptions.Item>
-                <Descriptions.Item label="数据口径" span={2}>最近发布的10条YouTube长视频，不含Shorts和直播</Descriptions.Item>
+                <Descriptions.Item label="作品数">{activeSnapshot.posts ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="平均曝光">{activeSnapshot.avg_views ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="中位曝光">{activeSnapshot.median_views ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="互动率">{activeSnapshot.engagement_rate != null ? `${(Number(activeSnapshot.engagement_rate) * 100).toFixed(2)}%` : '-'}</Descriptions.Item>
+                <Descriptions.Item label="更新时间">{activeSnapshot.updated_at || '-'}</Descriptions.Item>
+                <Descriptions.Item label="抓取状态">{activeSnapshot.status || '待抓取'}</Descriptions.Item>
+                <Descriptions.Item label="失败原因" span={2}>{activeSnapshot.error || '-'}</Descriptions.Item>
+                <Descriptions.Item label="数据口径" span={2}>{snapshotScope}</Descriptions.Item>
               </Descriptions>
-              <Table size="small" pagination={false} rowKey="youtube_video_id" dataSource={youtubeSnapshot?.videos || []} columns={[
-                { title: '视频', dataIndex: 'title', render: (value, row) => <a href={row.video_url} target="_blank" rel="noreferrer">{value || row.youtube_video_id}</a> },
+              <Collapse ghost items={[{
+                key: 'details',
+                label: `查看${activeSnapshot.videos?.length || 0}条内容明细`,
+                children: <Table size="small" pagination={false} rowKey={(row) => row.youtube_video_id || row.platform_video_id} dataSource={activeSnapshot.videos || []} columns={[
+                { title: '视频', dataIndex: 'title', render: (value, row) => <a href={row.video_url} target="_blank" rel="noreferrer">{value || row.youtube_video_id || row.platform_video_id}</a> },
                 { title: '发布时间', dataIndex: 'published_at', width: 170 },
                 { title: '播放', dataIndex: 'play_count', width: 100 },
                 { title: '点赞', dataIndex: 'like_count', width: 90 },
-                { title: '评论', dataIndex: 'comment_count', width: 90 },
-                { title: '计入', dataIndex: 'included_in_aggregate', width: 80, render: (value, row) => value ? '是' : `否（${row.exclusion_reason || '排除'}）` }
-              ]} />
+                { title: '评论', dataIndex: 'comment_count', width: 90 }
+                ]} />
+              }]} />
+              </>}
             </div>
             <div>
               <h3>项目进度汇总</h3>

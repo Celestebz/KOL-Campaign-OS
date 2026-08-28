@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { dbOperations } = require('../database');
 const { runYoutubeIntakeSnapshot } = require('../services/youtubeIntakeSnapshot');
+const { runSocialIntakeSnapshot } = require('../services/socialIntakeSnapshot');
 const { parseKolProfileUrl } = require('../utils/kolProfileUrl');
 
 const router = express.Router();
@@ -1046,6 +1047,46 @@ router.get('/:id/youtube-snapshot', async (req, res) => {
        comment_count, is_short, is_live, included_in_aggregate, exclusion_reason, snapshot_at
        FROM kol_youtube_snapshot_videos WHERE customer_id = ? ORDER BY published_at DESC`,
       [req.params.id]
+    );
+    res.json({ success: true, data: { ...customer, videos } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/social-snapshot/:platform', async (req, res) => {
+  try {
+    const platform = String(req.params.platform || '').toLowerCase();
+    const data = await runSocialIntakeSnapshot(Number(req.params.id), platform);
+    let feishu_sync = null;
+    try {
+      const { syncRefreshedKolAndCandidates } = require('./sync');
+      feishu_sync = await syncRefreshedKolAndCandidates(Number(req.params.id));
+    } catch (error) {
+      feishu_sync = { error: error.message };
+    }
+    res.json({ success: true, data: { ...data, feishu_sync } });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/:id/social-snapshot/:platform', async (req, res) => {
+  try {
+    const platform = String(req.params.platform || '').toLowerCase();
+    if (!['instagram', 'tiktok'].includes(platform)) return res.status(400).json({ success: false, error: '不支持的平台' });
+    const customer = await dbOperations.get(
+      'SELECT ' + platform + '_avg_views_10 avg_views, ' + platform + '_median_views_10 median_views, ' +
+      platform + '_posts_10 posts, ' + platform + '_engagement_rate_10 engagement_rate, ' +
+      platform + '_snapshot_status status, ' + platform + '_snapshot_error error, ' +
+      platform + '_snapshot_updated_at updated_at FROM customers WHERE id = ?',
+      [req.params.id]
+    );
+    if (!customer) return res.status(404).json({ success: false, error: 'KOL 不存在' });
+    const videos = await dbOperations.query(
+      'SELECT platform_video_id, title, video_url, published_at, play_count, like_count, comment_count, snapshot_at ' +
+      'FROM kol_social_snapshot_videos WHERE customer_id = ? AND platform = ? ORDER BY published_at DESC',
+      [req.params.id, platform]
     );
     res.json({ success: true, data: { ...customer, videos } });
   } catch (error) {
