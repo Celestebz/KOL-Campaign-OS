@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { median, publishedAtDate, profileHandle, instagramVideo, tiktokVideo } = require('./socialIntakeSnapshot');
+const { median, publishedAtDate, profileHandle, instagramFollowers, instagramVideo, tiktokVideo } = require('./socialIntakeSnapshot');
 
 test('median calculates odd and even platform exposure values', () => {
   assert.equal(median([30, 10, 20]), 20);
@@ -19,6 +19,12 @@ test('publishedAtDate converts ISO timestamps to a MySQL-bindable Date', () => {
 test('profileHandle normalizes Instagram and TikTok profile URLs', () => {
   assert.equal(profileHandle('instagram', 'https://www.instagram.com/demo.creator/'), 'demo.creator');
   assert.equal(profileHandle('tiktok', 'https://www.tiktok.com/@demo_creator'), 'demo_creator');
+});
+
+test('instagramFollowers reads the profile endpoint follower count', () => {
+  assert.equal(instagramFollowers({ data: { user: { edge_followed_by: { count: 25116 } } } }), 25116);
+  assert.equal(instagramFollowers({ data: { user: { follower_count: 0 } } }), 0);
+  assert.equal(instagramFollowers({ data: { user: {} } }), null);
 });
 
 test('instagramVideo maps Reels and rejects image posts', () => {

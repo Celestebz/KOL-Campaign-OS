@@ -66,12 +66,23 @@ function tiktokVideo(item, handle) {
     comments: number(item.statistics?.comment_count), handle
   };
 }
+function instagramFollowers(data = {}) {
+  const user = data.data?.user || data.user || {};
+  const value = user.edge_followed_by?.count ?? user.follower_count ?? user.followers_count ?? user.followers;
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 async function fetchInstagram(config, handle) {
   const base = clean(config.base_url || 'https://api.scrapecreators.com').replace(/\/+$/, '').replace(/\/v[12]$/, '');
+  const profileUrl = new URL(base + '/v1/instagram/profile');
+  profileUrl.searchParams.set('handle', handle);
+  profileUrl.searchParams.set('trim', 'true');
+  const profile = await fetchJson(profileUrl.toString(), config);
   const videos = [];
   const pinned = new Set();
   let cursor = '';
-  let followers = null;
+  const followers = instagramFollowers(profile);
   for (let page = 0; page < 5 && videos.length < LIMIT; page += 1) {
     const url = new URL(base + '/v2/instagram/user/posts');
     url.searchParams.set('handle', handle);
@@ -79,7 +90,6 @@ async function fetchInstagram(config, handle) {
     if (cursor) url.searchParams.set('next_max_id', cursor);
     const data = await fetchJson(url.toString(), config);
     for (const id of data.pinned_profile_grid_items_ids || []) pinned.add(String(id));
-    followers ||= number(data.user?.follower_count || data.user?.edge_followed_by?.count) || null;
     videos.push(...(data.items || []).map((item) => instagramVideo(item, handle)).filter(Boolean));
     const next = clean(data.next_max_id || data.nextMaxId);
     if (!next || next === cursor || !(data.items || []).length) break;
@@ -142,4 +152,4 @@ async function runSocialIntakeSnapshot(customerId, platform) {
   }
 }
 
-module.exports = { LIMIT, median, publishedAtDate, profileHandle, instagramVideo, tiktokVideo, runSocialIntakeSnapshot };
+module.exports = { LIMIT, median, publishedAtDate, profileHandle, instagramFollowers, instagramVideo, tiktokVideo, runSocialIntakeSnapshot };
