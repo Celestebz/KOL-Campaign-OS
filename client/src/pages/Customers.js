@@ -344,7 +344,7 @@ const Customers = () => {
     setSnapshotRefreshing(true);
     try {
       const base = platform === 'youtube' ? 'youtube-snapshot' : `social-snapshot/${platform}`;
-      await axios.post(`/api/customers/${drawerKol.id}/${base}`);
+      const refreshResponse = await axios.post(`/api/customers/${drawerKol.id}/${base}`);
       const [response, detail] = await Promise.all([
         axios.get(`/api/customers/${drawerKol.id}/${base}`),
         axios.get(`/api/customers/${drawerKol.id}`),
@@ -357,7 +357,9 @@ const Customers = () => {
       setPlatformSnapshots((current) => ({ ...current, [platform]: snapshot }));
       setDrawerKol(detail.data.data);
       const label = ({ youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' })[platform];
-      message.success(`${label}近10条视频数据已更新`);
+      const provider = refreshResponse.data?.data?.provider;
+      const providerLabel = ({ google_official: 'Google Official', maton_gateway: 'Maton Gateway', scrapecreators: 'ScrapeCreators' })[provider];
+      message.success(`${label}近10条视频数据已更新${providerLabel ? `（数据源：${providerLabel}）` : ''}`);
     } catch (error) {
       message.error(error.response?.data?.error || '平台数据抓取失败');
     } finally {

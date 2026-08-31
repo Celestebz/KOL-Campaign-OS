@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { durationSeconds, median, scIdentityFromLookup, latestLongVideoItems } = require('./youtubeIntakeSnapshot');
+const { durationSeconds, median, scIdentityFromLookup, latestLongVideoItems, hasInteractionStats, youtubeProviderOrder } = require('./youtubeIntakeSnapshot');
 
 test('durationSeconds parses YouTube ISO durations', () => {
   assert.equal(durationSeconds('PT29S'), 29);
@@ -37,4 +37,22 @@ test('latestLongVideoItems 按发布时间取最近 10 条长视频并排除 Sho
     'long-12', 'long-11', 'long-10', 'long-9', 'long-8',
     'long-7', 'long-6', 'long-5', 'long-4', 'long-3'
   ]);
+});
+
+test('hasInteractionStats distinguishes missing metrics from real zero values', () => {
+  assert.equal(hasInteractionStats([{ statistics: { viewCount: '100' } }]), false);
+  assert.equal(hasInteractionStats([{ statistics: { viewCount: '100', likeCount: '0' } }]), true);
+  assert.equal(hasInteractionStats([{ statistics: { viewCount: '100', commentCount: '0' } }]), true);
+});
+
+test('youtubeProviderOrder follows configured primary and enabled fallbacks', () => {
+  const selection = {
+    platforms: { youtube: { primary: 'maton_gateway', fallbacks: ['scrapecreators', 'maton_gateway'] } },
+    fallbackStrategy: { enableFallback: true }
+  };
+  assert.deepEqual(youtubeProviderOrder(selection), ['maton_gateway', 'scrapecreators']);
+  assert.deepEqual(
+    youtubeProviderOrder({ ...selection, fallbackStrategy: { enableFallback: false } }),
+    ['maton_gateway']
+  );
 });

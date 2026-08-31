@@ -1,6 +1,7 @@
 const { dbOperations } = require('../database');
 const scYoutube = require('./scrapecreatorsYoutube');
 const { toV3ChannelItem, toV3VideoItems } = require('../utils/scrapecreatorsYoutubeSearch');
+const { getSelection, getSetting, providerKey, legacyKeysFor } = require('./aiClient');
 
 const GOOGLE_PROVIDER = 'youtube.google_official';
 const MATON_PROVIDER = 'youtube.maton_gateway';
@@ -51,29 +52,60 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
-async function youtubeConfig() {
-  const google = await dbOperations.get('SELECT api_key, base_url, extra_config FROM api_settings WHERE provider = ?', [GOOGLE_PROVIDER]);
-  if (google?.api_key) {
+async function providerConfig(provider) {
+  if (provider === 'google_official') {
+    const google = await getSetting(GOOGLE_PROVIDER, legacyKeysFor('youtube', provider));
+    if (!google?.api_key) return null;
     return {
+      provider,
       mode: 'v3',
       endpoint(path, params) { return `${String(google.base_url || 'https://www.googleapis.com').replace(/\/$/, '')}/youtube/v3/${path}?${params}&key=${encodeURIComponent(google.api_key)}`; },
       options: {}
     };
   }
-  const maton = await dbOperations.get('SELECT api_key, base_url, extra_config FROM api_settings WHERE provider = ?', [MATON_PROVIDER]);
-  if (maton?.api_key) {
+  if (provider === 'maton_gateway') {
+    const maton = await getSetting(MATON_PROVIDER, legacyKeysFor('youtube', provider));
+    if (!maton?.api_key) return null;
     const extra = parseJson(maton.extra_config);
     const headers = { Authorization: `Bearer ${maton.api_key}` };
     if (extra.connection_id) headers['Maton-Connection'] = extra.connection_id;
     return {
+      provider,
       mode: 'v3',
       endpoint(path, params) { return `${String(maton.base_url || 'https://api.maton.ai').replace(/\/$/, '')}/youtube/youtube/v3/${path}?${params}`; },
       options: { headers }
     };
   }
-  const scSetting = await scYoutube.getYoutubeScrapeCreatorsSetting();
-  if (scSetting?.api_key) return { mode: 'scrapecreators', setting: scSetting };
-  throw new Error('Google Official / Maton Gateway / ScrapeCreators 均未配置');
+  if (provider === 'scrapecreators') {
+    const scSetting = await scYoutube.getYoutubeScrapeCreatorsSetting();
+    return scSetting?.api_key ? { provider, mode: 'scrapecreators', setting: scSetting } : null;
+  }
+  return null;
+}
+
+async function youtubeConfigs() {
+  const selection = await getSelection();
+  const providers = youtubeProviderOrder(selection);
+  const configs = [];
+  const missing = [];
+  for (const provider of providers) {
+    const config = await providerConfig(provider);
+    if (config) configs.push(config);
+    else missing.push(provider);
+  }
+  if (!configs.length) throw new Error(`YouTube 数据源未配置：${missing.join('、') || '无可用 Provider'}`);
+  return configs;
+}
+
+function youtubeProviderOrder(selection = {}) {
+  const youtube = selection.platforms?.youtube || {};
+  const order = [youtube.primary];
+  if (selection.fallbackStrategy?.enableFallback) order.push(...(youtube.fallbacks || []));
+  return [...new Set(order.filter(Boolean))];
+}
+
+function hasInteractionStats(items = []) {
+  return items.some((item) => item.statistics?.likeCount !== undefined || item.statistics?.commentCount !== undefined);
 }
 
 function channelLookup(profileUrl) {
@@ -105,10 +137,15 @@ async function runYoutubeIntakeSnapshot(customerId) {
   );
 
   try {
-    const config = await youtubeConfig();
+    const configs = await youtubeConfigs();
     let channel;
     let videoItems;
-    if (config.mode === 'scrapecreators') {
+    let usedProvider = '';
+    const attempts = [];
+    for (let sourceIndex = 0; sourceIndex < configs.length; sourceIndex += 1) {
+      const config = configs[sourceIndex];
+      try {
+        if (config.mode === 'scrapecreators') {
       let lookup = channelLookup(profileUrl);
       if (lookup.videoId) {
         const videoData = await scYoutube.video(config.setting, profileUrl);
@@ -130,8 +167,8 @@ async function runYoutubeIntakeSnapshot(customerId) {
         continuationToken = String(data.continuationToken || '').trim();
         if (latestLongVideoItems(scItems).length >= SNAPSHOT_VIDEO_LIMIT || !continuationToken || !pageItems.length) break;
       }
-      videoItems = latestLongVideoItems(scItems);
-    } else {
+          videoItems = latestLongVideoItems(scItems);
+        } else {
       let lookup = channelLookup(profileUrl);
       if (lookup.videoId) {
         const videoData = await fetchJson(
@@ -170,7 +207,19 @@ async function runYoutubeIntakeSnapshot(customerId) {
         pageToken = playlistData.nextPageToken || '';
         if (latestLongVideoItems(videoItems).length >= SNAPSHOT_VIDEO_LIMIT || !pageToken || !items.length) break;
       }
-      videoItems = latestLongVideoItems(videoItems);
+          videoItems = latestLongVideoItems(videoItems);
+        }
+        if (!hasInteractionStats(videoItems) && sourceIndex < configs.length - 1) {
+          throw new Error('返回的视频缺少点赞和评论统计');
+        }
+        usedProvider = config.provider;
+        break;
+      } catch (error) {
+        attempts.push(`${config.provider}: ${error.message}`);
+        channel = null;
+        videoItems = null;
+        if (sourceIndex === configs.length - 1) throw new Error(attempts.join('；'));
+      }
     }
     const videosData = { items: videoItems };
     const snapshotAt = new Date();
@@ -227,7 +276,7 @@ async function runYoutubeIntakeSnapshot(customerId) {
     if (account && followers !== null) {
       await dbOperations.run('UPDATE kol_platform_accounts SET followers_count = ?, followers_text = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [followers, String(followers), account.id]);
     }
-    return { customerId, profileUrl, followers, fetched: videos.length, excluded: videos.length - included.length, ...aggregate, updatedAt: snapshotAt };
+    return { customerId, profileUrl, followers, provider: usedProvider, fetched: videos.length, excluded: videos.length - included.length, ...aggregate, updatedAt: snapshotAt };
   } catch (error) {
     await dbOperations.run(
       "UPDATE customers SET youtube_snapshot_status = 'failed', youtube_snapshot_error = ?, youtube_snapshot_updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -237,4 +286,4 @@ async function runYoutubeIntakeSnapshot(customerId) {
   }
 }
 
-module.exports = { runYoutubeIntakeSnapshot, durationSeconds, median, scIdentityFromLookup, latestLongVideoItems };
+module.exports = { runYoutubeIntakeSnapshot, durationSeconds, median, scIdentityFromLookup, latestLongVideoItems, hasInteractionStats, youtubeProviderOrder };
