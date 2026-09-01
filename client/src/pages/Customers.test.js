@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import axios from 'axios';
 import { message } from 'antd';
-import Customers from './Customers';
+import Customers, { normalizeYoutubeSnapshot } from './Customers';
 
 jest.mock('axios', () => ({ get: jest.fn(), post: jest.fn() }));
 jest.mock('antd', () => {
@@ -39,6 +39,20 @@ function mockListRequests() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockListRequests();
+});
+
+test('maps the YouTube snapshot engagement rate for the detail view', () => {
+  expect(normalizeYoutubeSnapshot({
+    posts_30d: 10,
+    avg_views_30d: 42000,
+    median_views_30d: 38000,
+    engagement_rate_30d: 0.064
+  })).toMatchObject({
+    posts: 10,
+    avg_views: 42000,
+    median_views: 38000,
+    engagement_rate: 0.064
+  });
 });
 
 test('shows platform home links and follower counts in the KOL management table', async () => {

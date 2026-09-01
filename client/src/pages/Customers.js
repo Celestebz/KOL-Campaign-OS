@@ -14,6 +14,14 @@ import {
 import axios from 'axios';
 import CampaignCreateModal from './CampaignCreateModal';
 
+export const normalizeYoutubeSnapshot = (snapshot = {}) => ({
+  ...snapshot,
+  posts: snapshot.posts_30d,
+  avg_views: snapshot.avg_views_30d,
+  median_views: snapshot.median_views_30d,
+  engagement_rate: snapshot.engagement_rate_30d
+});
+
 const { TextArea } = Input;
 
 const cooperationStatusOptions = [
@@ -166,7 +174,7 @@ const Customers = () => {
       setProjectHistory(history.data.data || []);
       const yt = youtube.data.data || {};
       setPlatformSnapshots({
-        youtube: { ...yt, posts: yt.posts_30d, avg_views: yt.avg_views_30d, median_views: yt.median_views_30d },
+        youtube: normalizeYoutubeSnapshot(yt),
         instagram: instagram.data.data || {},
         tiktok: tiktok.data.data || {}
       });
@@ -352,7 +360,7 @@ const Customers = () => {
       ]);
       const raw = response.data.data || {};
       const snapshot = platform === 'youtube'
-        ? { ...raw, posts: raw.posts_30d, avg_views: raw.avg_views_30d, median_views: raw.median_views_30d }
+        ? normalizeYoutubeSnapshot(raw)
         : raw;
       setPlatformSnapshots((current) => ({ ...current, [platform]: snapshot }));
       setDrawerKol(detail.data.data);
