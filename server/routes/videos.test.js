@@ -110,6 +110,12 @@ test('GET /api/videos returns finder evidence analysis as discovery scene fallba
   assert.equal(row.ai_score, 82);
   assert.equal(row.ai_summary, '适合进入候选池');
   assert.equal(row.analysis_status, 'not_analyzed');
+
+  const collaborationOnly = await supertest(app)
+    .get('/api/videos')
+    .query({ collaboration_only: 1 })
+    .expect(200);
+  assert.deepEqual(collaborationOnly.body.data, []);
 });
 
 test('cleanup videos database connection', async () => {

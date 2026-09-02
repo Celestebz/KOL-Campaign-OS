@@ -755,6 +755,16 @@ async function upsertVideoSource(input) {
   if (!sourceUrl) throw new Error('视频链接为必填字段');
 
   const campaignId = await getOrCreateCampaignId(input);
+  let campaignKol = null;
+  if (input.campaign_kol_id) {
+    campaignKol = await dbOperations.get(
+      'SELECT id, campaign_id, pipeline_stage FROM campaign_kols WHERE id = ?',
+      [input.campaign_kol_id]
+    );
+    if (!campaignKol) throw new Error('合作达人不存在');
+    if (campaignKol.pipeline_stage === 'candidate') throw new Error('请选择已进入合作阶段的达人');
+    if (Number(campaignKol.campaign_id) !== Number(campaignId)) throw new Error('合作达人不属于所选项目');
+  }
   const normalized = normalizeVideoUrl(sourceUrl);
 
   // Look up by canonical URL hash for global deduplication.
@@ -816,12 +826,14 @@ async function upsertVideoSource(input) {
     video = await dbOperations.get('SELECT * FROM video_sources WHERE id = ?', [result.id]);
   }
 
-  // Ensure the video is linked to the requested campaign.
+  // Ensure the video is linked to the requested campaign and collaboration.
   await dbOperations.run(
-    `INSERT INTO campaign_videos (campaign_id, video_source_id, added_reason)
-     VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
-    [campaignId, video.id, input.added_reason || 'manual']
+    `INSERT INTO campaign_videos (campaign_id, video_source_id, campaign_kol_id, added_reason)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       campaign_kol_id = COALESCE(VALUES(campaign_kol_id), campaign_kol_id),
+       updated_at = CURRENT_TIMESTAMP`,
+    [campaignId, video.id, campaignKol?.id || null, campaignKol ? 'kol_published' : (input.added_reason || 'manual')]
   );
 
   return video;
@@ -1002,7 +1014,10 @@ async function createJob(videoIds, mode) {
 }
 
 function buildVideoListSql(filters = {}) {
-  const { campaign_id, platform, crawl_status, analysis_status, search, ids } = filters;
+  const { campaign_id, platform, crawl_status, analysis_status, search, ids, collaboration_only } = filters;
+  const collaborationOnly = collaboration_only === '1' || collaboration_only === 'true' || collaboration_only === true;
+  const aiScoreSql = collaborationOnly ? 'ai_review.score' : 'COALESCE(ai_review.score, ai_finder.score)';
+  const aiSummarySql = collaborationOnly ? 'ai_review.summary' : 'COALESCE(ai_review.summary, ai_finder.summary)';
   let sql = `
     SELECT vs.*, c.name as campaign_name, c.product as campaign_product,
       ck.id as campaign_kol_id, ck.final_fee as collaboration_fee, ck.currency as collaboration_currency,
@@ -1010,21 +1025,21 @@ function buildVideoListSql(filters = {}) {
       COALESCE(k.name, vs.kol_name, vs.author_name) as linked_kol_name,
       snap.play_count, snap.like_count, snap.comment_count, snap.collect_count, snap.share_count,
       snap.primary_exposure_count, snap.exposure_metric_type, snap.data_quality_note, snap.snapshot_at,
-      COALESCE(ai_review.score, ai_finder.score) as score,
-      COALESCE(ai_review.summary, ai_finder.summary) as summary,
+      ${aiScoreSql} as score,
+      ${aiSummarySql} as summary,
       ai_review.sentiment_positive, ai_review.sentiment_neutral, ai_review.sentiment_negative,
       ai_review.purchase_intent_count, ai_review.purchase_intent_keywords, ai_review.brand_mentions, ai_review.risks, ai_review.product_feedback,
       ai_review.cooperation_advice, ai_review.content_suggestions, ai_review.full_report, ai_review.final_prompt, ai_review.created_at as ai_created_at,
-      COALESCE(ai_review.score, ai_finder.score) as ai_score,
-      COALESCE(ai_review.summary, ai_finder.summary) as ai_summary,
+      ${aiScoreSql} as ai_score,
+      ${aiSummarySql} as ai_summary,
       CASE
         WHEN ai_review.id IS NOT NULL THEN 'collaboration_review'
-        WHEN ai_finder.id IS NOT NULL THEN 'finder_evidence'
+        WHEN ${collaborationOnly ? 'FALSE' : 'ai_finder.id IS NOT NULL'} THEN 'finder_evidence'
         ELSE NULL
       END as ai_scene,
       CASE
         WHEN ai_review.id IS NOT NULL THEN '合作复盘'
-        WHEN ai_finder.id IS NOT NULL THEN '前期发现'
+        WHEN ${collaborationOnly ? 'FALSE' : 'ai_finder.id IS NOT NULL'} THEN '前期发现'
         ELSE '未分析'
       END as ai_scene_label,
       ai_finder.created_at as finder_ai_created_at
@@ -1049,6 +1064,10 @@ function buildVideoListSql(filters = {}) {
     WHERE 1=1
   `;
   const params = [];
+
+  if (collaborationOnly) {
+    sql += ' AND cv.campaign_kol_id IS NOT NULL';
+  }
 
   if (ids?.length) {
     sql += ` AND vs.id IN (${ids.map(() => '?').join(',')})`;

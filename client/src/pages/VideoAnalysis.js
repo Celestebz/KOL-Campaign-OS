@@ -14,8 +14,7 @@ import {
   Space,
   Statistic,
   Table,
-  Tag,
-  Upload
+  Tag
 } from 'antd';
 import {
   BarChartOutlined,
@@ -26,8 +25,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
-  SyncOutlined,
-  UploadOutlined
+  SyncOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -83,6 +81,7 @@ const sceneColor = (scene) => {
 const VideoAnalysis = () => {
   const [videos, setVideos] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
+  const [collaborationKols, setCollaborationKols] = useState([]);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [filters, setFilters] = useState({});
   const [loading, setLoading] = useState(false);
@@ -93,6 +92,7 @@ const VideoAnalysis = () => {
   const [editingVideo, setEditingVideo] = useState(null);
   const [detailVideo, setDetailVideo] = useState(null);
   const [form] = Form.useForm();
+  const selectedCampaignId = Form.useWatch('campaign_id', form);
 
   useEffect(() => {
     fetchCampaigns();
@@ -125,7 +125,7 @@ const VideoAnalysis = () => {
   const fetchVideos = async (nextFilters = filters) => {
     setLoading(true);
     try {
-      const params = {};
+      const params = { collaboration_only: 1 };
       Object.entries(nextFilters).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') params[key] = value;
       });
@@ -151,9 +151,25 @@ const VideoAnalysis = () => {
 
   const openCreateModal = () => {
     setEditingVideo(null);
+    setCollaborationKols([]);
     form.resetFields();
-    form.setFieldsValue({ campaign_id: 1 });
     setModalVisible(true);
+  };
+
+  const fetchCollaborationKols = async (campaignId) => {
+    if (!campaignId) {
+      setCollaborationKols([]);
+      return;
+    }
+    try {
+      const res = await axios.get('/api/campaign-kols', {
+        params: { campaign_id: campaignId, pipeline_stage: 'confirmed', page_size: 100 }
+      });
+      setCollaborationKols(res.data.data || []);
+    } catch (error) {
+      setCollaborationKols([]);
+      message.error('获取合作达人列表失败');
+    }
   };
 
   const openEditModal = (record) => {
@@ -180,37 +196,6 @@ const VideoAnalysis = () => {
     }
     setModalVisible(false);
     fetchVideos();
-  };
-
-  const handleImport = async (file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    setLoading(true);
-    try {
-      const res = await axios.post('/api/videos/import', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      const errors = res.data.data?.errors || [];
-      message.success(res.data.message || '导入完成');
-      if (errors.length) {
-        Modal.warning({
-          title: '部分行导入失败',
-          width: 720,
-          content: (
-            <div style={{ maxHeight: 260, overflow: 'auto' }}>
-              {errors.map((item) => <div key={item}>{item}</div>)}
-            </div>
-          )
-        });
-      }
-      fetchCampaigns();
-      fetchVideos();
-    } catch (error) {
-      message.error(error.response?.data?.error || '导入失败');
-    } finally {
-      setLoading(false);
-    }
-    return false;
   };
 
   const setBatchLoading = (type, value) => {
@@ -295,6 +280,7 @@ const VideoAnalysis = () => {
       Object.entries(filters).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') params.set(key, value);
       });
+      params.set('collaboration_only', '1');
     }
     const query = params.toString();
     window.location.href = query ? `/api/videos/export?${query}` : '/api/videos/export';
@@ -377,7 +363,7 @@ const VideoAnalysis = () => {
     <div>
       <div className="page-header">
         <h1 className="page-title">内容分析</h1>
-        <p className="page-subtitle">合作视频与内容素材的复盘分析，沉淀可复用的内容资源。</p>
+        <p className="page-subtitle">仅分析已合作达人发布的视频，复盘真实合作效果并沉淀内容经验。</p>
       </div>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -390,9 +376,6 @@ const VideoAnalysis = () => {
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>新建链接</Button>
-          <Upload accept=".xlsx,.xls,.csv" showUploadList={false} beforeUpload={handleImport}>
-            <Button icon={<UploadOutlined />}>上传 Excel/CSV</Button>
-          </Upload>
           <Button icon={<SyncOutlined />} loading={crawlLoading} disabled={!selectedRowKeys.length || crawlLoading} onClick={() => runBatch('crawl')}>批量抓取 ({selectedRowKeys.length})</Button>
           <Button icon={<BarChartOutlined />} loading={analyzeLoading} disabled={!selectedRowKeys.length || analyzeLoading} onClick={() => runBatch('analyze')}>批量分析 ({selectedRowKeys.length})</Button>
           <Popconfirm title="确定删除选中的视频？" disabled={!selectedRowKeys.length} onConfirm={() => handleDelete(selectedRowKeys)}>
@@ -477,36 +460,32 @@ const VideoAnalysis = () => {
           <Form.Item label="视频链接" name="source_url" rules={[{ required: true, message: '请输入视频链接' }]}>
             <Input disabled={Boolean(editingVideo)} placeholder="https://www.youtube.com/watch?v=..." />
           </Form.Item>
-          <Form.Item label="所属产品/活动" name="campaign_id" rules={[{ required: true, message: '请选择产品/活动' }]}>
+          <Form.Item label="所属项目" name="campaign_id" rules={[{ required: true, message: '请选择所属项目' }]}>
             <Select
               showSearch
               options={campaignOptions}
               optionFilterProp="label"
-              dropdownRender={(menu) => (
-                <>
-                  {menu}
-                  <div style={{ padding: 8 }}>
-                    <Input.Search
-                      placeholder="输入新产品/活动名称后回车"
-                      enterButton="新建"
-                      onSearch={async (value) => {
-                        if (!value) return;
-                        const res = await axios.post('/api/campaigns', { name: value, product: value });
-                        await fetchCampaigns();
-                        form.setFieldValue('campaign_id', res.data.data.id);
-                      }}
-                    />
-                  </div>
-                </>
-              )}
+              onChange={(value) => {
+                form.setFieldValue('campaign_kol_id', undefined);
+                fetchCollaborationKols(value);
+              }}
             />
           </Form.Item>
-          <Form.Item label="KOL 名称" name="kol_name">
-            <Input />
-          </Form.Item>
-          <Form.Item label="合作价格" name="cooperation_price">
-            <Input />
-          </Form.Item>
+          {!editingVideo && (
+            <Form.Item label="合作达人" name="campaign_kol_id" rules={[{ required: true, message: '请选择合作达人' }]}>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder="请先选择项目"
+                disabled={!selectedCampaignId}
+                options={collaborationKols.map((item) => ({
+                  value: item.id,
+                  label: item.kol_name || item.kol_name_snapshot || `合作达人 #${item.id}`
+                }))}
+                notFoundContent="该项目暂无已确认合作达人"
+              />
+            </Form.Item>
+          )}
           <Form.Item label="备注" name="notes">
             <TextArea rows={3} />
           </Form.Item>
@@ -526,9 +505,12 @@ const VideoAnalysis = () => {
             <div><strong>平台：</strong>{detailVideo.platform || '-'}</div>
             <div><strong>KOL：</strong>{detailVideo.linked_kol_name || detailVideo.kol_name || detailVideo.author_name || '-'}</div>
             <div><strong>标题：</strong>{detailVideo.title || '-'}</div>
+            <div><strong>发布时间：</strong>{detailVideo.published_at ? new Date(detailVideo.published_at).toLocaleString() : '-'}</div>
             <div><strong>链接：</strong><a href={detailVideo.source_url} target="_blank" rel="noreferrer">{detailVideo.source_url}</a></div>
             <div><strong>内容类型：</strong>{detailVideo.content_type || '-'}</div>
             <div><strong>主要曝光数：</strong>{detailVideo.primary_exposure_count ?? '-'}</div>
+            <div><strong>点赞数：</strong>{detailVideo.like_count ?? '-'}</div>
+            <div><strong>评论数：</strong>{detailVideo.comment_count ?? '-'}</div>
             <div><strong>曝光口径：</strong>{detailVideo.exposure_metric_type || '-'}</div>
             <div><strong>数据完整性：</strong>{detailVideo.data_quality_note || '-'}</div>
             <div><strong>合作方式：</strong>{detailVideo.cooperation_type === 'product_exchange' ? '产品置换' : detailVideo.cooperation_type === 'paid_product' ? '付费＋产品' : detailVideo.cooperation_type === 'other' ? '其他' : '-'}</div>
