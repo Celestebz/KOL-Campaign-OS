@@ -137,7 +137,7 @@ async function countRepliedKols(db, windowStart, ownerUserId = requireCurrentUse
          r.confirm_status = 'confirmed'
          OR r.ai_intent IN ('interested', 'question', 'rejected')
        )`,
-    [ownerUserId, startParam, ownerUserId]
+    [ownerUserId, startParam, ownerUserId, startParam]
   );
   return Number(row?.total || 0);
 }

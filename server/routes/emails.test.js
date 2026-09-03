@@ -1111,6 +1111,22 @@ test('POST /threads/:id/context/refresh falls back to stored summary when AI fai
   }
 });
 
+test('GET /templates uses primary-key ordering and variables endpoint is defined', async () => {
+  let querySql = '';
+  await withPatchedDb({
+    query: async (sql) => { querySql = String(sql); return []; }
+  }, async () => {
+    const templates = await callHandler(findHandler(require('./emails'), 'get', '/templates'));
+    assert.equal(templates.payload.success, true);
+    assert.match(querySql, /ORDER BY id DESC/);
+    assert.doesNotMatch(querySql, /ORDER BY created_at/);
+
+    const variables = await callHandler(findHandler(require('./emails'), 'get', '/templates/variables'));
+    assert.equal(variables.payload.success, true);
+    assert.equal(variables.payload.data.kol_name, 'KOL名称');
+  });
+});
+
 test('private email list queries are always scoped to the authenticated owner', async () => {
   const calls = [];
   await withPatchedDb({

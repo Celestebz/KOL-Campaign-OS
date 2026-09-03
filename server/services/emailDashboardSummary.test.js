@@ -152,7 +152,7 @@ test('buildSummary passes rolling 30-day window for reply rate denominator and n
   assert.ok(replies30d, 'should query email_replies for 30-day numerator');
   // NOW - 30 days = 2026-06-28 01:30 UTC
   assert.deepEqual(sent30d.params, [27, '2026-06-28 01:30:00']);
-  assert.deepEqual(replies30d.params, [27, '2026-06-28 01:30:00', 27]);
+  assert.deepEqual(replies30d.params, [27, '2026-06-28 01:30:00', 27, '2026-06-28 01:30:00']);
 });
 
 test('buildSummary excludes auto-replies (ai_intent=other) from numerator and includes confirmed replies', async () => {

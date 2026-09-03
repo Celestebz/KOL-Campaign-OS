@@ -24,6 +24,14 @@ function sendActionError(res, error) {
 
 const MASKED_SECRET = "••••••••";
 const TEMPLATE_KINDS = new Set(['style_guide', 'fixed']);
+const VARIABLE_LABELS = {
+  kol_name: 'KOL名称',
+  contact_name: '联系人姓名',
+  campaign_name: '项目名称',
+  product_names: '合作产品',
+  cooperation_type: '合作方式',
+  sender_name: '发件人署名'
+};
 const ownerId = (req) => Number(req.user?.id) || 1; // authGuard always supplies user in production; fallback keeps direct unit handlers deterministic.
 
 // Every route containing a private resource id is denied before its handler runs
@@ -243,7 +251,7 @@ router.post("/settings/test", async (req, res) => {
 
 router.get('/templates', async (req, res) => {
   try {
-    const templates = await dbOperations.query('SELECT * FROM email_templates ORDER BY created_at DESC');
+    const templates = await dbOperations.query('SELECT * FROM email_templates ORDER BY id DESC');
     res.json({ success: true, data: templates });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
