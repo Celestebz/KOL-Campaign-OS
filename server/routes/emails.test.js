@@ -1,6 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { dbOperations } = require('../database');
+const emailLiveSync = require('../services/emailLiveSync');
+const originalRestartEmailSync = emailLiveSync.restartEmailSync;
+emailLiveSync.restartEmailSync = async () => {};
+test.after(() => { emailLiveSync.restartEmailSync = originalRestartEmailSync; });
 
 function findHandler(router, method, path) {
   const layer = router.stack.find((item) => (
@@ -10,7 +14,7 @@ function findHandler(router, method, path) {
   return layer.route.stack[0].handle;
 }
 
-function callHandler(handler, { body = {}, params = {}, query = {} } = {}) {
+function callHandler(handler, { body = {}, params = {}, query = {}, user } = {}) {
   return new Promise((resolve, reject) => {
     const response = {
       statusCode: 200,
@@ -18,7 +22,7 @@ function callHandler(handler, { body = {}, params = {}, query = {} } = {}) {
       status(code) { this.statusCode = code; return this; },
       json(payload) { this.payload = payload; resolve(this); return this; }
     };
-    Promise.resolve(handler({ body, params, query }, response, reject)).catch(reject);
+    Promise.resolve(handler({ body, params, query, user }, response, reject)).catch(reject);
   });
 }
 
@@ -190,7 +194,7 @@ test('GET /records joins draft kol name and filters status', async () => {
     get: async () => ({ total: 1 }),
     query: async (sql, params) => {
       seenSql = sql;
-      assert.deepEqual(params, ['failed']);
+      assert.deepEqual(params, [1, 'failed']);
       return [{ id: 1, kol_name: 'Alice', status: 'failed' }];
     }
   }, async () => {
@@ -207,7 +211,7 @@ test('GET /drafts joins mailbox label and filters by mailbox_id', async () => {
       if (String(sql).includes('FROM email_drafts')) {
         assert.ok(String(sql).includes('LEFT JOIN email_settings ms ON ms.id = d.mailbox_id'), '草稿查询应 JOIN 邮箱表');
         assert.ok(String(sql).includes('d.mailbox_id = ?'), '应按 mailbox_id 过滤');
-        assert.deepEqual(params, [2]);
+        assert.deepEqual(params, [1, 2]);
         return [{ id: 1, subject: 'Hi', mailbox_label: 'B 业务', mailbox_username: 'b@x.com' }];
       }
       return [];
@@ -225,7 +229,7 @@ test('GET /records joins mailbox label and filters by mailbox_id', async () => {
       if (String(sql).includes('FROM email_records')) {
         assert.ok(String(sql).includes('LEFT JOIN email_settings ms ON ms.id = er.mailbox_id'), '记录查询应 JOIN 邮箱表');
         assert.ok(String(sql).includes('er.mailbox_id = ?'), '应按 mailbox_id 过滤');
-        assert.deepEqual(params, [2]);
+        assert.deepEqual(params, [1, 2]);
         return [{ id: 1, mailbox_label: 'B 业务', mailbox_username: 'b@x.com' }];
       }
       return [];
@@ -242,7 +246,7 @@ test('GET /replies joins mailbox label and filters by mailbox_id', async () => {
       if (String(sql).includes('FROM email_replies')) {
         assert.ok(String(sql).includes('LEFT JOIN email_settings ms ON ms.id = er.mailbox_id'), '回复查询应 JOIN 邮箱表');
         assert.ok(String(sql).includes('er.mailbox_id = ?'), '应按 mailbox_id 过滤');
-        assert.deepEqual(params, [2]);
+        assert.deepEqual(params, [1, 2]);
         return [{ id: 1, mailbox_label: 'B 业务', mailbox_username: 'b@x.com', body_text: '' }];
       }
       return [];
@@ -353,7 +357,7 @@ test('GET /replies filters by confirm_status', async () => {
   await withPatchedDb({
     query: async (sql, params) => {
       seenSql = sql;
-      assert.deepEqual(params, ['pending']);
+      assert.deepEqual(params, [1, 'pending']);
       return [{ id: 1, confirm_status: 'pending', kol_name: 'Alice' }];
     }
   }, async () => {
@@ -551,7 +555,7 @@ test('POST /replies/:id/draft-reply generates reply draft into review queue', as
       get: async () => ({ id: 9, campaign_id: 2, customer_id: 1, body_text: '我想了解一下佣金细节' })
     }, async () => {
       const handler = findHandler(require('./emails'), 'post', '/replies/:id/draft-reply');
-      const response = await callHandler(handler, { params: { id: 9 } });
+      const response = await callHandler(handler, { params: { id: 9 }, body: { feedback: '  礼貌询问寄样地址  ' } });
       assert.equal(response.payload.success, true);
       assert.equal(response.payload.data.draftId, 99);
     });
@@ -560,7 +564,7 @@ test('POST /replies/:id/draft-reply generates reply draft into review queue', as
   }
   assert.equal(seen[0].kind, 'reply');
   assert.equal(seen[0].sourceReplyId, 9);
-  assert.equal(seen[0].feedback, undefined, '邮件原文不再塞进 feedback，由 drafter 内部走会话上下文');
+  assert.equal(seen[0].feedback, '礼貌询问寄样地址');
 });
 
 test('POST /drafts/generate dedupes existing pending drafts and queues the rest as a background run', async () => {
@@ -601,7 +605,7 @@ test('GET /records supports campaign_id filter alongside status', async () => {
     const response = await callHandler(handler, { query: { status: 'sent', campaign_id: '5' } });
     assert.equal(response.payload.success, true);
     assert.ok(statements.every((s) => /er\.status = \?/.test(s.sql) && /er\.campaign_id = \?/.test(s.sql)));
-    assert.deepEqual(statements[0].params, ['sent', '5']);
+    assert.deepEqual(statements[0].params, [1, 'sent', '5']);
   });
 });
 
@@ -614,7 +618,7 @@ test('GET /records without campaign_id keeps unfiltered query', async () => {
     const handler = findHandler(require('./emails'), 'get', '/records');
     await callHandler(handler, { query: {} });
     assert.ok(statements.every((s) => !/campaign_id/.test(s.sql)));
-    assert.deepEqual(statements[0].params, []);
+    assert.deepEqual(statements[0].params, [1]);
   });
 });
 
@@ -655,15 +659,19 @@ test('POST /settings/sync-now with id syncs the specified mailbox', async () => 
 
 test('POST /settings/sync-now without id syncs all enabled mailboxes', async () => {
   const emailLiveSync = require('../services/emailLiveSync');
+  const emailMailboxes = require('../services/emailMailboxes');
   const original = emailLiveSync.syncNow;
+  const originalList = emailMailboxes.listMailboxes;
   let calledWithoutId = false;
-  emailLiveSync.syncNow = async () => { calledWithoutId = true; return { fetched: 3, matched: 2, unmatched: 1 }; };
+  emailMailboxes.listMailboxes = async () => [{ id: 1 }];
+  emailLiveSync.syncNow = async (id) => { calledWithoutId = id === 1; return { fetched: 3, matched: 2, unmatched: 1 }; };
   try {
     const handler = findHandler(require('./emails'), 'post', '/settings/sync-now');
     const response = await callHandler(handler);
     assert.equal(response.payload.success, true);
   } finally {
     emailLiveSync.syncNow = original;
+    emailMailboxes.listMailboxes = originalList;
   }
   assert.equal(calledWithoutId, true, 'syncs all when no id supplied');
 });
@@ -708,7 +716,7 @@ test('GET /replies supports project communication filtering', async () => {
     assert.equal(response.payload.success, true);
   });
   assert.match(captured.sql, /er\.campaign_id = \?/);
-  assert.deepEqual(captured.params, [1404]);
+  assert.deepEqual(captured.params, [1, 1404]);
 });
 
 test('GET /replies scope=needs_reply returns the latest actionable inbound email', async () => {
@@ -962,7 +970,7 @@ test('GET /threads applies campaign/customer filters and paginates', async () =>
   assert.match(listQuery.sql, /t\.campaign_id = \?/);
   assert.match(listQuery.sql, /t\.customer_id = \?/);
   assert.match(listQuery.sql, /ck\.needs_reply = 1/);
-  assert.deepEqual(listQuery.params, [2, 7, 10, 10]);
+  assert.deepEqual(listQuery.params, [1, 2, 7, 10, 10]);
 });
 
 test('GET /threads/:id returns thread, timeline, pending draft and campaign/customer', async () => {
@@ -1015,7 +1023,7 @@ test('GET /threads/:id returns 404 for unknown thread', async () => {
   });
 });
 
-test('POST /threads/:id/draft-reply drafts against the latest inbound and passes feedback through', async () => {
+test('POST /threads/:id/draft-reply drafts against the latest inbound and passes trimmed feedback through', async () => {
   const drafter = require('../services/emailDrafter');
   const original = drafter.draftForCustomer;
   const seen = [];
@@ -1030,7 +1038,7 @@ test('POST /threads/:id/draft-reply drafts against the latest inbound and passes
       }
     }, async () => {
       const handler = findHandler(require('./emails'), 'post', '/threads/:id/draft-reply');
-      const response = await callHandler(handler, { params: { id: 9 }, body: { feedback: '语气再随和一点' } });
+      const response = await callHandler(handler, { params: { id: 9 }, body: { feedback: '  语气再随和一点  ' } });
       assert.equal(response.payload.success, true);
       assert.equal(response.payload.data.draftId, 77);
     });
@@ -1101,5 +1109,19 @@ test('POST /threads/:id/context/refresh falls back to stored summary when AI fai
   } finally {
     builder.generateThreadSummary = original;
   }
+});
+
+test('private email list queries are always scoped to the authenticated owner', async () => {
+  const calls = [];
+  await withPatchedDb({
+    get: async (sql, params) => { calls.push({ sql: String(sql), params }); return { total: 0 }; },
+    query: async (sql, params) => { calls.push({ sql: String(sql), params }); return []; }
+  }, async () => {
+    const handler = findHandler(require('./emails'), 'get', '/records');
+    const response = await callHandler(handler, { user: { id: 27 }, query: {} });
+    assert.equal(response.payload.success, true);
+    assert.ok(calls.every((call) => /owner_user_id = \?/.test(call.sql)));
+    assert.ok(calls.every((call) => call.params[0] === 27));
+  });
 });
 

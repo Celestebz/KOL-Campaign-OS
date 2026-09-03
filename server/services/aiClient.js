@@ -2,6 +2,7 @@
 // 配置读取：api_settings 表（provider 形如 ai.minimax，deepseek 兼容 legacy key 'ai'），
 // 激活的 provider 读 system.provider_selection 的 aiModels.active。
 const { dbOperations } = require('../database');
+const { requireCurrentUserId } = require('../utils/requestContext');
 
 const SYSTEM_SELECTION_KEY = 'system.provider_selection';
 
@@ -87,10 +88,11 @@ function hasUsableSetting(row) {
 }
 
 async function getSetting(key, legacyKeys = []) {
-  const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [key]);
+  const ownerUserId = requireCurrentUserId();
+  const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [key, ownerUserId]);
   if (hasUsableSetting(direct)) return direct;
   for (const legacyKey of legacyKeys) {
-    const legacy = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [legacyKey]);
+    const legacy = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [legacyKey, ownerUserId]);
     if (hasUsableSetting(legacy)) return legacy;
   }
   return direct || null;
@@ -109,7 +111,7 @@ function mergeSelection(saved) {
 }
 
 async function getSelection() {
-  const row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ?', [SYSTEM_SELECTION_KEY]);
+  const row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ? AND owner_user_id = ?', [SYSTEM_SELECTION_KEY, requireCurrentUserId()]);
   return mergeSelection(parseJson(row?.extra_config, {}));
 }
 

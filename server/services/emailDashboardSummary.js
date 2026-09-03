@@ -4,6 +4,7 @@
 // 副标题显示 "X人回复 / Y人发送成功"，避免对未确认的送达做过度承诺。
 
 const { dbOperations } = require('../database');
+const { requireCurrentUserId } = require('../utils/requestContext');
 const {
   shanghaiDayStart,
   shanghaiWeekStart,
@@ -26,19 +27,21 @@ function toMysqlDatetime(value) {
 //   1. 在 email_records 里筛选 status='success' 且 created_at 落在窗口内的记录；
 //   2. 按 customer_id 分组，仅保留"窗口起点之前从未发送成功过"的桶；
 //   3. 对剩余桶按 customer_id 去重计数。
-async function countFirstTouchKols(db, windowStart, windowEndExclusive) {
+async function countFirstTouchKols(db, windowStart, windowEndExclusive, ownerUserId = requireCurrentUserId()) {
   const startParam = toMysqlDatetime(windowStart);
   const sql = windowEndExclusive
     ? `SELECT COUNT(*) AS total FROM (
          SELECT er.customer_id
          FROM email_records er
          WHERE er.status = 'success'
+           AND er.owner_user_id = ?
            AND er.customer_id IS NOT NULL
            AND er.created_at >= ?
            AND er.created_at < ?
            AND NOT EXISTS (
              SELECT 1 FROM email_records er2
              WHERE er2.customer_id = er.customer_id
+               AND er2.owner_user_id = er.owner_user_id
                AND er2.status = 'success'
                AND er2.created_at < ?
            )
@@ -48,19 +51,21 @@ async function countFirstTouchKols(db, windowStart, windowEndExclusive) {
          SELECT er.customer_id
          FROM email_records er
          WHERE er.status = 'success'
+           AND er.owner_user_id = ?
            AND er.customer_id IS NOT NULL
            AND er.created_at >= ?
            AND NOT EXISTS (
              SELECT 1 FROM email_records er2
              WHERE er2.customer_id = er.customer_id
+               AND er2.owner_user_id = er.owner_user_id
                AND er2.status = 'success'
                AND er2.created_at < ?
            )
          GROUP BY er.customer_id
        ) t`;
   const params = windowEndExclusive
-    ? [startParam, toMysqlDatetime(windowEndExclusive), startParam]
-    : [startParam, startParam];
+    ? [ownerUserId, startParam, toMysqlDatetime(windowEndExclusive), startParam]
+    : [ownerUserId, startParam, startParam];
   const row = await db.get(sql, params);
   return Number(row?.total || 0);
 }
@@ -68,7 +73,7 @@ async function countFirstTouchKols(db, windowStart, windowEndExclusive) {
 // 今日联络口径：系统内 KOL 当天只要有一次成功发送，或登记过一次人工联络，
 // 就计入一次。两种来源通过 UNION 去重，人工登记即使同时写入 email_records
 // 也不会重复计数；没有 customer_id 的系统外联系人不会进入统计。
-async function countContactedKols(db, windowStart) {
+async function countContactedKols(db, windowStart, ownerUserId = requireCurrentUserId()) {
   const startParam = toMysqlDatetime(windowStart);
   const row = await db.get(
     `SELECT COUNT(DISTINCT contacted.customer_id) AS total
@@ -76,6 +81,7 @@ async function countContactedKols(db, windowStart) {
        SELECT er.customer_id
        FROM email_records er
        WHERE er.status = 'success'
+         AND er.owner_user_id = ?
          AND er.customer_id IS NOT NULL
          AND er.created_at >= ?
        UNION
@@ -87,22 +93,23 @@ async function countContactedKols(db, windowStart) {
          AND ck.customer_id IS NOT NULL
          AND cke.occurred_at >= ?
      ) contacted`,
-    [startParam, startParam]
+    [ownerUserId, startParam, startParam]
   );
   return Number(row?.total || 0);
 }
 
 // 30 天回复率分母：窗口内至少有一封 status='success' 记录的独立 customer_id 数。
 // 当前没有退信字段；待退信匹配完成后，应在此处剔除"已知硬退信"的 KOL。
-async function countDeliveredKols(db, windowStart) {
+async function countDeliveredKols(db, windowStart, ownerUserId = requireCurrentUserId()) {
   const startParam = toMysqlDatetime(windowStart);
   const row = await db.get(
     `SELECT COUNT(DISTINCT er.customer_id) AS total
      FROM email_records er
      WHERE er.status = 'success'
+       AND er.owner_user_id = ?
        AND er.customer_id IS NOT NULL
        AND er.created_at >= ?`,
-    [startParam]
+    [ownerUserId, startParam]
   );
   return Number(row?.total || 0);
 }
@@ -110,7 +117,7 @@ async function countDeliveredKols(db, windowStart) {
 // 30 天回复率分子：分母 KOL 集合中，窗口内收到"有效回复"的独立 customer_id 数。
 // 有效回复：confirm_status='confirmed'（人工确认），或 ai_intent 落在
 // {interested, question, rejected} 三类真实意图（排除 ai_intent='other' 即自动回复）。
-async function countRepliedKols(db, windowStart) {
+async function countRepliedKols(db, windowStart, ownerUserId = requireCurrentUserId()) {
   const startParam = toMysqlDatetime(windowStart);
   const row = await db.get(
     `SELECT COUNT(DISTINCT r.customer_id) AS total
@@ -119,30 +126,32 @@ async function countRepliedKols(db, windowStart) {
        SELECT DISTINCT customer_id
        FROM email_records
        WHERE status = 'success'
+         AND owner_user_id = ?
          AND customer_id IS NOT NULL
          AND created_at >= ?
      ) sent ON sent.customer_id = r.customer_id
      WHERE r.customer_id IS NOT NULL
+       AND r.owner_user_id = ?
        AND r.received_at >= ?
        AND (
          r.confirm_status = 'confirmed'
          OR r.ai_intent IN ('interested', 'question', 'rejected')
        )`,
-    [startParam, startParam]
+    [ownerUserId, startParam, ownerUserId]
   );
   return Number(row?.total || 0);
 }
 
-async function countBounceSummary(db, windowStart) {
+async function countBounceSummary(db, windowStart, ownerUserId = requireCurrentUserId()) {
   const row = await db.get(
     `SELECT COUNT(DISTINCT er.id) AS sent_total,
        COUNT(DISTINCT eb.email_record_id) AS bounced_total,
        COUNT(DISTINCT CASE WHEN eb.bounce_type = 'hard' THEN eb.email_record_id END) AS hard_total,
        COUNT(DISTINCT CASE WHEN eb.bounce_type = 'soft' THEN eb.email_record_id END) AS soft_total
      FROM email_records er
-     LEFT JOIN email_bounces eb ON eb.email_record_id = er.id
-     WHERE er.status = 'success' AND er.created_at >= ?`,
-    [toMysqlDatetime(windowStart)]
+     LEFT JOIN email_bounces eb ON eb.email_record_id = er.id AND eb.owner_user_id = er.owner_user_id
+     WHERE er.owner_user_id = ? AND er.status = 'success' AND er.created_at >= ?`,
+    [ownerUserId, toMysqlDatetime(windowStart)]
   );
   return {
     sent: Number(row?.sent_total || 0),
@@ -155,6 +164,7 @@ async function countBounceSummary(db, windowStart) {
 // 组装最终返回体，附带时区标记与分母类型。
 // `db` 形参为 {get} 最小集合（生产 = dbOperations，测试可注入 mock）。
 async function buildSummary(db = dbOperations, now = new Date()) {
+  const ownerUserId = requireCurrentUserId();
   const todayStart = shanghaiDayStart(now);
   const weekStart = shanghaiWeekStart(now);
   const { previousWeekStart, currentWeekStart } = shanghaiPreviousWeekBounds(now);
@@ -162,12 +172,12 @@ async function buildSummary(db = dbOperations, now = new Date()) {
 
   const [todayContactedKols, weekContactedKols, previousWeekContactedKols,
     deliveredKols30d, repliedKols30d, bounceSummary30d] = await Promise.all([
-    countContactedKols(db, todayStart),
-    countFirstTouchKols(db, weekStart),
-    countFirstTouchKols(db, previousWeekStart, currentWeekStart),
-    countDeliveredKols(db, replyWindowStart),
-    countRepliedKols(db, replyWindowStart),
-    countBounceSummary(db, replyWindowStart)
+    countContactedKols(db, todayStart, ownerUserId),
+    countFirstTouchKols(db, weekStart, undefined, ownerUserId),
+    countFirstTouchKols(db, previousWeekStart, currentWeekStart, ownerUserId),
+    countDeliveredKols(db, replyWindowStart, ownerUserId),
+    countRepliedKols(db, replyWindowStart, ownerUserId),
+    countBounceSummary(db, replyWindowStart, ownerUserId)
   ]);
 
   const weekDifference = weekContactedKols - previousWeekContactedKols;

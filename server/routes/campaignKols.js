@@ -544,8 +544,8 @@ router.post('/:id/products/migrate', async (req, res) => {
     );
     for (const table of ['email_drafts', 'email_records', 'email_replies', 'email_threads']) {
       await sequelize.query(
-        `UPDATE ${table} SET campaign_id = ?${table === 'email_records' ? '' : ', updated_at = CURRENT_TIMESTAMP'} WHERE campaign_id = ? AND customer_id = ?`,
-        { replacements: [targetCampaignId, sourceCampaignId, customerId], transaction, logging: false }
+        `UPDATE ${table} SET campaign_id = ?${table === 'email_records' ? '' : ', updated_at = CURRENT_TIMESTAMP'} WHERE campaign_id = ? AND customer_id = ? AND owner_user_id = ?`,
+        { replacements: [targetCampaignId, sourceCampaignId, customerId, req.user.id], transaction, logging: false }
       );
     }
     await sequelize.query(

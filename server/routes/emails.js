@@ -24,12 +24,27 @@ function sendActionError(res, error) {
 
 const MASKED_SECRET = "••••••••";
 const TEMPLATE_KINDS = new Set(['style_guide', 'fixed']);
+const ownerId = (req) => Number(req.user?.id) || 1; // authGuard always supplies user in production; fallback keeps direct unit handlers deterministic.
+
+// Every route containing a private resource id is denied before its handler runs
+// unless that row belongs to the authenticated user. A missing foreign row is
+// deliberately returned as 404 so callers cannot enumerate another user's data.
+router.use(async (req, res, next) => {
+  try {
+    const match = req.path.match(/^\/(settings|drafts|replies|threads)\/(\d+)(?:\/|$)/);
+    if (!match) return next();
+    const tables = { settings: 'email_settings', drafts: 'email_drafts', replies: 'email_replies', threads: 'email_threads' };
+    const row = await dbOperations.get(`SELECT id FROM ${tables[match[1]]} WHERE id = ? AND owner_user_id = ?`, [Number(match[2]), ownerId(req)]);
+    if (!row) return res.status(404).json({ success: false, error: '记录不存在' });
+    return next();
+  } catch (error) { return next(error); }
+});
 
 
 // GET /api/emails/settings — 返回邮箱列表
 router.get("/settings", async (req, res) => {
   try {
-    const mailboxes = await emailMailboxes.listMailboxes();
+    const mailboxes = await emailMailboxes.listMailboxes({ ownerUserId: ownerId(req) });
     const data = mailboxes.map(m => ({
       ...m,
       password: m.password ? MASKED_SECRET : ""
@@ -47,14 +62,14 @@ router.post("/settings", async (req, res) => {
     if (!body.username || !body.smtp_host) {
       return res.status(400).json({ success: false, error: "邮箱账号和 SMTP 服务器为必填" });
     }
-    const all = await emailMailboxes.listMailboxes();
+    const all = await emailMailboxes.listMailboxes({ ownerUserId: ownerId(req) });
     const isFirst = all.length === 0;
     const result = await dbOperations.run(
       `INSERT INTO email_settings
        (smtp_host, smtp_port, smtp_secure, imap_host, imap_port, imap_secure,
         username, password, sender_name, default_cc, poll_interval_minutes, sync_mode,
-        label, brand, is_default, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        label, brand, is_default, enabled, owner_user_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         body.smtp_host, Number(body.smtp_port) || 465, body.smtp_secure ? 1 : 0,
         body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure ? 1 : 0,
@@ -65,10 +80,11 @@ router.post("/settings", async (req, res) => {
         body.label || null,
         body.brand || null,
         isFirst ? 1 : 0,
-        1
+        1,
+        ownerId(req)
       ]
     );
-    const mailbox = await emailMailboxes.getMailboxById(result.id);
+    const mailbox = await emailMailboxes.getMailboxById(result.id, ownerId(req));
     if (mailbox && mailbox.enabled && mailbox.imap_host && mailbox.sync_mode !== "off") {
       try { await emailLiveSync.restartEmailSync(); } catch (e) { /* ignore */ }
     }
@@ -79,8 +95,8 @@ router.post("/settings", async (req, res) => {
 });
 
 // 共享的更新逻辑：保持密码未变时不覆盖，同时写入 label/enabled
-async function updateMailboxRow(id, body) {
-  const existing = await emailMailboxes.getMailboxById(id);
+async function updateMailboxRow(id, body, ownerUserId) {
+  const existing = await emailMailboxes.getMailboxById(id, ownerUserId);
   if (!existing) throw Object.assign(new Error('邮箱不存在'), { statusCode: 404 });
   const password = body.password === MASKED_SECRET || body.password === undefined
     ? (existing.password || null)
@@ -89,7 +105,7 @@ async function updateMailboxRow(id, body) {
   await dbOperations.run(
     `UPDATE email_settings SET smtp_host=?, smtp_port=?, smtp_secure=?, imap_host=?, imap_port=?, imap_secure=?,
      username=?, password=?, sender_name=?, default_cc=?, poll_interval_minutes=?, sync_mode=?,
-     label=?, brand=?, enabled=?, updated_at=NOW() WHERE id=?`,
+     label=?, brand=?, enabled=?, updated_at=NOW() WHERE id=? AND owner_user_id=?`,
     [
       body.smtp_host || null, Number(body.smtp_port) || 465, body.smtp_secure ? 1 : 0,
       body.imap_host || null, Number(body.imap_port) || 993, body.imap_secure ? 1 : 0,
@@ -99,7 +115,7 @@ async function updateMailboxRow(id, body) {
       body.label !== undefined ? body.label : existing.label,
       body.brand !== undefined ? body.brand : existing.brand,
       body.enabled !== undefined ? (body.enabled ? 1 : 0) : existing.enabled,
-      id
+      id, ownerUserId
     ]
   );
 }
@@ -107,7 +123,7 @@ async function updateMailboxRow(id, body) {
 // PUT /api/emails/settings/:id — 更新指定邮箱
 router.put('/settings/:id', async (req, res) => {
   try {
-    await updateMailboxRow(Number(req.params.id), req.body || {});
+    await updateMailboxRow(Number(req.params.id), req.body || {}, ownerId(req));
     try { await emailLiveSync.restartEmailSync(Number(req.params.id)); } catch (e) { /* ignore */ }
     res.json({ success: true, message: '邮箱设置已保存，收信监听已重启' });
   } catch (error) {
@@ -118,9 +134,9 @@ router.put('/settings/:id', async (req, res) => {
 // PUT /api/emails/settings（无 id，兼容旧接口）— 操作默认邮箱
 router.put('/settings', async (req, res) => {
   try {
-    const setting = await emailMailboxes.getDefaultMailbox();
+    const setting = await emailMailboxes.getDefaultMailbox(ownerId(req));
     if (!setting) return res.status(400).json({ success: false, error: '请先配置邮箱设置' });
-    await updateMailboxRow(setting.id, req.body || {});
+    await updateMailboxRow(setting.id, req.body || {}, ownerId(req));
     try { await emailLiveSync.restartEmailSync(setting.id); } catch (e) { /* ignore */ }
     res.json({ success: true, message: '邮箱设置已保存，收信监听已重启' });
   } catch (error) {
@@ -132,7 +148,7 @@ router.put('/settings', async (req, res) => {
 router.delete("/settings/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const row = await emailMailboxes.getMailboxById(id);
+    const row = await emailMailboxes.getMailboxById(id, ownerId(req));
     if (!row) return res.status(404).json({ success: false, error: "邮箱不存在" });
     if (row.is_default) return res.status(409).json({ success: false, error: "不能删除默认邮箱，请先另设默认" });
 
@@ -145,7 +161,7 @@ router.delete("/settings/:id", async (req, res) => {
       }
     }
 
-    await dbOperations.run("DELETE FROM email_settings WHERE id = ?", [id]);
+    await dbOperations.run("DELETE FROM email_settings WHERE id = ? AND owner_user_id = ?", [id, ownerId(req)]);
     try { await emailLiveSync.restartEmailSync(); } catch (e) { /* ignore */ }
     res.json({ success: true, message: "邮箱已删除" });
   } catch (error) {
@@ -157,10 +173,10 @@ router.delete("/settings/:id", async (req, res) => {
 router.post("/settings/:id/default", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const row = await emailMailboxes.getMailboxById(id);
+    const row = await emailMailboxes.getMailboxById(id, ownerId(req));
     if (!row) return res.status(404).json({ success: false, error: "邮箱不存在" });
-    await dbOperations.run("UPDATE email_settings SET is_default = 0");
-    await dbOperations.run("UPDATE email_settings SET is_default = 1 WHERE id = ?", [id]);
+    await dbOperations.run("UPDATE email_settings SET is_default = 0 WHERE owner_user_id = ?", [ownerId(req)]);
+    await dbOperations.run("UPDATE email_settings SET is_default = 1 WHERE id = ? AND owner_user_id = ?", [id, ownerId(req)]);
     res.json({ success: true, message: "已设为默认邮箱" });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -170,7 +186,7 @@ router.post("/settings/:id/default", async (req, res) => {
 // GET /api/emails/settings/sync-status
 router.get("/settings/sync-status", async (req, res) => {
   try {
-    res.json({ success: true, data: await emailLiveSync.getEmailSyncStatus() });
+    res.json({ success: true, data: await emailLiveSync.getEmailSyncStatus(ownerId(req)) });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -180,7 +196,7 @@ router.get("/settings/sync-status", async (req, res) => {
 router.post("/settings/test-imap", async (req, res) => {
   try {
     const id = req.body?.id;
-    const settings = id ? await emailMailboxes.getMailboxById(id) : await emailMailboxes.getDefaultMailbox();
+    const settings = id ? await emailMailboxes.getMailboxById(id, ownerId(req)) : await emailMailboxes.getDefaultMailbox(ownerId(req));
     if (!settings) return res.status(400).json({ success: false, error: "请先配置邮箱设置" });
     const info = await emailLiveSync.testImapConnection(settings.id);
     res.json({ success: true, message: "IMAP 连接成功（收件箱 " + info.exists + " 封邮件）", data: info });
@@ -194,12 +210,15 @@ router.post("/settings/sync-now", async (req, res) => {
   try {
     const id = req.body?.id;
     if (id) {
-      const settings = await emailMailboxes.getMailboxById(id);
+      const settings = await emailMailboxes.getMailboxById(id, ownerId(req));
       if (!settings) return res.status(400).json({ success: false, error: "邮箱不存在" });
       const result = await emailLiveSync.syncNow(id);
       res.json({ success: true, message: "同步完成", data: result });
     } else {
-      const result = await emailLiveSync.syncNow();
+      const owned = await emailMailboxes.listMailboxes({ enabledOnly: true, ownerUserId: ownerId(req) });
+      const results = [];
+      for (const mailbox of owned) results.push(await emailLiveSync.syncNow(mailbox.id));
+      const result = { mailboxes: results };
       res.json({ success: true, message: "同步完成", data: result });
     }
   } catch (error) {
@@ -211,7 +230,7 @@ router.post("/settings/sync-now", async (req, res) => {
 router.post("/settings/test", async (req, res) => {
   try {
     const id = req.body?.id;
-    const settings = id ? await emailMailboxes.getMailboxById(id) : await emailMailboxes.getDefaultMailbox();
+    const settings = id ? await emailMailboxes.getMailboxById(id, ownerId(req)) : await emailMailboxes.getDefaultMailbox(ownerId(req));
     if (!settings) return res.status(400).json({ success: false, error: "请先配置邮箱设置" });
     await mailer.verifySettings(settings);
     res.json({ success: true, message: "SMTP 连接成功" });
@@ -286,8 +305,8 @@ router.delete('/templates/:id', async (req, res) => {
 router.get('/records', async (req, res) => {
   try {
     const { status, campaign_id, mailbox_id } = req.query || {};
-    const conditions = [];
-    const params = [];
+    const conditions = ['er.owner_user_id = ?'];
+    const params = [ownerId(req)];
     if (status) { conditions.push('er.status = ?'); params.push(status); }
     if (campaign_id) { conditions.push('er.campaign_id = ?'); params.push(campaign_id); }
     if (mailbox_id) { conditions.push('er.mailbox_id = ?'); params.push(Number(mailbox_id)); }
@@ -343,8 +362,8 @@ router.post('/drafts/generate', async (req, res) => {
     const placeholders = customer_ids.map(() => '?').join(', ');
     const existingRows = await dbOperations.query(
       `SELECT DISTINCT customer_id FROM email_drafts
-       WHERE campaign_id = ? AND kind = ? AND status = 'pending_review' AND customer_id IN (${placeholders})`,
-      [campaign_id, kind, ...customer_ids]
+       WHERE owner_user_id = ? AND campaign_id = ? AND kind = ? AND status = 'pending_review' AND customer_id IN (${placeholders})`,
+      [ownerId(req), campaign_id, kind, ...customer_ids]
     );
     const existingSet = new Set(existingRows.map((row) => Number(row.customer_id)));
     const skipped = [];
@@ -391,8 +410,8 @@ router.post('/drafts/generate', async (req, res) => {
 router.get('/drafts', async (req, res) => {
   try {
     const { status, kind, risk_level, campaign_id, mailbox_id } = req.query || {};
-    const conditions = [];
-    const params = [];
+    const conditions = ['d.owner_user_id = ?'];
+    const params = [ownerId(req)];
     if (status) { conditions.push('d.status = ?'); params.push(status); }
     if (kind) { conditions.push('d.kind = ?'); params.push(kind); }
     if (risk_level) { conditions.push('d.risk_level = ?'); params.push(risk_level); }
@@ -581,8 +600,8 @@ router.post('/drafts/:id/confirm-not-sent', async (req, res) => {
 router.get('/replies', async (req, res) => {
   try {
     const { confirm_status, scope, campaign_id, mailbox_id } = req.query || {};
-    const conditions = [];
-    const params = [];
+    const conditions = ['er.owner_user_id = ?'];
+    const params = [ownerId(req)];
     if (scope === 'blocked') conditions.push("er.classification = 'spam'");
     else if (scope === 'system') conditions.push("er.classification = 'system'");
     else conditions.push("COALESCE(er.classification, 'needs_review') NOT IN ('spam', 'system')");
@@ -750,7 +769,8 @@ router.post('/replies/:id/draft-reply', async (req, res) => {
     if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
     const result = await emailDrafter.draftForCustomer({
       campaignId: reply.campaign_id, customerId: reply.customer_id,
-      kind: 'reply', sourceReplyId: reply.id
+      kind: 'reply', sourceReplyId: reply.id,
+      feedback: String(req.body?.feedback || '').trim().slice(0, 2000) || null
     });
     if (!result.ok) return res.status(500).json({ success: false, error: result.error });
     res.json({ success: true, message: '回复草稿已生成，请到审批台审阅', data: { draftId: result.draftId } });
@@ -842,8 +862,8 @@ router.get('/threads', async (req, res) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
-    const conditions = [];
-    const params = [];
+    const conditions = ['t.owner_user_id = ?'];
+    const params = [ownerId(req)];
     if (req.query.campaign_id) {
       conditions.push('t.campaign_id = ?');
       params.push(Number(req.query.campaign_id));
@@ -958,7 +978,7 @@ router.post('/threads/:id/draft-reply', async (req, res) => {
       customerId: thread.customer_id,
       kind: 'reply',
       sourceReplyId: reply.id,
-      feedback: req.body?.feedback || null
+      feedback: String(req.body?.feedback || '').trim().slice(0, 2000) || null
     });
     if (!result.ok) return res.status(500).json({ success: false, error: result.error });
     res.json({

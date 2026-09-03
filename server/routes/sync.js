@@ -3,6 +3,7 @@ const { dbOperations } = require('../database');
 const { getCampaignKolTableId, getCampaignTrackingTableId, missingCampaignSubtableError, missingCampaignTrackingTableError } = require('../utils/feishuSubtableMapping');
 const { mapFeishuRecordToKol, findMatchingCustomer } = require('../utils/feishuKolImport');
 const { attachPlatformAccounts, attachKolInsights } = require('./customers');
+const { requireCurrentUserId } = require('../utils/requestContext');
 
 const router = express.Router();
 
@@ -237,7 +238,7 @@ async function fetchJson(url, options = {}) {
 }
 
 async function getFeishuConfig() {
-  const row = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [FEISHU_PROVIDER_KEY]);
+  const row = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [FEISHU_PROVIDER_KEY, requireCurrentUserId()]);
   const extra = parseJson(row?.extra_config, {});
   return {
     base_url: (row?.base_url || extra.base_url || 'https://open.feishu.cn').replace(/\/$/, ''),

@@ -8,6 +8,7 @@ const { evaluateDraft } = require('./emailRiskRules');
 const youtubeIntakeSnapshot = require('./youtubeIntakeSnapshot');
 const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./emailDraftDedupe');
 const emailContextBuilder = require('./emailContextBuilder');
+const { currentUserId } = require('../utils/requestContext');
 
 const PROMPT_VERSION = 'p2.3';
 const SNAPSHOT_STALE_DAYS = 7;
@@ -352,7 +353,8 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
     }
 
     // 多邮箱：回复继承来信邮箱 → Campaign 绑定 → 默认邮箱
-    const mailbox = await emailMailboxes.resolveMailboxForDraft({ campaignId, sourceReplyId });
+    const ownerUserId = currentUserId() || 1;
+    const mailbox = await emailMailboxes.resolveMailboxForDraft({ campaignId, sourceReplyId, ownerUserId });
     const senderBrand = mailbox?.brand || campaign.brand || '';
 
     // 跟进信复用首封的产品上下文快照，避免首封未提产品时突然引入当前活动/策略里的产品。
@@ -439,12 +441,12 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
         `INSERT INTO email_drafts
          (campaign_id, customer_id, kind, subject, body_text, status, risk_level, risk_reasons, evidence,
           source_reply_id, template_id, prompt_version, ai_model, dedupe_key, mailbox_id,
-          thread_id, reply_to_message_id, context_message_ids, context_summary_snapshot,
+          thread_id, reply_to_message_id, context_message_ids, context_summary_snapshot, owner_user_id,
           generated_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+         VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
         [campaignId, customerId, kind, subject, bodyText, riskLevel, JSON.stringify(riskReasons), evidence,
          sourceReplyId, styleGuide?.id || null, PROMPT_VERSION, model || null, dedupeKey, mailbox?.id || null,
-         draftThreadId, replyToMessageId, contextMessageIds, contextSummarySnapshot]
+         draftThreadId, replyToMessageId, contextMessageIds, contextSummarySnapshot, ownerUserId]
         );
       } catch (error) {
         if (!isDuplicateError(error)) throw error;

@@ -1,6 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { buildSummary } = require('./emailDashboardSummary');
+const { runWithUser } = require('../utils/requestContext');
+
+const buildOwnedSummary = (db, now) => runWithUser({ id: 27 }, () => buildSummary(db, now));
 
 // 上海周二 2026-07-28 09:30 (UTC+8) = UTC 2026-07-28 01:30
 const NOW = new Date('2026-07-28T01:30:00.000Z');
@@ -44,7 +47,7 @@ test('buildSummary aggregates today/week/previous/reply window in parallel and c
     return null;
   };
 
-  const summary = await buildSummary(db, NOW);
+  const summary = await buildOwnedSummary(db, NOW);
 
   assert.equal(summary.todayContactedKols, 5);
   assert.equal(summary.weekContactedKols, 12);
@@ -64,7 +67,7 @@ test('buildSummary returns null replyRate30d when deliveredKols30d is 0', async 
     'COUNT(DISTINCT er.customer_id)': [{ total: 0 }],
     'COUNT(DISTINCT r.customer_id)': [{ total: 0 }]
   });
-  const summary = await buildSummary(db, NOW);
+  const summary = await buildOwnedSummary(db, NOW);
   assert.equal(summary.replyRate30d, null);
   assert.equal(summary.deliveredKols30d, 0);
   assert.equal(summary.repliedKols30d, 0);
@@ -82,7 +85,7 @@ test('buildSummary reports negative weekDifference when this week lags', async (
       return null;
     }
   };
-  const summary = await buildSummary(db, NOW);
+  const summary = await buildOwnedSummary(db, NOW);
   assert.equal(summary.weekDifference, -6);
 });
 
@@ -98,7 +101,7 @@ test('buildSummary computes weekDifference=0 when week matches previous', async 
       return null;
     }
   };
-  const summary = await buildSummary(db, NOW);
+  const summary = await buildOwnedSummary(db, NOW);
   assert.equal(summary.weekDifference, 0);
 });
 
@@ -107,13 +110,13 @@ test('buildSummary passes Shanghai-day-start ISO timestamp as the SQL parameter'
   const db = {
     async get(sql, params = []) {
       if (sql.includes('campaign_kol_events')) {
-        seenStarts.push(params[0]);
+        seenStarts.push(params[1]);
         return { total: 0 };
       }
       return { total: 0 };
     }
   };
-  await buildSummary(db, NOW);
+  await buildOwnedSummary(db, NOW);
   // 第一次调用：上海日界 → UTC 2026-07-27 16:00:00
   assert.equal(seenStarts[0], '2026-07-27 16:00:00');
 });
@@ -123,13 +126,13 @@ test('buildSummary uses Monday as the start of the Shanghai week', async () => {
   const db = {
     async get(sql, params = []) {
       if (sql.includes('NOT EXISTS')) {
-        seenStarts.push(params[0]);
+        seenStarts.push(params[1]);
         return { total: 0 };
       }
       return { total: 0 };
     }
   };
-  await buildSummary(db, NOW);
+  await buildOwnedSummary(db, NOW);
   // 第一次首次联络查询：上海本周一起点 = 2026-07-26 周一 16:00 UTC
   assert.equal(seenStarts[0], '2026-07-26 16:00:00');
 });
@@ -142,14 +145,14 @@ test('buildSummary passes rolling 30-day window for reply rate denominator and n
       return { total: 0 };
     }
   };
-  await buildSummary(db, NOW);
+  await buildOwnedSummary(db, NOW);
   const sent30d = seenStarts.find((s) => s.sql.includes('COUNT(DISTINCT er.customer_id)'));
   const replies30d = seenStarts.find((s) => s.sql.includes('COUNT(DISTINCT r.customer_id)'));
   assert.ok(sent30d, 'should query email_records for 30-day denominator');
   assert.ok(replies30d, 'should query email_replies for 30-day numerator');
   // NOW - 30 days = 2026-06-28 01:30 UTC
-  assert.equal(sent30d.params[0], '2026-06-28 01:30:00');
-  assert.equal(replies30d.params[0], '2026-06-28 01:30:00');
+  assert.deepEqual(sent30d.params, [27, '2026-06-28 01:30:00']);
+  assert.deepEqual(replies30d.params, [27, '2026-06-28 01:30:00', 27]);
 });
 
 test('buildSummary excludes auto-replies (ai_intent=other) from numerator and includes confirmed replies', async () => {
@@ -162,7 +165,7 @@ test('buildSummary excludes auto-replies (ai_intent=other) from numerator and in
       return { total: 0 };
     }
   };
-  await buildSummary(db, NOW);
+  await buildOwnedSummary(db, NOW);
   assert.match(capturedSql, /ai_intent IN \('interested', 'question', 'rejected'\)/);
   assert.match(capturedSql, /confirm_status = 'confirmed'/);
   // 确保没有把 'other' 列入有效回复
@@ -181,7 +184,7 @@ test('buildSummary rounds replyRate30d to one decimal place', async () => {
       return null;
     }
   };
-  const summary = await buildSummary(db, NOW);
+  const summary = await buildOwnedSummary(db, NOW);
   // 6 / 70 = 0.085714... → 8.6%
   assert.equal(summary.replyRate30d, 8.6);
 });
@@ -200,7 +203,7 @@ test('buildSummary computes 30-day bounce rate and hard/soft counts by sent reco
       return null;
     }
   };
-  const summary = await buildSummary(db, NOW);
+  const summary = await buildOwnedSummary(db, NOW);
   assert.equal(summary.bounceRate30d, 6);
   assert.equal(summary.bouncedEmails30d, 3);
   assert.equal(summary.hardBounces30d, 2);
@@ -222,7 +225,7 @@ test('today contacted KOLs combine successful sends and manual outreach by syste
     }
   };
 
-  const summary = await buildSummary(db, NOW);
+  const summary = await buildOwnedSummary(db, NOW);
 
   assert.equal(summary.todayContactedKols, 4);
   assert.match(capturedSql, /email_records/);
@@ -230,5 +233,5 @@ test('today contacted KOLs combine successful sends and manual outreach by syste
   assert.match(capturedSql, /source_type = 'manual'/);
   assert.match(capturedSql, /INNER JOIN campaign_kols/);
   assert.match(capturedSql, /COUNT\(DISTINCT contacted\.customer_id\)/);
-  assert.deepEqual(capturedParams, ['2026-07-27 16:00:00', '2026-07-27 16:00:00']);
+  assert.deepEqual(capturedParams, [27, '2026-07-27 16:00:00', '2026-07-27 16:00:00']);
 });

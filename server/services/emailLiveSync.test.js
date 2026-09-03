@@ -248,10 +248,10 @@ const RAW_REPLY = [
 ].join('\r\n');
 
 // INSERT params \u4e0b\u6807\uff1a0 email_record_id, 1 campaign_id, 2 customer_id, 3 from_address,
-// 4 message_id, 5 subject, 6 body_text, 7 received_at, 8 mailbox_id, 9 confirm_status, 10 classification,
-// 11 classification_source, 12 classification_reason, 13 in_reply_to, 14 references_json,
-// 15 clean_body_text, 16 body_html, 17 quoted_body_text, 18 signature_text,
-// 19 raw_source, 20 parse_status, 21 parse_error
+// 4 message_id, 5 subject, 6 body_text, 7 received_at, 8 mailbox_id, 9 owner_user_id,
+// 10 confirm_status, 11 classification, 12 classification_source, 13 classification_reason,
+// 14 in_reply_to, 15 references_json, 16 clean_body_text, 17 body_html,
+// 18 quoted_body_text, 19 signature_text, 20 raw_source, 21 parse_status, 22 parse_error
 test('parse-ok message stores MIME columns and is assigned to a thread', async () => {
   const settings = { ...baseSettings };
   const db = mockDb({ settings, matchedEmails: { 'kol@example.com': 7 } });
@@ -266,14 +266,14 @@ test('parse-ok message stores MIME columns and is assigned to a thread', async (
     assert.equal(params[3], 'kol@example.com');
     assert.equal(params[8], baseSettings.id, 'mailbox_id \u843d\u5e93');
     assert.match(params[6], /愿意合作/, 'body_text 用解析出的完整可读纯文本');
-    assert.equal(params[13], '<sent-1@test>', 'in_reply_to 对齐库存尖括号格式');
-    assert.equal(params[14], '["<sent-1@test>","<root-1@test>"]');
-    assert.match(params[15], /愿意合作/, 'clean_body_text 为本次新写内容');
-    assert.ok(!params[15].includes('旧的沟通内容'), 'clean_body_text 不含引用');
-    assert.match(params[17], /旧的沟通内容/, 'quoted_body_text 保留引用');
-    assert.match(params[19], /In-Reply-To/, 'raw_source 存原始 RFC822');
-    assert.equal(params[20], 'ok');
-    assert.equal(params[21], null);
+    assert.equal(params[14], '<sent-1@test>', 'in_reply_to 对齐库存尖括号格式');
+    assert.equal(params[15], '["<sent-1@test>","<root-1@test>"]');
+    assert.match(params[16], /愿意合作/, 'clean_body_text 为本次新写内容');
+    assert.ok(!params[16].includes('旧的沟通内容'), 'clean_body_text 不含引用');
+    assert.match(params[18], /旧的沟通内容/, 'quoted_body_text 保留引用');
+    assert.match(params[20], /In-Reply-To/, 'raw_source 存原始 RFC822');
+    assert.equal(params[21], 'ok');
+    assert.equal(params[22], null);
 
     assert.equal(db.threadCalls.length, 1, '入库后调用会话归属');
     const call = db.threadCalls[0];
@@ -298,8 +298,8 @@ test('raw_source larger than 2MB is parsed but not stored', async () => {
     const client = fakeClient({ messages: [mail] });
     const result = await liveSync.fetchNew(makeWorkerForTest(client, settings));
     assert.equal(result.matched, 1);
-    assert.equal(db.inserts[0][20], 'ok');
-    assert.equal(db.inserts[0][19], null, 'raw_source 超过 2MB 置 NULL');
+    assert.equal(db.inserts[0][21], 'ok');
+    assert.equal(db.inserts[0][20], null, 'raw_source 超过 2MB 置 NULL');
     assert.match(db.inserts[0][6], /^长线正文/, 'body_text 不截断');
   } finally {
     db.restore();
@@ -315,9 +315,9 @@ test('missing source falls back to the legacy parser with parse_status failed', 
     assert.equal(result.matched, 1, '回退路径仍正常入库');
     const params = db.inserts[0];
     assert.equal(params[6], '你好，我对合作感兴趣', 'body_text 由旧解析器兜底');
-    assert.equal(params[20], 'failed');
-    assert.ok(params[21], 'parse_error 记录原因');
-    for (const index of [13, 14, 15, 16, 17, 18, 19]) {
+    assert.equal(params[21], 'failed');
+    assert.ok(params[22], 'parse_error 记录原因');
+    for (const index of [14, 15, 16, 17, 18, 19, 20]) {
       assert.equal(params[index], null, `新列 params[${index}] 置 NULL`);
     }
     assert.equal(db.threadCalls.length, 1, '回退路径也尝试会话归属');

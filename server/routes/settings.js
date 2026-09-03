@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { dbOperations } = require('../database');
+const { currentUserId } = require('../utils/requestContext');
+const ownerId = (req = null) => Number(req?.user?.id || currentUserId()) || 1;
 
 const SYSTEM_SELECTION_KEY = 'system.provider_selection';
 const FEISHU_PROVIDER_KEY = 'cloud.feishu_bitable';
@@ -167,7 +169,8 @@ function mergeSelection(saved) {
 }
 
 async function upsertProvider(key, row = {}) {
-  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ?', [key]);
+  const ownerUserId = ownerId();
+  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ? AND owner_user_id = ?', [key, ownerUserId]);
   const apiProtocol = row.api_protocol || (key === 'ai.minimax' ? 'anthropic_token_plan' : 'openai');
   const submittedBaseUrl = String(row.base_url || '').trim();
   const baseUrl = key === 'ai.minimax'
@@ -185,8 +188,8 @@ async function upsertProvider(key, row = {}) {
   };
 
   await dbOperations.run(
-    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
-     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `INSERT INTO api_settings (owner_user_id, provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
      ON DUPLICATE KEY UPDATE
        api_key = VALUES(api_key),
        base_url = VALUES(base_url),
@@ -194,7 +197,7 @@ async function upsertProvider(key, row = {}) {
        extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [
-      key,
+      ownerUserId, key,
       preserveSecret(row.api_key, current?.api_key),
       baseUrl,
       row.model || '',
@@ -204,18 +207,20 @@ async function upsertProvider(key, row = {}) {
 }
 
 async function upsertSelection(selection) {
+  const ownerUserId = ownerId();
   await dbOperations.run(
-    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
-     VALUES (?, '', '', '', ?, CURRENT_TIMESTAMP)
+    `INSERT INTO api_settings (owner_user_id, provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, '', '', '', ?, CURRENT_TIMESTAMP)
      ON DUPLICATE KEY UPDATE
        extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
-    [SYSTEM_SELECTION_KEY, JSON.stringify(selection)]
+    [ownerUserId, SYSTEM_SELECTION_KEY, JSON.stringify(selection)]
   );
 }
 
 async function upsertFeishu(row = {}) {
-  const current = await dbOperations.get('SELECT api_key, extra_config FROM api_settings WHERE provider = ?', [FEISHU_PROVIDER_KEY]);
+  const ownerUserId = ownerId();
+  const current = await dbOperations.get('SELECT api_key, extra_config FROM api_settings WHERE provider = ? AND owner_user_id = ?', [FEISHU_PROVIDER_KEY, ownerUserId]);
   const currentExtra = parseJson(current?.extra_config, {});
   const extraConfig = {
     app_id: row.app_id || '',
@@ -228,14 +233,15 @@ async function upsertFeishu(row = {}) {
   };
 
   await dbOperations.run(
-    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
-     VALUES (?, ?, ?, '', ?, CURRENT_TIMESTAMP)
+    `INSERT INTO api_settings (owner_user_id, provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, ?, ?, '', ?, CURRENT_TIMESTAMP)
      ON DUPLICATE KEY UPDATE
        api_key = VALUES(api_key),
        base_url = VALUES(base_url),
        extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [
+      ownerUserId,
       FEISHU_PROVIDER_KEY,
       preserveSecret(row.app_secret, current?.api_key),
       row.base_url || 'https://open.feishu.cn',
@@ -245,7 +251,8 @@ async function upsertFeishu(row = {}) {
 }
 
 async function upsertFeishuSheet(row = {}) {
-  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ?', [FEISHU_SHEET_PROVIDER_KEY]);
+  const ownerUserId = ownerId();
+  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ? AND owner_user_id = ?', [FEISHU_SHEET_PROVIDER_KEY, ownerUserId]);
   const extraConfig = {
     app_id: row.sheet_app_id || '',
     sheet_wiki_node_token: row.sheet_wiki_node_token || '',
@@ -254,14 +261,15 @@ async function upsertFeishuSheet(row = {}) {
   };
 
   await dbOperations.run(
-    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
-     VALUES (?, ?, ?, '', ?, CURRENT_TIMESTAMP)
+    `INSERT INTO api_settings (owner_user_id, provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, ?, ?, '', ?, CURRENT_TIMESTAMP)
      ON DUPLICATE KEY UPDATE
        api_key = VALUES(api_key),
        base_url = VALUES(base_url),
        extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [
+      ownerUserId,
       FEISHU_SHEET_PROVIDER_KEY,
       preserveSecret(row.sheet_app_secret, current?.api_key),
       row.sheet_base_url || 'https://open.feishu.cn',
@@ -271,19 +279,21 @@ async function upsertFeishuSheet(row = {}) {
 }
 
 async function upsertExternalAgent(row = {}) {
-  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ?', [EXTERNAL_AGENT_PROVIDER_KEY]);
+  const ownerUserId = ownerId();
+  const current = await dbOperations.get('SELECT api_key FROM api_settings WHERE provider = ? AND owner_user_id = ?', [EXTERNAL_AGENT_PROVIDER_KEY, ownerUserId]);
   const extraConfig = {
     enabled: row.enabled !== false,
     notes: row.notes || ''
   };
   await dbOperations.run(
-    `INSERT INTO api_settings (provider, api_key, base_url, model, extra_config, updated_at)
-     VALUES (?, ?, '', '', ?, CURRENT_TIMESTAMP)
+    `INSERT INTO api_settings (owner_user_id, provider, api_key, base_url, model, extra_config, updated_at)
+     VALUES (?, ?, ?, '', '', ?, CURRENT_TIMESTAMP)
      ON DUPLICATE KEY UPDATE
        api_key = VALUES(api_key),
        extra_config = VALUES(extra_config),
        updated_at = CURRENT_TIMESTAMP`,
     [
+      ownerUserId,
       EXTERNAL_AGENT_PROVIDER_KEY,
       preserveSecret(row.api_token, current?.api_key),
       JSON.stringify(extraConfig)
@@ -293,7 +303,7 @@ async function upsertExternalAgent(row = {}) {
 
 router.get('/', async (req, res) => {
   try {
-    const rows = await dbOperations.query('SELECT provider, api_key, base_url, model, extra_config, updated_at FROM api_settings ORDER BY provider');
+    const rows = await dbOperations.query('SELECT provider, api_key, base_url, model, extra_config, updated_at FROM api_settings WHERE owner_user_id = ? ORDER BY provider', [ownerId(req)]);
     const savedSelection = parseJson(getRow(rows, SYSTEM_SELECTION_KEY)?.extra_config, {});
     const selection = mergeSelection(savedSelection);
 
@@ -405,20 +415,22 @@ router.post('/test-ai', async (req, res) => {
 
 router.get('/health/config', async (req, res) => {
   try {
-    const selectionRow = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ?', [SYSTEM_SELECTION_KEY]);
+    const ownerUserId = ownerId(req);
+    const setting = (provider) => dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [provider, ownerUserId]);
+    const selectionRow = await setting(SYSTEM_SELECTION_KEY);
     const selection = parseJson(selectionRow?.extra_config, DEFAULT_SELECTION);
 
     const aiActive = selection.aiModels?.active || DEFAULT_SELECTION.aiModels.active;
-    const aiRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey('ai', aiActive)]);
+    const aiRow = await setting(providerKey('ai', aiActive));
 
     const platforms = {};
     for (const [platform, providers] of Object.entries(PLATFORM_PROVIDERS)) {
       const platformConfig = selection.platforms?.[platform] || DEFAULT_SELECTION.platforms[platform];
       const primary = platformConfig?.primary || DEFAULT_SELECTION.platforms[platform].primary;
-      const primaryRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey(platform, primary)]);
+      const primaryRow = await setting(providerKey(platform, primary));
       const fallbackStatus = [];
       for (const fb of (platformConfig?.fallbacks || [])) {
-        const fbRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [providerKey(platform, fb)]);
+        const fbRow = await setting(providerKey(platform, fb));
         fallbackStatus.push({ provider: fb, configured: isPlatformConfigured(fbRow) });
       }
       const missing = [];
@@ -433,10 +445,10 @@ router.get('/health/config', async (req, res) => {
       };
     }
 
-    const externalAgentRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [EXTERNAL_AGENT_PROVIDER_KEY]);
+    const externalAgentRow = await setting(EXTERNAL_AGENT_PROVIDER_KEY);
     const externalAgentExtra = parseJson(externalAgentRow?.extra_config, {});
 
-    const feishuRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [FEISHU_PROVIDER_KEY]);
+    const feishuRow = await setting(FEISHU_PROVIDER_KEY);
     const feishuExtra = parseJson(feishuRow?.extra_config, {});
 
     const checks = {

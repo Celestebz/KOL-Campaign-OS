@@ -1,6 +1,7 @@
 // 跟进自动化：48h 未回复生成跟进草稿进审批队列；≥5 天未回复不再自动起草，仅标记"建议转下一批"（P1 只记日志，不做候选池降级回写）。
 // 注：emailDrafter 通过模块对象引用（非解构），便于测试 monkey-patch。
 const { dbOperations } = require('../database');
+const { currentUserId, runWithUser } = require('../utils/requestContext');
 const emailDrafter = require('./emailDrafter');
 
 const FOLLOW_UP_AFTER_HOURS = 48;
@@ -11,10 +12,16 @@ const SCAN_INTERVAL_MINUTES = Number(process.env.EMAIL_FOLLOWUP_INTERVAL_MINUTES
 // 返回 { drafted, giveUps }，便于测试与日志核对。
 async function scanOnce() {
   const candidates = await dbOperations.query(
-    `SELECT ck.campaign_id, ck.customer_id,
+    `SELECT ck.campaign_id, ck.customer_id, er_owner.owner_user_id,
        MAX(ck.follow_up_count) AS follow_up_count,
        MAX(ck.last_outreach_at) AS last_outreach_at
      FROM campaign_kols ck
+     INNER JOIN (
+       SELECT campaign_id, customer_id, owner_user_id
+       FROM email_records
+       WHERE status = 'success' AND owner_user_id IS NOT NULL
+       GROUP BY campaign_id, customer_id, owner_user_id
+     ) er_owner ON er_owner.campaign_id = ck.campaign_id AND er_owner.customer_id = ck.customer_id
      WHERE ck.last_outreach_at IS NOT NULL
        AND ck.last_outreach_at <= DATE_SUB(NOW(), INTERVAL ? HOUR)
        AND ck.last_outreach_at > DATE_SUB(NOW(), INTERVAL ? DAY)
@@ -22,40 +29,45 @@ async function scanOnce() {
        AND EXISTS (
          SELECT 1 FROM email_records er
          WHERE er.campaign_id = ck.campaign_id AND er.customer_id = ck.customer_id
+           AND er.owner_user_id = er_owner.owner_user_id
            AND er.status = 'success'
        )
        AND NOT EXISTS (
          SELECT 1 FROM email_replies r
          WHERE r.campaign_id = ck.campaign_id AND r.customer_id = ck.customer_id
+           AND r.owner_user_id = er_owner.owner_user_id
            AND r.confirm_status = 'confirmed'
        )
        AND NOT EXISTS (
          SELECT 1 FROM email_drafts d
          WHERE d.campaign_id = ck.campaign_id AND d.customer_id = ck.customer_id
+           AND d.owner_user_id = er_owner.owner_user_id
            AND d.kind = 'follow_up' AND d.status IN ('pending_review', 'approved')
        )
        AND NOT EXISTS (
          SELECT 1 FROM email_drafts d
          WHERE d.campaign_id = ck.campaign_id AND d.customer_id = ck.customer_id
+           AND d.owner_user_id = er_owner.owner_user_id
            AND d.kind = 'follow_up' AND d.status = 'rejected'
            AND d.updated_at >= ck.last_outreach_at
        )
        AND NOT EXISTS (
          SELECT 1 FROM email_bounces eb
          WHERE eb.campaign_id = ck.campaign_id AND eb.customer_id = ck.customer_id
+           AND eb.owner_user_id = er_owner.owner_user_id
            AND eb.bounce_type = 'hard'
        )
-     GROUP BY ck.campaign_id, ck.customer_id`,
+     GROUP BY ck.campaign_id, ck.customer_id, er_owner.owner_user_id`,
     [FOLLOW_UP_AFTER_HOURS, GIVE_UP_AFTER_DAYS, MAX_FOLLOW_UPS]
   );
 
   let drafted = 0;
   for (const item of candidates) {
-    const result = await emailDrafter.draftForCustomer({
+    const result = await runWithUser({ id: item.owner_user_id }, () => emailDrafter.draftForCustomer({
       campaignId: item.campaign_id,
       customerId: item.customer_id,
       kind: 'follow_up'
-    });
+    }));
     if (result.ok && !result.skipped) {
       drafted += 1;
       await dbOperations.run(
@@ -169,10 +181,10 @@ async function recordManualOutreach({ campaignKolId, subject = null, bodyText = 
     try {
       await dbOperations.run(
         `INSERT INTO email_records
-         (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, created_at)
-         VALUES (NULL, ?, ?, ?, ?, ?, ?, 'success', ?, NOW())`,
+         (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, owner_user_id, created_at)
+         VALUES (NULL, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NOW())`,
         [row.campaign_id, row.customer_id, customer?.name || null, customer?.email || null,
-         subject || '(人工跟进，未填写主题)', bodyText || null, recordNote]
+         subject || '(人工跟进，未填写主题)', bodyText || null, recordNote, currentUserId()]
       );
     } catch (error) {
       // 记录失败不影响主流程（last_outreach_at / follow_up_count 已经回写）

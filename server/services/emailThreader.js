@@ -1,6 +1,7 @@
 // 邮件会话（thread）归属：按 In-Reply-To / References / 发送记录 / 主题+窗口 逐级匹配。
 // 注：db 通过参数注入（默认 dbOperations），便于测试传入内存 stub，不连真实数据库。
 const { dbOperations } = require('../database');
+const { currentUserId } = require('../utils/requestContext');
 
 // 同主题会话的时间窗口：超过 60 天视为新会话
 const THREAD_WINDOW_DAYS = 60;
@@ -58,12 +59,12 @@ async function findThreadByMessageId(db, messageId) {
   return null;
 }
 
-async function createThread(db, { campaignId, customerId, normalizedSubject, messageAt, messageCount = 0 }, dryRun) {
+async function createThread(db, { campaignId, customerId, normalizedSubject, messageAt, messageCount = 0, ownerUserId = null }, dryRun) {
   if (dryRun) return null; // 预演模式不落库
   const result = await db.run(
-    `INSERT INTO email_threads (campaign_id, customer_id, normalized_subject, last_message_at, message_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
-    [campaignId || null, customerId || null, normalizedSubject || '', messageAt || new Date(), messageCount]
+    `INSERT INTO email_threads (campaign_id, customer_id, normalized_subject, last_message_at, message_count, owner_user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+    [campaignId || null, customerId || null, normalizedSubject || '', messageAt || new Date(), messageCount, ownerUserId || currentUserId()]
   );
   return result.id || null;
 }
@@ -126,7 +127,7 @@ async function findOrCreateThread({ campaignId, customerId, normalizedSubject, m
 async function assignReplyThread(params, db = dbOperations, opts = {}) {
   const {
     replyId, inReplyTo, references, subject,
-    receivedAt, campaignId, customerId, emailRecordId
+    receivedAt, campaignId, customerId, emailRecordId, ownerUserId
   } = params;
   const dryRun = Boolean(opts.dryRun);
   const messageAt = receivedAt || new Date();
@@ -176,7 +177,7 @@ async function assignReplyThread(params, db = dbOperations, opts = {}) {
 
   // 规则 5：有唯一归属但无历史 thread → 新建
   if (!threadId && !ambiguous && campaignId && customerId) {
-    threadId = await createThread(db, { campaignId, customerId, normalizedSubject, messageAt }, dryRun);
+    threadId = await createThread(db, { campaignId, customerId, normalizedSubject, messageAt, ownerUserId }, dryRun);
     matchedBy = 'new';
   }
 
@@ -252,8 +253,9 @@ async function assignRecordThread(recordId, db = dbOperations, opts = {}) {
       threadId = bySubject.threadId;
       matchedBy = 'subject';
     } else {
+      const ownership = await db.get('SELECT owner_user_id FROM email_records WHERE id = ?', [recordId]);
       threadId = await createThread(db, {
-        campaignId: record.campaign_id, customerId: record.customer_id, normalizedSubject, messageAt
+        campaignId: record.campaign_id, customerId: record.customer_id, normalizedSubject, messageAt, ownerUserId: ownership?.owner_user_id
       }, dryRun);
       matchedBy = 'new';
     }

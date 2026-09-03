@@ -123,13 +123,13 @@ async function processSystemMail(replyId, db = dbOperations) {
   await db.run(
     `INSERT INTO email_bounces
      (email_reply_id, email_record_id, campaign_id, customer_id, recipient, bounce_type,
-      status_code, reason, received_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+      status_code, reason, received_at, owner_user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
      ON DUPLICATE KEY UPDATE email_record_id = VALUES(email_record_id), campaign_id = VALUES(campaign_id),
        customer_id = VALUES(customer_id), recipient = VALUES(recipient), bounce_type = VALUES(bounce_type),
        status_code = VALUES(status_code), reason = VALUES(reason), received_at = VALUES(received_at), updated_at = NOW()`,
     [reply.id, record?.id || null, campaignId, customerId, parsed.recipient || null,
-      parsed.bounceType, parsed.statusCode || null, parsed.reason || null, reply.received_at]
+      parsed.bounceType, parsed.statusCode || null, parsed.reason || null, reply.received_at, reply.owner_user_id]
   );
   return { systemMailType: 'bounce', ...parsed, emailRecordId: record?.id || null };
 }

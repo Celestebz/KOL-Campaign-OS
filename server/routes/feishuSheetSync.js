@@ -1,6 +1,7 @@
 const express = require('express');
 const { dbOperations } = require('../database');
 const { fetchContentStats } = require('../services/contentStats');
+const { requireCurrentUserId } = require('../utils/requestContext');
 
 const router = express.Router();
 const FEISHU_PROVIDER_KEY = 'cloud.feishu_bitable';
@@ -53,8 +54,9 @@ async function fetchJson(url, options = {}) {
 }
 
 async function getConfig(purpose = 'cooperation_tracking', campaignId = 61) {
-  let row = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [FEISHU_SHEET_PROVIDER_KEY]);
-  if (!row) row = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [FEISHU_PROVIDER_KEY]);
+  const ownerUserId = requireCurrentUserId();
+  let row = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [FEISHU_SHEET_PROVIDER_KEY, ownerUserId]);
+  if (!row) row = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [FEISHU_PROVIDER_KEY, ownerUserId]);
   const extra = parseJson(row?.extra_config, {});
   const savedTargets = parseJson(extra.sheet_purpose_map, []);
   const target = Array.isArray(savedTargets)

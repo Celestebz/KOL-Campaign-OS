@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { promisify } = require('util');
 const { requireAgentToken } = require('./agentAuth');
 const { dbOperations, sequelize } = require('../database');
+const requestContext = require('../utils/requestContext');
 
 const scrypt = promisify(crypto.scrypt);
 const COOKIE_NAME = 'kol_user_session';
@@ -146,7 +147,7 @@ function requireAuthWithStore(store = defaultStore) {
       const user = await loadSession(req, store);
       if (!user) return res.status(401).json({ success: false, error: '请登录后继续' });
       req.user = user;
-      return next();
+      return requestContext.runWithUser(user, next);
     } catch (error) { return next(error); }
   };
 }
@@ -168,7 +169,7 @@ function createAuthGuard(store = defaultStore) {
   if (p === '/api/health' || p.startsWith('/api/agent') || p.startsWith('/api/auth')) return next();
   if (isAgentFinderOperation(req)) {
     return loadSession(req, store).then((user) => {
-      if (user) { req.user = user; return next(); }
+      if (user) { req.user = user; return requestContext.runWithUser(user, next); }
       return requireAgentToken(req, res, next);
     }).catch(next);
   }

@@ -1,6 +1,7 @@
 // 触达邮件审核 builder：email_drafts status='pending_review'。
 const { dbOperations } = require('../../database');
 const { clean, truncate, iso, openAction, parseJson } = require('./shared');
+const { requireCurrentUserId } = require('../../utils/requestContext');
 
 async function buildOutreachItems() {
   const rows = await dbOperations.query(
@@ -10,8 +11,9 @@ async function buildOutreachItems() {
      FROM email_drafts d
      LEFT JOIN customers k ON k.id = d.customer_id
      LEFT JOIN campaigns c ON c.id = d.campaign_id
-     WHERE d.status = 'pending_review' AND c.status = 'active'
-     ORDER BY d.generated_at DESC`
+     WHERE d.owner_user_id = ? AND d.status = 'pending_review' AND c.status = 'active'
+     ORDER BY d.generated_at DESC`,
+    [requireCurrentUserId()]
   );
   return rows.map((row) => {
     const kolName = clean(row.kol_name) || `达人 #${row.customer_id}`;

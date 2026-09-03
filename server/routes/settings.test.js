@@ -10,7 +10,7 @@ function findHandler(router, method, path) {
   return layer.route.stack[0].handle;
 }
 
-function callHandler(handler, { body = {} } = {}) {
+function callHandler(handler, { body = {}, user } = {}) {
   return new Promise((resolve, reject) => {
     const response = {
       statusCode: 200,
@@ -25,7 +25,7 @@ function callHandler(handler, { body = {} } = {}) {
         return this;
       }
     };
-    Promise.resolve(handler({ body }, response, reject)).catch(reject);
+    Promise.resolve(handler({ body, user }, response, reject)).catch(reject);
   });
 }
 
@@ -99,10 +99,10 @@ test('POST /api/settings preserves existing secrets for alternative mask forms',
     });
 
     assert.equal(response.statusCode, 200);
-    const youtubeWrite = writes.find((item) => item.params[0] === 'youtube.google_official');
-    const agentWrite = writes.find((item) => item.params[0] === 'agent.external_api');
-    assert.equal(youtubeWrite.params[1], 'youtube-secret');
-    assert.equal(agentWrite.params[1], 'agent-token');
+    const youtubeWrite = writes.find((item) => item.params[1] === 'youtube.google_official');
+    const agentWrite = writes.find((item) => item.params[1] === 'agent.external_api');
+    assert.equal(youtubeWrite.params[2], 'youtube-secret');
+    assert.equal(agentWrite.params[2], 'agent-token');
   } finally {
     dbOperations.get = originalGet;
     dbOperations.run = originalRun;
@@ -248,19 +248,19 @@ test('POST /api/settings preserves existing secrets when masked values are submi
     });
 
     assert.equal(response.statusCode, 200);
-    const youtubeWrite = writes.find((item) => item.params[0] === 'youtube.google_official');
-    const feishuWrite = writes.find((item) => item.params[0] === 'cloud.feishu_bitable');
-    const agentWrite = writes.find((item) => item.params[0] === 'agent.external_api');
+    const youtubeWrite = writes.find((item) => item.params[1] === 'youtube.google_official');
+    const feishuWrite = writes.find((item) => item.params[1] === 'cloud.feishu_bitable');
+    const agentWrite = writes.find((item) => item.params[1] === 'agent.external_api');
 
-    assert.equal(youtubeWrite.params[1], 'youtube-secret');
-    assert.equal(feishuWrite.params[1], 'feishu-secret');
-    assert.equal(JSON.parse(feishuWrite.params[3]).app_token, 'base-token');
-    assert.equal(JSON.parse(feishuWrite.params[3]).sync_kol_master, false);
-    assert.equal(JSON.parse(feishuWrite.params[3]).campaign_tracking_map, '{"3":"tbl_track_3"}');
-    assert.equal(JSON.parse(feishuWrite.params[3]).campaign_kol_table_id, undefined);
-    assert.equal(agentWrite.params[1], 'agent-token');
+    assert.equal(youtubeWrite.params[2], 'youtube-secret');
+    assert.equal(feishuWrite.params[2], 'feishu-secret');
+    assert.equal(JSON.parse(feishuWrite.params[4]).app_token, 'base-token');
+    assert.equal(JSON.parse(feishuWrite.params[4]).sync_kol_master, false);
+    assert.equal(JSON.parse(feishuWrite.params[4]).campaign_tracking_map, '{"3":"tbl_track_3"}');
+    assert.equal(JSON.parse(feishuWrite.params[4]).campaign_kol_table_id, undefined);
+    assert.equal(agentWrite.params[2], 'agent-token');
     assert.equal(
-      writes.some((item) => String(item.params[0] || '').startsWith('agent.') && item.params[0] !== 'agent.external_api'),
+      writes.some((item) => String(item.params[1] || '').startsWith('agent.') && item.params[1] !== 'agent.external_api'),
       false
     );
   } finally {

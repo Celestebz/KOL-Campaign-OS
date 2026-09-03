@@ -3,6 +3,7 @@ const { dbOperations } = require('../database');
 const { PRIORITY_LEVELS, normalizePriorityLevel } = require('../utils/campaignKolEnums');
 const { draftDedupeKey, isDuplicateError } = require('./emailDraftDedupe');
 const emailMailboxes = require('./emailMailboxes');
+const { requireCurrentUserId } = require('../utils/requestContext');
 
 const ALLOWED_PLATFORMS = new Set(['youtube', 'instagram', 'tiktok', 'facebook', 'x']);
 const MAX_CANDIDATE_BATCH = 100;
@@ -450,11 +451,12 @@ async function validateDraft(campaignId, item) {
 }
 
 async function upsertDraft(campaignId, item) {
+  const ownerUserId = requireCurrentUserId();
   const validation = await validateDraft(campaignId, item);
   if (validation.action === 'rejected') return validation;
   const subject = clean(item.subject);
   const bodyText = clean(item.body_text);
-  const mailbox = await emailMailboxes.resolveMailboxForDraft({ campaignId });
+  const mailbox = await emailMailboxes.resolveMailboxForDraft({ campaignId, ownerUserId });
   const mailboxId = mailbox?.id || null;
   if (validation.action === 'update') {
     await dbOperations.run(
@@ -475,10 +477,10 @@ async function upsertDraft(campaignId, item) {
     result = await dbOperations.run(
       `INSERT INTO email_drafts
      (campaign_id, customer_id, kind, subject, body_text, status, risk_level, risk_reasons,
-      evidence, prompt_version, mailbox_id, dedupe_key, created_at, updated_at)
-     VALUES (?, ?, 'first_touch', ?, ?, 'pending_review', 'none', '[]', ?, 'agent-manual-v1', ?, ?, NOW(), NOW())`,
+      evidence, prompt_version, mailbox_id, owner_user_id, dedupe_key, created_at, updated_at)
+     VALUES (?, ?, 'first_touch', ?, ?, 'pending_review', 'none', '[]', ?, 'agent-manual-v1', ?, ?, ?, NOW(), NOW())`,
       [campaignId, validation.customer_id, subject, bodyText, JSON.stringify({ source: 'external_agent' }),
-        mailboxId, draftDedupeKey({ campaignId, customerId: validation.customer_id, kind: 'first_touch' })]
+        mailboxId, ownerUserId, draftDedupeKey({ campaignId, customerId: validation.customer_id, kind: 'first_touch' })]
     );
   } catch (error) {
     if (!isDuplicateError(error)) throw error;

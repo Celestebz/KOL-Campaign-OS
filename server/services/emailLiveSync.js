@@ -12,6 +12,7 @@ const emailBounceService = require('./emailBounceService');
 const { parseInboundBody } = require('./emailBodyParser');
 const emailMimeParser = require('./emailMimeParser');
 const emailThreader = require('./emailThreader');
+const requestContext = require('../utils/requestContext');
 
 const { normalizeAddress, findOwnerByAddress } = emailReplyPoller;
 const { toStoredMessageId } = emailMimeParser;
@@ -74,7 +75,7 @@ async function assignThreadSafely(params) {
 }
 
 // 处理一封已抓取的邮件：幂等去重 → MIME 解析（失败回退旧解析器）→ 匹配 → 入库 → 会话归属 → AI 摘要（仅已匹配）
-async function processFetchedMessage(message, mailboxId) {
+async function processFetchedMessage(message, mailboxId, ownerUserId = null) {
   const uid = message.uid;
   const messageId = message.envelope?.messageId || `uid-${uid}`;
   const existing = await dbOperations.get('SELECT id FROM email_replies WHERE message_id = ? LIMIT 1', [messageId]);
@@ -89,8 +90,8 @@ async function processFetchedMessage(message, mailboxId) {
   const bodyText = parseOk ? (parsed.bodyText || '') : parseInboundBody(message.bodyParts?.get('text') || '');
   const rawSource = parseOk && message.source && message.source.length <= RAW_SOURCE_MAX_BYTES
     ? message.source.toString('utf8') : null;
-  const owner = fromAddress ? await findOwnerByAddress(fromAddress) : null;
-  const filterRule = fromAddress ? await emailFilterService.matchingRule(fromAddress) : null;
+  const owner = fromAddress ? await findOwnerByAddress(fromAddress, ownerUserId) : null;
+  const filterRule = fromAddress ? await emailFilterService.matchingRule(fromAddress, ownerUserId) : null;
   const systemMail = emailBounceService.detectSystemMail({
     fromAddress, subject, bodyText
   });
@@ -105,14 +106,14 @@ async function processFetchedMessage(message, mailboxId) {
     const result = await dbOperations.run(
       `INSERT INTO email_replies
        (email_record_id, campaign_id, customer_id, from_address, message_id, subject, body_text, received_at,
-        mailbox_id,
+        mailbox_id, owner_user_id,
         ai_status, confirm_status, classification, classification_source, classification_reason, classified_at,
         created_at, updated_at,
         in_reply_to, references_json, clean_body_text, body_html, quoted_body_text, signature_text,
         raw_source, parse_status, parse_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
-       subject, bodyText, receivedAt, mailboxId || null, confirmStatus,
+       subject, bodyText, receivedAt, mailboxId || null, ownerUserId, confirmStatus,
        classification, classificationSource, classificationReason,
        parseOk ? toStoredMessageId(parsed.inReplyTo) : null,
        parseOk ? JSON.stringify((parsed.references || []).map(toStoredMessageId)) : null,
@@ -136,14 +137,16 @@ async function processFetchedMessage(message, mailboxId) {
         campaignId: owner?.campaign_id || null,
         customerId: owner?.customer_id || null,
         emailRecordId: owner?.id || null
+        , ownerUserId
       });
     }
     if (owner?.customer_id && !filterRule && !systemMail.isSystem) {
       await emailReplyPoller.markWaitingReply(owner.campaign_id, owner.customer_id);
     }
-    if (result.id && systemMail.isSystem) emailBounceService.processSystemMail(result.id).catch(() => {});
-    if (result.id && owner?.customer_id && !filterRule && !systemMail.isSystem) emailReplyPoller.summarizeReply(result.id).catch(() => {});
-    if (result.id && !owner?.customer_id && !filterRule && !systemMail.isSystem) emailFilterService.classifyStoredReply(result.id).catch(() => {});
+    const asOwner = (fn) => requestContext.runWithUser({ id: ownerUserId }, fn);
+    if (result.id && systemMail.isSystem) asOwner(() => emailBounceService.processSystemMail(result.id)).catch(() => {});
+    if (result.id && owner?.customer_id && !filterRule && !systemMail.isSystem) asOwner(() => emailReplyPoller.summarizeReply(result.id)).catch(() => {});
+    if (result.id && !owner?.customer_id && !filterRule && !systemMail.isSystem) asOwner(() => emailFilterService.classifyStoredReply(result.id)).catch(() => {});
     return { matched: Boolean(owner?.customer_id), replyId: result.id || null };
   } catch (error) {
     // Message-ID 唯一索引兜底：并发重复按已处理对待
@@ -172,7 +175,7 @@ async function fetchNew(worker, activeClient = worker.client) {
     const range = `${lastUid + 1}:*`;
     for await (const message of activeClient.fetch(range, { envelope: true, bodyParts: ['text'], source: true }, { uid: true })) {
       if (!message?.uid || message.uid <= lastUid) continue;
-      const outcome = await processFetchedMessage(message, settings.id);
+      const outcome = await processFetchedMessage(message, settings.id, settings.owner_user_id);
       fetched += 1;
       if (outcome.duplicate) { /* 不计入 */ } else if (outcome.matched) matched += 1;
       else unmatched += 1;
@@ -395,8 +398,8 @@ async function testImapConnection(mailboxId = null) {
   }
 }
 
-async function getEmailSyncStatus() {
-  const rows = await emailMailboxes.listMailboxes();
+async function getEmailSyncStatus(ownerUserId = null) {
+  const rows = await emailMailboxes.listMailboxes({ ownerUserId });
   return rows.map((row) => {
     const worker = workers.get(row.id);
     return {

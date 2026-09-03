@@ -7,8 +7,10 @@ const { dbOperations } = require('../database');
 const { buildAllApprovalItems } = require('./approvalBuilders');
 const decisionDispatcher = require('./decisionDispatcher');
 const { iso } = require('./approvalBuilders/shared');
+const { requireCurrentUserId } = require('../utils/requestContext');
 
 const APPROVAL_TYPES = new Set(['strategy', 'candidate', 'outreach', 'reply', 'budget', 'exception']);
+const PRIVATE_SUBJECT_TYPES = new Set(['email_draft', 'email_reply']);
 
 // decision → status 映射（spec 8.1：待审核/已批准/已驳回/已取消）
 const DECISION_TO_STATUS = {
@@ -142,8 +144,12 @@ function toApiItem(row) {
 
 // ---- 同步：六类 builder → approval_items ----
 async function syncApprovalItems() {
+  const ownerUserId = requireCurrentUserId();
   const built = await buildAllApprovalItems();
-  const existingRows = await dbOperations.query('SELECT * FROM approval_items');
+  const existingRows = await dbOperations.query(
+    'SELECT * FROM approval_items WHERE owner_user_id IS NULL OR owner_user_id = ?',
+    [ownerUserId]
+  );
   const byDedupeKey = new Map(existingRows.map((row) => [row.dedupe_key, row]));
   const seenKeys = new Set();
   let inserted = 0;
@@ -158,10 +164,11 @@ async function syncApprovalItems() {
       // 新待办：插入 pending 快照
       await dbOperations.run(
         `INSERT INTO approval_items
-         (campaign_id, type, subject_type, subject_id, status, priority,
+         (owner_user_id, campaign_id, type, subject_type, subject_id, status, priority,
           facts_json, opinion_json, risks_json, actions_json, version, dedupe_key, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())`,
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, 1, ?, NOW(), NOW())`,
         [
+          PRIVATE_SUBJECT_TYPES.has(item.subject_type) ? ownerUserId : null,
           item.campaign_id ?? null, item.type, item.subject_type, item.subject_id,
           item.risk_level || 'none',
           JSON.stringify(snapshot.facts), JSON.stringify(snapshot.opinion),
@@ -210,7 +217,11 @@ async function syncApprovalItems() {
 
 // ---- 查询 ----
 async function getApprovalItem(id) {
-  const row = await dbOperations.get('SELECT * FROM approval_items WHERE id = ?', [id]);
+  const ownerUserId = requireCurrentUserId();
+  const row = await dbOperations.get(
+    'SELECT * FROM approval_items WHERE id = ? AND (owner_user_id IS NULL OR owner_user_id = ?)',
+    [id, ownerUserId]
+  );
   return row ? toApiItem(row) : null;
 }
 
@@ -221,8 +232,9 @@ async function listApprovalItems({ status, type } = {}) {
   if (type && !APPROVAL_TYPES.has(type)) {
     throw serviceError(`无效的 type：${type}`, 400);
   }
-  const conditions = [];
-  const params = [];
+  const ownerUserId = requireCurrentUserId();
+  const conditions = ['(owner_user_id IS NULL OR owner_user_id = ?)'];
+  const params = [ownerUserId];
   if (status) { conditions.push('status = ?'); params.push(status); }
   if (type) { conditions.push('type = ?'); params.push(type); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -235,13 +247,16 @@ async function listApprovalItems({ status, type } = {}) {
 
 // 工作台待审核列表：保持阶段 B 的类型分组顺序（strategy→candidate→budget→outreach→reply→exception）
 async function listPendingWorkbenchItems() {
+  const ownerUserId = requireCurrentUserId();
   const rows = await dbOperations.query(
     `SELECT ai.* FROM approval_items ai
      LEFT JOIN campaigns c ON c.id = ai.campaign_id
      WHERE ai.status = 'pending' AND ai.type <> 'candidate'
+       AND (ai.owner_user_id IS NULL OR ai.owner_user_id = ?)
        AND (ai.campaign_id IS NULL OR c.status = 'active')
      ORDER BY FIELD(ai.type, 'strategy', 'candidate', 'budget', 'outreach', 'reply', 'exception'),
-              ai.updated_at DESC, ai.id DESC`
+              ai.updated_at DESC, ai.id DESC`,
+    [ownerUserId]
   );
   return rows.map(toApiItem);
 }
@@ -317,6 +332,7 @@ function summarizeExceptionGroups(items) {
 
 // summary 口径与阶段 B 一致：pending 不含 exception；handled_today 为 approval_items 当日人工决定数
 async function getSummary() {
+  const ownerUserId = requireCurrentUserId();
   const [row, unmatchedReplyRow] = await Promise.all([
     dbOperations.get(
     `SELECT
@@ -325,12 +341,15 @@ async function getSummary() {
        COALESCE(SUM(CASE WHEN status = 'pending' AND type = 'exception' THEN 1 ELSE 0 END), 0) AS exceptions,
        COALESCE(SUM(CASE WHEN decision IS NOT NULL AND decision <> 'source_gone'
                           AND decided_at IS NOT NULL AND DATE(decided_at) = CURDATE() THEN 1 ELSE 0 END), 0) AS handled_today
-     FROM approval_items`
+     FROM approval_items
+     WHERE owner_user_id IS NULL OR owner_user_id = ?`,
+    [ownerUserId]
     ),
     dbOperations.get(
       `SELECT COUNT(*) AS unmatched_replies
        FROM email_replies
-       WHERE confirm_status = 'pending' AND campaign_id IS NULL`
+       WHERE owner_user_id = ? AND confirm_status = 'pending' AND campaign_id IS NULL`,
+      [ownerUserId]
     )
   ]);
   return {
@@ -382,12 +401,14 @@ async function listActiveRuns() {
 
 // 最近 10 条人工决定（含 request_changes 这类仍为 pending 的决定；不含 source_gone 自动取消）
 async function listRecentDecisions(limit = 10) {
+  const ownerUserId = requireCurrentUserId();
   const rows = await dbOperations.query(
     `SELECT * FROM approval_items
-     WHERE decision IS NOT NULL AND decision <> 'source_gone' AND decided_at IS NOT NULL
+     WHERE (owner_user_id IS NULL OR owner_user_id = ?)
+       AND decision IS NOT NULL AND decision <> 'source_gone' AND decided_at IS NOT NULL
      ORDER BY decided_at DESC, id DESC
      LIMIT ?`,
-    [limit]
+    [ownerUserId, limit]
   );
   return rows.map((row) => {
     const item = toApiItem(row);
@@ -410,7 +431,11 @@ async function submitDecision(id, { decision, note, version, decided_by } = {}) 
   if (!DECISION_TO_STATUS[decision]) {
     throw serviceError(`不支持的决定类型：${decision}`, 400);
   }
-  const row = await dbOperations.get('SELECT * FROM approval_items WHERE id = ?', [id]);
+  const ownerUserId = requireCurrentUserId();
+  const row = await dbOperations.get(
+    'SELECT * FROM approval_items WHERE id = ? AND (owner_user_id IS NULL OR owner_user_id = ?)',
+    [id, ownerUserId]
+  );
   if (!row) throw serviceError('审核事项不存在', 404);
   if (row.status !== 'pending') throw serviceError('该事项已处理，不能重复决定', 409);
   if (Number(version) !== Number(row.version)) {

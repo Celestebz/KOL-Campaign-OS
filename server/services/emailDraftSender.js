@@ -135,14 +135,14 @@ async function sendApprovedDraft(draftId) {
 
   const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [draftId]);
   // 多邮箱：草稿绑定的邮箱优先；草稿未绑定时按活动绑定邮箱解析，最后才回退默认邮箱
-  const bound = draft.mailbox_id ? await emailMailboxes.getMailboxById(draft.mailbox_id) : null;
+  const bound = draft.mailbox_id ? await emailMailboxes.getMailboxById(draft.mailbox_id, draft.owner_user_id) : null;
   const campaignRow = draft.campaign_id
     ? await dbOperations.get('SELECT mailbox_id FROM campaigns WHERE id = ?', [draft.campaign_id])
     : null;
-  const campaignBound = campaignRow?.mailbox_id ? await emailMailboxes.getMailboxById(campaignRow.mailbox_id) : null;
+  const campaignBound = campaignRow?.mailbox_id ? await emailMailboxes.getMailboxById(campaignRow.mailbox_id, draft.owner_user_id) : null;
   const settings = bound && bound.enabled
     ? bound
-    : (campaignBound && campaignBound.enabled ? campaignBound : await emailMailboxes.getDefaultMailbox());
+    : (campaignBound && campaignBound.enabled ? campaignBound : await emailMailboxes.getDefaultMailbox(draft.owner_user_id));
   if (!settings) {
     await markFailed(draft.id);
     throw actionError('请先配置邮箱设置', 400);
@@ -198,10 +198,10 @@ async function sendApprovedDraft(draftId) {
     const ambiguous = isAmbiguousSendError(sendError);
     await dbOperations.run(
       `INSERT INTO email_records
-       (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, mailbox_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, NOW())`,
+       (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, owner_user_id, mailbox_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, NOW())`,
       [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
-       draft.subject, draft.body_text, sendError.message, mailboxId]
+       draft.subject, draft.body_text, sendError.message, draft.owner_user_id, mailboxId]
     );
     if (ambiguous) {
       await markUnknown(draft.id);
@@ -214,13 +214,13 @@ async function sendApprovedDraft(draftId) {
   // SMTP 已接受邮件后不再把草稿标成可重试，避免数据库回写异常导致重复外发。
   const recordInsert = await dbOperations.run(
       `INSERT INTO email_records
-       (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, in_reply_to, references_json, mailbox_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, NOW())`,
+       (draft_id, campaign_id, customer_id, kol_name, to_address, cc, subject, body_text, status, smtp_message_id, in_reply_to, references_json, owner_user_id, mailbox_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, ?, NOW())`,
     [draft.id, draft.campaign_id, draft.customer_id, customer.name, customer.email,
      cc.join(',') || null, subject, text, messageId,
      sendCtx ? sendCtx.inReplyTo : null,
      sendCtx && sendCtx.references.length ? JSON.stringify(sendCtx.references) : null,
-     mailboxId]
+     draft.owner_user_id, mailboxId]
   );
   // 发送记录挂会话：按 In-Reply-To/References 命中来信复用 thread，失败仅记日志不影响发送结果
   if (recordInsert.id) {
@@ -262,10 +262,10 @@ async function confirmManuallySent(draftId) {
 
   const manualInsert = await dbOperations.run(
     `INSERT INTO email_records
-     (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, mailbox_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NOW())`,
+     (draft_id, campaign_id, customer_id, kol_name, to_address, subject, body_text, status, error, owner_user_id, mailbox_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, NOW())`,
     [draft.id, draft.campaign_id, draft.customer_id, customer?.name || null, customer?.email || null,
-     draft.subject, draft.body_text, note, draft.mailbox_id || null]
+     draft.subject, draft.body_text, note, draft.owner_user_id, draft.mailbox_id || null]
   );
   // 人工确认的记录也尽量补会话归属（无回复头，按主题+窗口匹配），失败仅记日志
   if (manualInsert.id) {

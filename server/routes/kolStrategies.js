@@ -5,6 +5,7 @@ const multer = require('multer');
 const mammoth = require('mammoth');
 const pdfParse = require('pdf-parse');
 const { dbOperations, sequelize, Sequelize } = require('../database');
+const { requireCurrentUserId } = require('../utils/requestContext');
 
 const router = express.Router();
 
@@ -288,16 +289,17 @@ async function collectMaterialContext(briefText, files = []) {
 }
 
 async function getSelection() {
-  const row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ?', [SYSTEM_SELECTION_KEY]);
+  const row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ? AND owner_user_id = ?', [SYSTEM_SELECTION_KEY, requireCurrentUserId()]);
   return parseJson(row?.extra_config, { aiModels: { active: 'deepseek' } });
 }
 
 async function getAiSetting(provider) {
+  const ownerUserId = requireCurrentUserId();
   const key = `ai.${provider}`;
-  const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', [key]);
+  const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [key, ownerUserId]);
   if (direct?.api_key || direct?.base_url || direct?.model) return direct;
   if (provider === 'deepseek') {
-    return dbOperations.get('SELECT * FROM api_settings WHERE provider = ?', ['ai']);
+    return dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', ['ai', ownerUserId]);
   }
   return direct;
 }

@@ -72,10 +72,12 @@ function normalizeAddress(input) {
   return (match ? match[1] : text).trim().toLowerCase();
 }
 
-async function findOwnerByAddress(fromAddress) {
+async function findOwnerByAddress(fromAddress, ownerUserId = null) {
   const record = await dbOperations.get(
-    'SELECT id, campaign_id, customer_id FROM email_records WHERE LOWER(to_address) = ? ORDER BY created_at DESC LIMIT 1',
-    [fromAddress]
+    `SELECT id, campaign_id, customer_id FROM email_records
+     WHERE LOWER(to_address) = ?${ownerUserId ? ' AND owner_user_id = ?' : ''}
+     ORDER BY created_at DESC LIMIT 1`,
+    ownerUserId ? [fromAddress, ownerUserId] : [fromAddress]
   );
   if (record) return record;
   const customer = await dbOperations.get('SELECT id FROM customers WHERE LOWER(email) = ? LIMIT 1', [fromAddress]);
@@ -124,7 +126,7 @@ async function pollOnce() {
         if (!message?.envelope) continue;
         const messageId = message.envelope.messageId || `uid-${uid}`;
         // 幂等：message_id 已存在则跳过（标已读）
-        const existing = await dbOperations.get('SELECT id FROM email_replies WHERE message_id = ? LIMIT 1', [messageId]);
+        const existing = await dbOperations.get('SELECT id FROM email_replies WHERE message_id = ? AND owner_user_id = ? LIMIT 1', [messageId, settings.owner_user_id]);
         if (existing) {
           await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
           continue;
@@ -133,8 +135,8 @@ async function pollOnce() {
         const parsed = message.source ? await emailMimeParser.parseRawEmail(message.source) : null;
         const parseOk = parsed?.parseStatus === 'ok';
         const fromAddress = normalizeAddress((parseOk && parsed.fromAddress) || message.envelope.from?.[0]?.address || '');
-        const owner = await findOwnerByAddress(fromAddress);
-        const filterRule = await emailFilterService.matchingRule(fromAddress);
+        const owner = await findOwnerByAddress(fromAddress, settings.owner_user_id);
+        const filterRule = await emailFilterService.matchingRule(fromAddress, settings.owner_user_id);
         const bodyText = parseOk ? (parsed.bodyText || '') : parseInboundBody(message.bodyParts?.get('text') || '');
         const subject = (parseOk && parsed.subject) || message.envelope.subject || '';
         const receivedAt = (parseOk && parsed.date) || message.envelope.date || new Date();
@@ -150,13 +152,14 @@ async function pollOnce() {
           : (filterRule ? '命中内部屏蔽规则' : '发件地址已匹配 KOL');
         const result = await dbOperations.run(
           `INSERT INTO email_replies
-           (email_record_id, campaign_id, customer_id, from_address, message_id, subject, body_text, received_at,
+           (email_record_id, campaign_id, customer_id, mailbox_id, owner_user_id, from_address, message_id, subject, body_text, received_at,
             ai_status, confirm_status, classification, classification_source, classification_reason, classified_at,
             created_at, updated_at,
             in_reply_to, references_json, clean_body_text, body_html, quoted_body_text, signature_text,
             raw_source, parse_status, parse_error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null,
+           settings.id, settings.owner_user_id, fromAddress, messageId,
            subject, bodyText, receivedAt,
            confirmStatus, classification, classificationSource, classificationReason,
            parseOk ? toStoredMessageId(parsed.inReplyTo) : null,

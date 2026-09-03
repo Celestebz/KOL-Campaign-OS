@@ -1,6 +1,7 @@
 // 达人回复审核 builder：email_replies confirm_status='pending'。
 const { dbOperations } = require('../../database');
 const { INTENT_LABELS, clean, truncate, iso, openAction } = require('./shared');
+const { requireCurrentUserId } = require('../../utils/requestContext');
 
 async function buildReplyItems() {
   const rows = await dbOperations.query(
@@ -12,7 +13,7 @@ async function buildReplyItems() {
      LEFT JOIN campaigns c ON c.id = er.campaign_id
      INNER JOIN campaign_kols ck
        ON ck.campaign_id = er.campaign_id AND ck.customer_id = er.customer_id
-     WHERE c.status = 'active'
+     WHERE er.owner_user_id = ? AND c.status = 'active'
        AND ck.needs_reply = 1
        AND COALESCE(er.classification, 'needs_review') NOT IN ('spam', 'system')
        AND er.confirm_status NOT IN ('ignored', 'manually_replied', 'spam', 'system')
@@ -25,7 +26,8 @@ async function buildReplyItems() {
          ORDER BY er2.received_at DESC, er2.id DESC
          LIMIT 1
        )
-     ORDER BY er.received_at DESC`
+     ORDER BY er.received_at DESC`,
+    [requireCurrentUserId()]
   );
   return rows.map((row) => {
     const kolName = clean(row.kol_name) || `达人 #${row.customer_id}`;

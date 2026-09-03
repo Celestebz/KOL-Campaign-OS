@@ -3,6 +3,7 @@ const test = require('node:test');
 const { dbOperations } = require('../database');
 const approvalItemService = require('./approvalItemService');
 const { buildReplyItems } = require('./approvalBuilders/replyApprovalBuilder');
+const { runWithUser } = require('../utils/requestContext');
 
 function withPatchedDb(patch, fn) {
   const originals = {};
@@ -10,7 +11,7 @@ function withPatchedDb(patch, fn) {
     originals[key] = dbOperations[key];
     dbOperations[key] = patch[key];
   }
-  return Promise.resolve().then(fn).finally(() => {
+  return Promise.resolve().then(() => runWithUser({ id: 27 }, fn)).finally(() => {
     for (const key of Object.keys(originals)) dbOperations[key] = originals[key];
   });
 }
@@ -66,10 +67,10 @@ function createFakeDb({ sources = {}, initialItems = [] } = {}) {
   const run = async (sql, params = []) => {
     statements.push({ sql, params });
     if (/INSERT INTO approval_items/.test(sql)) {
-      const [campaignId, type, subjectType, subjectId, priority,
+      const [ownerUserId, campaignId, type, subjectType, subjectId, priority,
         factsJson, opinionJson, risksJson, actionsJson, dedupeKey] = params;
       const row = {
-        id: nextId++, campaign_id: campaignId, type, subject_type: subjectType, subject_id: subjectId,
+        id: nextId++, owner_user_id: ownerUserId, campaign_id: campaignId, type, subject_type: subjectType, subject_id: subjectId,
         status: 'pending', priority, facts_json: factsJson, opinion_json: opinionJson,
         risks_json: risksJson, actions_json: actionsJson, version: 1,
         decision: null, decision_note: null, decided_by: null, decided_at: null,

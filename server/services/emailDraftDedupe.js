@@ -1,4 +1,5 @@
 const { dbOperations } = require('../database');
+const { currentUserId } = require('../utils/requestContext');
 
 function draftDedupeKey({ campaignId, customerId, kind, sourceReplyId, followUpCount = 0 }) {
   if (kind === 'reply') return sourceReplyId ? `reply:${sourceReplyId}` : null;
@@ -8,11 +9,11 @@ function draftDedupeKey({ campaignId, customerId, kind, sourceReplyId, followUpC
 
 async function findBlockingDraft({ campaignId, customerId, kind, sourceReplyId }) {
   const sourceClause = kind === 'reply' ? ' AND source_reply_id = ?' : '';
-  const params = [campaignId, customerId, kind];
+  const params = [currentUserId() || 1, campaignId, customerId, kind];
   if (kind === 'reply') params.push(sourceReplyId);
   return dbOperations.get(
     `SELECT id, status FROM email_drafts
-     WHERE campaign_id = ? AND customer_id = ? AND kind = ?${sourceClause}
+     WHERE owner_user_id = ? AND campaign_id = ? AND customer_id = ? AND kind = ?${sourceClause}
        AND status IN ('pending_review', 'approved', 'sent', 'rejected')
      ORDER BY id DESC LIMIT 1`,
     params

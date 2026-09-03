@@ -2,6 +2,7 @@
 //   + automation_runs 失败（failed/partial_failed，阶段 D1：后台任务失败进异常队列，retry 只重跑失败项）。
 const { dbOperations } = require('../../database');
 const { clean, truncate, iso, openAction, parseJson } = require('./shared');
+const { requireCurrentUserId } = require('../../utils/requestContext');
 
 // run_type → 中文标签（未知类型原样展示 run_type）
 const RUN_TYPE_LABELS = {
@@ -33,9 +34,10 @@ async function buildExceptionItems() {
      FROM email_drafts d
      LEFT JOIN customers k ON k.id = d.customer_id
      LEFT JOIN campaigns c ON c.id = d.campaign_id
-     WHERE d.status = 'send_failed' AND c.status = 'active'
+     WHERE d.owner_user_id = ? AND d.status = 'send_failed' AND c.status = 'active'
      ORDER BY d.updated_at DESC
-     LIMIT 50`
+     LIMIT 50`,
+    [requireCurrentUserId()]
   );
 
   const runRows = await dbOperations.query(

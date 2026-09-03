@@ -2,9 +2,10 @@ const express = require('express');
 const { dbOperations } = require('../database');
 
 const router = express.Router();
-async function mailboxExists(id) {
+const requestOwnerId = (req) => Number(req.user?.id) || 1;
+async function mailboxExists(id, ownerUserId) {
   if (!id) return true;
-  const row = await dbOperations.get('SELECT id FROM email_settings WHERE id = ?', [id]);
+  const row = await dbOperations.get('SELECT id FROM email_settings WHERE id = ? AND owner_user_id = ?', [id, ownerUserId]);
   return Boolean(row);
 }
 
@@ -185,7 +186,7 @@ router.get('/:id/detail', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    const productRows = await dbOperations.query(
+    const productRowsPromise = dbOperations.query(
       `SELECT cp.id, cp.campaign_id, cp.product_id, cp.role, cp.priority, cp.campaign_brief, cp.status,
          p.brand AS product_brand, p.name AS product_name, p.sku AS product_sku,
          p.category AS product_category, p.product_url, p.price AS product_price, p.currency AS product_currency,
@@ -199,12 +200,12 @@ router.get('/:id/detail', async (req, res) => {
     );
 
     // 最新一条策略（没有则 null）
-    const strategy = await dbOperations.get(
+    const strategyPromise = dbOperations.get(
       'SELECT * FROM kol_strategies WHERE campaign_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
       [campaignId]
     );
 
-    const kolAgg = await dbOperations.get(
+    const kolAggPromise = dbOperations.get(
       `SELECT COUNT(*) AS kols_total,
          COALESCE(SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END), 0) AS candidates,
          COALESCE(SUM(CASE WHEN pipeline_stage = 'candidate' THEN 1 ELSE 0 END), 0) AS kols_candidate,
@@ -213,7 +214,7 @@ router.get('/:id/detail', async (req, res) => {
       [campaignId]
     );
     // 漏斗使用累计事实口径，而不是互斥的当前状态：状态继续推进后，已联系/已回复不能减少。
-    const contactedRow = await dbOperations.get(
+    const contactedRowPromise = dbOperations.get(
       `SELECT COUNT(DISTINCT touched.customer_id) AS count FROM (
          SELECT customer_id FROM campaign_kols
          WHERE campaign_id = ? AND customer_id IS NOT NULL AND (
@@ -231,7 +232,7 @@ router.get('/:id/detail', async (req, res) => {
        ) touched`,
       [campaignId, campaignId, campaignId]
     );
-    const repliedKolsRow = await dbOperations.get(
+    const repliedKolsRowPromise = dbOperations.get(
       `SELECT COUNT(DISTINCT customer_id) AS count
        FROM email_replies
        WHERE campaign_id = ? AND customer_id IS NOT NULL
@@ -239,33 +240,42 @@ router.get('/:id/detail', async (req, res) => {
          AND confirm_status <> 'ignored'`,
       [campaignId]
     );
-    const statusRows = await dbOperations.query(
+    const statusRowsPromise = dbOperations.query(
       'SELECT project_status, COUNT(*) AS count FROM campaign_kols WHERE campaign_id = ? GROUP BY project_status',
       [campaignId]
     );
-    const draftsPendingRow = await dbOperations.get(
-      "SELECT COUNT(*) AS count FROM email_drafts WHERE campaign_id = ? AND status = 'pending_review'",
-      [campaignId]
+    const draftsPendingRowPromise = dbOperations.get(
+      "SELECT COUNT(*) AS count FROM email_drafts WHERE campaign_id = ? AND owner_user_id = ? AND status = 'pending_review'",
+      [campaignId, requestOwnerId(req)]
     );
-    const highRiskDraftsRow = await dbOperations.get(
-      "SELECT COUNT(*) AS count FROM email_drafts WHERE campaign_id = ? AND status = 'pending_review' AND risk_level = 'high'",
-      [campaignId]
+    const highRiskDraftsRowPromise = dbOperations.get(
+      "SELECT COUNT(*) AS count FROM email_drafts WHERE campaign_id = ? AND owner_user_id = ? AND status = 'pending_review' AND risk_level = 'high'",
+      [campaignId, requestOwnerId(req)]
     );
-    const repliesPendingRow = await dbOperations.get(
-      "SELECT COUNT(*) AS count FROM email_replies WHERE campaign_id = ? AND confirm_status = 'pending'",
-      [campaignId]
+    const repliesPendingRowPromise = dbOperations.get(
+      "SELECT COUNT(*) AS count FROM email_replies WHERE campaign_id = ? AND owner_user_id = ? AND confirm_status = 'pending'",
+      [campaignId, requestOwnerId(req)]
     );
-    const finderRunningRow = await dbOperations.get(
+    const finderRunningRowPromise = dbOperations.get(
       "SELECT COUNT(*) AS count FROM finder_tasks WHERE campaign_id = ? AND status = 'running'",
       [campaignId]
     );
     // exceptions = 该 campaign 的 finder 失败数 + automation_runs 失败数
-    const exceptionRow = await dbOperations.get(
+    const exceptionRowPromise = dbOperations.get(
       `SELECT
          (SELECT COUNT(*) FROM finder_tasks WHERE campaign_id = ? AND status IN ('failed', 'partial_failed')) AS finder_failed,
          (SELECT COUNT(*) FROM automation_runs WHERE campaign_id = ? AND status IN ('failed', 'partial_failed')) AS runs_failed`,
       [campaignId, campaignId]
     );
+
+    const [
+      productRows, strategy, kolAgg, contactedRow, repliedKolsRow, statusRows,
+      draftsPendingRow, highRiskDraftsRow, repliesPendingRow, finderRunningRow, exceptionRow
+    ] = await Promise.all([
+      productRowsPromise, strategyPromise, kolAggPromise, contactedRowPromise, repliedKolsRowPromise,
+      statusRowsPromise, draftsPendingRowPromise, highRiskDraftsRowPromise, repliesPendingRowPromise,
+      finderRunningRowPromise, exceptionRowPromise
+    ]);
 
     const byProjectStatus = Object.fromEntries(PROJECT_STATUS_KEYS.map((key) => [key, 0]));
     for (const row of statusRows) {
@@ -538,7 +548,7 @@ router.post('/', async (req, res) => {
       return res.json({ success: true, data: existing, message: '产品/活动已存在' });
     }
 
-    if (!(await mailboxExists(mailbox_id))) {
+    if (!(await mailboxExists(mailbox_id, requestOwnerId(req)))) {
       return res.status(400).json({ success: false, error: '发件邮箱不存在' });
     }
 
@@ -580,7 +590,7 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: '已存在同名产品/活动' });
     }
 
-    if (!(await mailboxExists(mailbox_id))) {
+    if (!(await mailboxExists(mailbox_id, requestOwnerId(req)))) {
       return res.status(400).json({ success: false, error: '发件邮箱不存在' });
     }
 

@@ -1,6 +1,7 @@
 const { dbOperations } = require('../database');
 const aiClient = require('./aiClient');
 const emailBounceService = require('./emailBounceService');
+const { currentUserId } = require('../utils/requestContext');
 
 function normalizeAddress(value) {
   return String(value || '').trim().toLowerCase();
@@ -10,16 +11,16 @@ function addressDomain(value) {
   return address.includes('@') ? address.split('@').pop() : '';
 }
 
-async function matchingRule(fromAddress) {
+async function matchingRule(fromAddress, ownerUserId = currentUserId()) {
   const sender = normalizeAddress(fromAddress);
   const domain = addressDomain(sender);
   if (!sender) return null;
   return dbOperations.get(
     `SELECT * FROM email_filter_rules
-     WHERE active = 1 AND ((rule_type = 'sender' AND rule_value = ?)
+     WHERE owner_user_id = ? AND active = 1 AND ((rule_type = 'sender' AND rule_value = ?)
        OR (rule_type = 'domain' AND rule_value = ?))
      ORDER BY CASE rule_type WHEN 'sender' THEN 1 ELSE 2 END LIMIT 1`,
-    [sender, domain]
+    [ownerUserId, sender, domain]
   );
 }
 
@@ -53,6 +54,8 @@ async function classifyIncoming({ fromAddress, subject, bodyText, matched }) {
 }
 
 async function addRule(ruleType, value, createdBy = 'boss') {
+  const ownerUserId = currentUserId();
+  if (!ownerUserId) throw Object.assign(new Error('当前操作缺少用户上下文'), { statusCode: 401 });
   if (!['sender', 'domain'].includes(ruleType)) throw Object.assign(new Error('不支持的屏蔽规则'), { statusCode: 400 });
   const normalized = ruleType === 'sender' ? normalizeAddress(value) : addressDomain(value) || normalizeAddress(value).replace(/^@/, '');
   if (!normalized) throw Object.assign(new Error('屏蔽规则不能为空'), { statusCode: 400 });
@@ -63,10 +66,10 @@ async function addRule(ruleType, value, createdBy = 'boss') {
     throw Object.assign(new Error('请输入有效的邮箱域名'), { statusCode: 400 });
   }
   await dbOperations.run(
-    `INSERT INTO email_filter_rules (rule_type, rule_value, active, created_by, created_at, updated_at)
-     VALUES (?, ?, 1, ?, NOW(), NOW())
+    `INSERT INTO email_filter_rules (owner_user_id, rule_type, rule_value, active, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, 1, ?, NOW(), NOW())
      ON DUPLICATE KEY UPDATE active = 1, created_by = VALUES(created_by), updated_at = NOW()`,
-    [ruleType, normalized, createdBy]
+    [ownerUserId, ruleType, normalized, createdBy]
   );
   return { rule_type: ruleType, rule_value: normalized };
 }
@@ -74,24 +77,25 @@ async function addRule(ruleType, value, createdBy = 'boss') {
 async function listRules() {
   return dbOperations.query(
     `SELECT id, rule_type, rule_value, active, created_by, created_at, updated_at
-     FROM email_filter_rules ORDER BY active DESC, updated_at DESC, id DESC`
+     FROM email_filter_rules WHERE owner_user_id = ? ORDER BY active DESC, updated_at DESC, id DESC`,
+    [currentUserId()]
   );
 }
 
 async function setRuleActive(ruleId, active) {
-  const rule = await dbOperations.get('SELECT id FROM email_filter_rules WHERE id = ?', [ruleId]);
+  const rule = await dbOperations.get('SELECT id FROM email_filter_rules WHERE id = ? AND owner_user_id = ?', [ruleId, currentUserId()]);
   if (!rule) throw Object.assign(new Error('屏蔽规则不存在'), { statusCode: 404 });
   await dbOperations.run(
-    'UPDATE email_filter_rules SET active = ?, updated_at = NOW() WHERE id = ?',
-    [active ? 1 : 0, ruleId]
+    'UPDATE email_filter_rules SET active = ?, updated_at = NOW() WHERE id = ? AND owner_user_id = ?',
+    [active ? 1 : 0, ruleId, currentUserId()]
   );
   return { id: Number(ruleId), active: Boolean(active) };
 }
 
 async function deleteRule(ruleId) {
-  const rule = await dbOperations.get('SELECT id FROM email_filter_rules WHERE id = ?', [ruleId]);
+  const rule = await dbOperations.get('SELECT id FROM email_filter_rules WHERE id = ? AND owner_user_id = ?', [ruleId, currentUserId()]);
   if (!rule) throw Object.assign(new Error('屏蔽规则不存在'), { statusCode: 404 });
-  await dbOperations.run('DELETE FROM email_filter_rules WHERE id = ?', [ruleId]);
+  await dbOperations.run('DELETE FROM email_filter_rules WHERE id = ? AND owner_user_id = ?', [ruleId, currentUserId()]);
 }
 
 async function markSpam(replyId, { blockScope = 'none', handledBy = 'boss' } = {}) {

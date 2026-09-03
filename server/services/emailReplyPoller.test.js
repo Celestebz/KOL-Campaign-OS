@@ -111,9 +111,9 @@ test('pollOnce dedupes by message-id, inserts matched replies, skips unmatched w
 
   const inserts = statements.filter((s) => /INSERT INTO email_replies/.test(s.sql));
   assert.equal(inserts.length, 1, '只应插入 m-new 一条');
-  assert.equal(inserts[0].params[3], 'bob@x.com');
-  assert.equal(inserts[0].params[4], 'm-new');
-  assert.equal(inserts[0].params[6], '我愿意合作');
+  assert.equal(inserts[0].params[5], 'bob@x.com');
+  assert.equal(inserts[0].params[6], 'm-new');
+  assert.equal(inserts[0].params[8], '我愿意合作');
   assert.deepEqual(seenFlags.sort(), [1, 2], 'm-dup 与 m-new 标已读，未匹配的不标');
   const outreachUpdate = statements.find((s) => /UPDATE campaign_kols SET needs_reply = 1/.test(s.sql));
   assert.ok(outreachUpdate, 'matched inbound mail should immediately create a reply todo');
@@ -206,15 +206,15 @@ test('pollOnce parses RFC822 source, stores MIME columns and assigns thread', as
 
   const insert = statements.find((s) => /INSERT INTO email_replies/.test(s.sql));
   assert.ok(insert, '应插入一条回复');
-  assert.equal(insert.params[3], 'bob@x.com');
-  assert.match(insert.params[6], /我愿意合作/, 'body_text 用标准解析结果');
-  assert.ok(!insert.params[6].includes('fallback'), '不使用 bodyParts 回退文本');
-  assert.equal(insert.params[12], '<sent-1@test>', 'in_reply_to 对齐库存尖括号格式');
-  assert.equal(insert.params[13], '["<sent-1@test>"]');
-  assert.match(insert.params[14], /我愿意合作/, 'clean_body_text 已拆分');
-  assert.match(insert.params[18], /Message-ID/, 'raw_source 存原始 RFC822');
-  assert.equal(insert.params[19], 'ok');
-  assert.equal(insert.params[20], null);
+  assert.equal(insert.params[5], 'bob@x.com');
+  assert.match(insert.params[8], /我愿意合作/, 'body_text 用标准解析结果');
+  assert.ok(!insert.params[8].includes('fallback'), '不使用 bodyParts 回退文本');
+  assert.equal(insert.params[14], '<sent-1@test>', 'in_reply_to 对齐库存尖括号格式');
+  assert.equal(insert.params[15], '["<sent-1@test>"]');
+  assert.match(insert.params[16], /我愿意合作/, 'clean_body_text 已拆分');
+  assert.match(insert.params[20], /Message-ID/, 'raw_source 存原始 RFC822');
+  assert.equal(insert.params[21], 'ok');
+  assert.equal(insert.params[22], null);
   assert.equal(threadCalls.length, 1, '入库后调用会话归属');
   assert.equal(threadCalls[0].replyId, 42);
   assert.equal(threadCalls[0].emailRecordId, 20);
