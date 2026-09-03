@@ -2,6 +2,17 @@
 // Existing rows are assigned to the first administrator during upgrade.
 module.exports = {
   async up(queryInterface, Sequelize) {
+    const removeIndexIfPresent = async (table, name) => {
+      try {
+        await queryInterface.removeIndex(table, name);
+      } catch (error) {
+        if (error?.original?.code !== 'ER_CANT_DROP_FIELD_OR_KEY' && error?.parent?.code !== 'ER_CANT_DROP_FIELD_OR_KEY') throw error;
+      }
+    };
+    const addIndexIfMissing = async (table, fields, options) => {
+      const [rows] = await queryInterface.sequelize.query(`SHOW INDEX FROM ${table}`);
+      if (!rows.some((row) => row.Key_name === options.name)) await queryInterface.addIndex(table, fields, options);
+    };
     const ownerColumn = {
       type: Sequelize.INTEGER, allowNull: true,
       references: { model: 'users', key: 'id' },
@@ -48,21 +59,21 @@ module.exports = {
 
     const [indexes] = await queryInterface.sequelize.query('SHOW INDEX FROM api_settings');
     const providerUnique = [...new Set(indexes.filter((row) => Number(row.Non_unique) === 0 && row.Column_name === 'provider').map((row) => row.Key_name))];
-    for (const name of providerUnique) await queryInterface.removeIndex('api_settings', name);
+    for (const name of providerUnique) await removeIndexIfPresent('api_settings', name);
     const [ruleIndexes] = await queryInterface.sequelize.query('SHOW INDEX FROM email_filter_rules');
     const ruleUnique = [...new Set(ruleIndexes.filter((row) => Number(row.Non_unique) === 0 && ['rule_type', 'rule_value'].includes(row.Column_name)).map((row) => row.Key_name))];
-    for (const name of ruleUnique) await queryInterface.removeIndex('email_filter_rules', name);
+    for (const name of ruleUnique) await removeIndexIfPresent('email_filter_rules', name);
     const [draftIndexes] = await queryInterface.sequelize.query('SHOW INDEX FROM email_drafts');
     const draftDedupeUnique = [...new Set(draftIndexes.filter((row) => Number(row.Non_unique) === 0 && row.Column_name === 'dedupe_key').map((row) => row.Key_name))];
-    for (const name of draftDedupeUnique) await queryInterface.removeIndex('email_drafts', name);
-    await queryInterface.addIndex('api_settings', ['owner_user_id', 'provider'], { unique: true, name: 'uniq_api_settings_owner_provider' });
-    await queryInterface.addIndex('email_settings', ['owner_user_id', 'is_default'], { name: 'idx_email_settings_owner_default' });
-    await queryInterface.addIndex('email_filter_rules', ['owner_user_id', 'rule_type', 'rule_value'], { unique: true, name: 'uniq_email_filter_rules_owner_rule' });
-    await queryInterface.addIndex('email_drafts', ['owner_user_id', 'dedupe_key'], { unique: true, name: 'uniq_email_drafts_owner_dedupe' });
+    for (const name of draftDedupeUnique) await removeIndexIfPresent('email_drafts', name);
+    await addIndexIfMissing('api_settings', ['owner_user_id', 'provider'], { unique: true, name: 'uniq_api_settings_owner_provider' });
+    await addIndexIfMissing('email_settings', ['owner_user_id', 'is_default'], { name: 'idx_email_settings_owner_default' });
+    await addIndexIfMissing('email_filter_rules', ['owner_user_id', 'rule_type', 'rule_value'], { unique: true, name: 'uniq_email_filter_rules_owner_rule' });
+    await addIndexIfMissing('email_drafts', ['owner_user_id', 'dedupe_key'], { unique: true, name: 'uniq_email_drafts_owner_dedupe' });
     for (const table of ['email_drafts', 'email_records', 'email_replies', 'email_threads', 'email_filter_rules', 'email_bounces']) {
-      await queryInterface.addIndex(table, ['owner_user_id'], { name: `idx_${table}_owner_user_id` });
+      await addIndexIfMissing(table, ['owner_user_id'], { name: `idx_${table}_owner_user_id` });
     }
-    await queryInterface.addIndex('approval_items', ['owner_user_id', 'status'], { name: 'idx_approval_items_owner_status' });
+    await addIndexIfMissing('approval_items', ['owner_user_id', 'status'], { name: 'idx_approval_items_owner_status' });
     // Keep the column nullable at schema level for legacy maintenance scripts.
     // Authenticated application writes always provide an owner and all reads exclude NULL.
   },
