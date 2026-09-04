@@ -25,6 +25,7 @@ const {
 } = require('../services/aiClient');
 const scYoutube = require('../services/scrapecreatorsYoutube');
 const scYt = require('../utils/scrapecreatorsYoutubeSearch');
+const requestContext = require('../utils/requestContext');
 
 const router = express.Router();
 
@@ -3037,6 +3038,7 @@ async function loadRecentTikTokCursors(task) {
 }
 
 async function processVideoEvidenceTask(taskId, options = {}) {
+  console.log('[finder] processVideoEvidenceTask start for task %d', taskId);
   const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [taskId]);
   if (!task) return;
   let strategy;
@@ -3884,14 +3886,21 @@ async function createFinderTask({
     return scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [result.id], transaction);
   });
   if (autoStart && process.env.NODE_ENV !== 'test') {
+    const ctxUser = requestContext.currentUserId() ? { id: requestContext.currentUserId() } : null;
     setImmediate(() => {
-      processVideoEvidenceTask(task.id, { targetPlatform, limit: safeLimit }).catch((error) => {
+      const run = () => processVideoEvidenceTask(task.id, { targetPlatform, limit: safeLimit }).catch((error) => {
+        console.error('[finder] Task %d failed: %s', task.id, error.message);
         updateTask(task.id, {
           status: 'failed',
           error_message: error.message,
           finished_at: new Date().toISOString()
         });
       });
+      if (ctxUser) {
+        requestContext.runWithUser(ctxUser, run);
+      } else {
+        run();
+      }
     });
   }
   return task;
@@ -3917,6 +3926,7 @@ async function runFinderTaskQueue(tasks, concurrency) {
       try {
         await processVideoEvidenceTask(task.id);
       } catch (error) {
+        console.error('[finder] Queue task %d failed: %s', task.id, error.message);
         await updateTask(task.id, {
           status: 'failed',
           error_message: error.message,
@@ -3952,7 +3962,14 @@ router.post('/batch', async (req, res) => {
       }));
     }
     if (process.env.NODE_ENV !== 'test') {
-      setImmediate(() => runFinderTaskQueue(tasks, concurrency));
+      const ctxUser = requestContext.currentUserId() ? { id: requestContext.currentUserId() } : null;
+      setImmediate(() => {
+        if (ctxUser) {
+          requestContext.runWithUser(ctxUser, () => runFinderTaskQueue(tasks, concurrency));
+        } else {
+          runFinderTaskQueue(tasks, concurrency);
+        }
+      });
     }
     res.json({
       success: true,

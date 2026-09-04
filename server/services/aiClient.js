@@ -88,14 +88,27 @@ function hasUsableSetting(row) {
 }
 
 async function getSetting(key, legacyKeys = []) {
-  const ownerUserId = requireCurrentUserId();
-  const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [key, ownerUserId]);
-  if (hasUsableSetting(direct)) return direct;
-  for (const legacyKey of legacyKeys) {
-    const legacy = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [legacyKey, ownerUserId]);
-    if (hasUsableSetting(legacy)) return legacy;
+  let ownerUserId = null;
+  try {
+    ownerUserId = requireCurrentUserId();
+  } catch {
+    // Background task without user context — fall through to system-level query
   }
-  return direct || null;
+  if (ownerUserId) {
+    const direct = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [key, ownerUserId]);
+    if (hasUsableSetting(direct)) return direct;
+    for (const legacyKey of legacyKeys) {
+      const legacy = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? AND owner_user_id = ?', [legacyKey, ownerUserId]);
+      if (hasUsableSetting(legacy)) return legacy;
+    }
+  }
+  // System-level fallback: no user context or user-specific key not found
+  const allKeys = [key, ...legacyKeys];
+  for (const k of allKeys) {
+    const systemRow = await dbOperations.get('SELECT * FROM api_settings WHERE provider = ? ORDER BY updated_at DESC LIMIT 1', [k]);
+    if (hasUsableSetting(systemRow)) return systemRow;
+  }
+  return null;
 }
 
 function mergeSelection(saved) {
@@ -111,7 +124,19 @@ function mergeSelection(saved) {
 }
 
 async function getSelection() {
-  const row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ? AND owner_user_id = ?', [SYSTEM_SELECTION_KEY, requireCurrentUserId()]);
+  let ownerUserId = null;
+  try {
+    ownerUserId = requireCurrentUserId();
+  } catch {
+    // Background task without user context
+  }
+  let row = null;
+  if (ownerUserId) {
+    row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ? AND owner_user_id = ?', [SYSTEM_SELECTION_KEY, ownerUserId]);
+  }
+  if (!row) {
+    row = await dbOperations.get('SELECT extra_config FROM api_settings WHERE provider = ? ORDER BY updated_at DESC LIMIT 1', [SYSTEM_SELECTION_KEY]);
+  }
   return mergeSelection(parseJson(row?.extra_config, {}));
 }
 
