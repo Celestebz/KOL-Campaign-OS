@@ -56,6 +56,10 @@ const FIELD_META = {
   connection_id: { label: 'Maton Connection ID', placeholder: '同一 app 有多个 connection 时填写' },
   auth_header_name: { label: 'Auth Header Name', placeholder: 'Authorization' },
   auth_scheme: { label: 'Auth Scheme', placeholder: 'Bearer' },
+  dataset_ids: {
+    label: '数据集 ID 覆盖（JSON）',
+    placeholder: '例如 {"instagram_search": "gd_xxx", "instagram_reels_from_profile": "gd_yyy"}；留空使用官方默认 ID'
+  },
   notes: { label: '备注', placeholder: '用途、限制或接入说明' }
 };
 
@@ -93,14 +97,15 @@ export const ProviderDrawer = ({ drawer, saving, error, onCancel, onSave }) => {
             {meta.fields.map((field) => {
               const config = FIELD_META[field];
               if (!config) return null;
-              const Control = config.select ? Select : config.password ? Input.Password : field === 'notes' ? Input.TextArea : Input;
+              const isTextarea = field === 'notes' || field === 'dataset_ids';
+              const Control = config.select ? Select : config.password ? Input.Password : isTextarea ? Input.TextArea : Input;
               return (
                 <Form.Item key={field} name={field} label={config.label}>
                   <Control
                     options={config.options}
                     autoComplete={config.password ? 'new-password' : undefined}
                     placeholder={config.placeholder}
-                    autoSize={field === 'notes' ? { minRows: 2, maxRows: 4 } : undefined}
+                    autoSize={isTextarea ? { minRows: 2, maxRows: 4 } : undefined}
                   />
                 </Form.Item>
               );

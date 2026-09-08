@@ -25,6 +25,7 @@ const {
 } = require('../services/aiClient');
 const scYoutube = require('../services/scrapecreatorsYoutube');
 const scYt = require('../utils/scrapecreatorsYoutubeSearch');
+const brightdataClient = require('../services/brightdataClient');
 const requestContext = require('../utils/requestContext');
 
 const router = express.Router();
@@ -357,6 +358,10 @@ function parseMetricNumber(value) {
 
 function searchSourceForPlatformProvider(platform, provider) {
   if (provider === 'maton_gateway') return 'maton_agent';
+  if (provider === 'brightdata') {
+    if (platform === 'instagram') return 'brightdata_instagram';
+    if (platform === 'tiktok') return 'brightdata_tiktok';
+  }
   if (platform === 'youtube') return 'youtube_search';
   if (platform === 'instagram') return 'instagram_search';
   if (platform === 'tiktok') return 'tiktok_search';
@@ -365,8 +370,8 @@ function searchSourceForPlatformProvider(platform, provider) {
 
 const SEARCH_SOURCES_BY_PLATFORM = {
   youtube: ['maton_agent', 'google_web', 'youtube_search', 'scrapecreators_youtube', 'youtube_watch_next_expansion'],
-  instagram: ['instagram_search'],
-  tiktok: ['tiktok_search']
+  instagram: ['instagram_search', 'brightdata_instagram'],
+  tiktok: ['tiktok_search', 'brightdata_tiktok']
 };
 
 function validateSearchSource(platform, source) {
@@ -2280,6 +2285,152 @@ async function scrapeCreatorsFinderAdapterV2(request) {
   };
 }
 
+// Bright Data 关键词搜索数据集记录 → 候选（与 instagramReelToCandidate 同构）。
+function brightdataPostToCandidate(record, request, platform, query) {
+  const normalized = platform === 'instagram'
+    ? brightdataClient.normalizeInstagramMedia(record)
+    : brightdataClient.normalizeTikTokMedia(record);
+  const username = clean(record.user_posted || record.username || normalized.handle);
+  if (!username || !clean(normalized.url)) return null;
+  const profileUrl = clean(record.user_profile_url || record.profile_url)
+    || (platform === 'instagram'
+      ? `https://www.instagram.com/${username}/`
+      : `https://www.tiktok.com/@${encodeURIComponent(username)}`);
+  const followers = clean(record.followers ?? record.follower_count ?? '');
+  return {
+    platform,
+    kol_name: clean(record.full_name || record.name || username),
+    profile_url: profileUrl,
+    followers,
+    avg_views: normalized.views === null || normalized.views === undefined ? '' : String(normalized.views),
+    email: '',
+    country_region: '',
+    matched_keywords: query,
+    matched_persona: clean(request?.strategy?.persona_config?.primary_persona),
+    representative_video_url: clean(normalized.url),
+    representative_video_title: clean(normalized.title),
+    evidence_url: clean(normalized.url),
+    evidence_title: clean(normalized.title),
+    evidence_type: 'video',
+    source_query: query,
+    reason: `Matched Bright Data ${platform} keyword search: ${query}`,
+    raw_data: record
+  };
+}
+
+// Bright Data 达人搜索源：关键词 → 帖子/Reels/视频记录 → 候选池。
+async function brightdataFinderAdapter(request) {
+  const platform = request.target_platform;
+  const settingRow = await getSetting(providerKey(platform, 'brightdata'), legacyKeysFor(platform, 'brightdata'));
+  if (!settingRow?.api_key) throw new Error('Bright Data API Token is not configured');
+  const config = brightdataClient.configFromSettingRow(settingRow);
+
+  const maxResults = Math.max(1, Math.min(Number(request.limit || 10), 50));
+  const candidates = [];
+  const seenCreatorIds = new Set();
+  const bdQueryAttempts = [];
+  let lastEndpoint = '';
+  let returnedCount = 0;
+  let excludedCreatorCount = 0;
+  let cacheHitCount = 0;
+  let externalRequestCount = 0;
+
+  for (const query of keywordQueries(request)) {
+    if (candidates.length >= maxResults) break;
+    const variant = 'discover-keyword';
+    lastEndpoint = `brightdata:${platform}:discover:${query}`;
+    try {
+      let records = await getCachedPlatformSearch('brightdata', platform, query, '', variant);
+      if (Array.isArray(records) && records.length) {
+        cacheHitCount += 1;
+      } else {
+        records = platform === 'instagram'
+          ? await brightdataClient.searchInstagramKeyword(config, query, { numOfPosts: 100 })
+          : await brightdataClient.searchTikTokKeyword(config, query, { numOfPosts: 100 });
+        externalRequestCount += 1;
+        await savePlatformSearchCache('brightdata', platform, query, records, '', variant);
+      }
+      const rawRecords = (Array.isArray(records) ? records : []).map((item) => item?.raw || item);
+      returnedCount += rawRecords.length;
+      const mapped = rawRecords
+        .map((record) => brightdataPostToCandidate(record, request, platform, query))
+        .filter(Boolean)
+        .filter((candidate) => {
+          const excluded = isExcludedPlatformCreator(
+            request.creator_exclusions || new Set(),
+            platform,
+            candidate.profile_url,
+            candidate.kol_name
+          );
+          if (excluded) excludedCreatorCount += 1;
+          return !excluded;
+        })
+        .filter((candidate) => {
+          const identity = creatorSearchIdentity(platform, candidate);
+          if (!identity || seenCreatorIds.has(identity)) return false;
+          seenCreatorIds.add(identity);
+          return true;
+        })
+        .map((candidate) => applyFinderGates(candidate, request))
+        .filter((candidate) => {
+          if (candidate.status === 'ignored') excludedCreatorCount += 1;
+          return candidate.status !== 'ignored';
+        });
+      candidates.push(...mapped.slice(0, maxResults - candidates.length));
+      bdQueryAttempts.push({
+        search_source: request.search_source || `brightdata_${platform}`,
+        provider: 'brightdata',
+        ok: true,
+        endpoint: lastEndpoint,
+        query
+      });
+    } catch (error) {
+      const safeMessage = redactKnownSecrets(error.message, [settingRow.api_key]);
+      const attempt = {
+        search_source: request.search_source || `brightdata_${platform}`,
+        provider: 'brightdata',
+        ok: false,
+        endpoint: lastEndpoint,
+        query,
+        error: safeMessage
+      };
+      if (error.status !== undefined) attempt.status = error.status;
+      bdQueryAttempts.push(attempt);
+      throw Object.assign(new Error(safeMessage), {
+        status: error.status,
+        provider: 'brightdata',
+        query,
+        attempts: bdQueryAttempts
+      });
+    }
+  }
+
+  if (!candidates.length) {
+    const failed = bdQueryAttempts.find((attempt) => !attempt.ok);
+    if (failed) {
+      throw Object.assign(new Error(failed.error), { attempts: bdQueryAttempts });
+    }
+    if (returnedCount === 0) {
+      throw new Error('Bright Data keyword search returned 0 records. Check the search dataset id in settings or try broader keywords.');
+    }
+    throw new Error('Bright Data keyword search returned records, but none contained valid public video evidence with an identifiable author.');
+  }
+
+  return {
+    provider: request.search_source || `brightdata_${platform}`,
+    endpoint: lastEndpoint,
+    candidates: candidates.slice(0, maxResults),
+    returned_count: returnedCount,
+    excluded_count: excludedCreatorCount,
+    new_creator_count: candidates.length,
+    cache_hit_count: cacheHitCount,
+    external_request_count: externalRequestCount,
+    stopped_for_low_yield: false,
+    next_cursors: {},
+    attempts: bdQueryAttempts
+  };
+}
+
 function platformSearchCacheKey(provider, platform, query, pageToken = '', variant = '') {
   return crypto.createHash('sha256')
     .update([clean(provider), clean(platform).toLowerCase(), clean(query).toLowerCase(), clean(pageToken), clean(variant)].join('|'))
@@ -2679,6 +2830,11 @@ async function runProvider(request, allowFallback) {
       maton = await youtubeSearchAdapter(request);
     } else if (source === 'instagram_search' || source === 'tiktok_search') {
       maton = await scrapeCreatorsFinderAdapterV2(request);
+    } else if (source === 'brightdata_instagram' || source === 'brightdata_tiktok') {
+      if (request.target_platform === 'youtube') {
+        throw new Error(`${source} is only available for Instagram/TikTok`);
+      }
+      maton = await brightdataFinderAdapter(request);
     } else {
       throw new Error(`Unsupported search source: ${source}`);
     }
@@ -2687,8 +2843,19 @@ async function runProvider(request, allowFallback) {
     return { ...maton, attempts };
   } catch (error) {
     appendProviderErrorAttempts(attempts, error, { search_source: source, provider: source });
-    if (!allowFallback || source !== 'maton_agent' || externalAgentRoute) {
+    const socialSearchSource = ['instagram_search', 'tiktok_search', 'brightdata_instagram', 'brightdata_tiktok'].includes(source);
+    if (!allowFallback || externalAgentRoute) {
       throw providerErrorWithAttempts(error, attempts);
+    }
+    if (source !== 'maton_agent' && !socialSearchSource) {
+      throw providerErrorWithAttempts(error, attempts);
+    }
+    // instagram/tiktok 搜索源失败：仅在开启 Fallback 且配置了备用源时继续尝试。
+    if (socialSearchSource) {
+      const selection = await getSelection();
+      if (!selection.fallbackStrategy?.enableFallback) {
+        throw providerErrorWithAttempts(error, attempts);
+      }
     }
   }
 
@@ -2720,15 +2887,50 @@ async function runProvider(request, allowFallback) {
     throw providerErrorWithAttempts(lastError || new Error('YouTube 全部数据源均失败'), attempts);
   }
 
+  // 非 youtube 平台 fallback：maton_agent 失败 → scrapecreators（原有兜底）；
+  // instagram/tiktok 搜索源失败 → 按平台 provider 顺序（scrapecreators/brightdata）尝试剩余源。
   try {
-    const fallback = await scrapeCreatorsFinderAdapterV2({
-      ...request,
-      search_source: request.target_platform === 'instagram' ? 'instagram_search' : 'tiktok_search'
-    });
-    attempts.push(...(fallback.attempts || []));
-    attempts.push({ search_source: fallback.provider, provider: fallback.provider, ok: true, endpoint: fallback.endpoint });
-    return { ...fallback, attempts };
+    const selection = await getSelection();
+    const platformSelection = selection.platforms?.[request.target_platform] || {};
+    const fallbacksEnabled = Boolean(selection.fallbackStrategy?.enableFallback);
+    const failedProvider = source === 'instagram_search' || source === 'tiktok_search'
+      ? 'scrapecreators'
+      : source === 'brightdata_instagram' || source === 'brightdata_tiktok' ? 'brightdata' : null;
+    const order = [platformSelection.primary || 'scrapecreators'];
+    if (fallbacksEnabled) order.push(...(platformSelection.fallbacks || []));
+    const providers = [...new Set(order.filter((provider) => ['scrapecreators', 'brightdata'].includes(provider)))]
+      .filter((provider) => provider !== failedProvider);
+    if (source === 'maton_agent' && !providers.includes('scrapecreators')) providers.push('scrapecreators');
+    if (!providers.length) {
+      throw new Error('没有可用的备用数据源（scrapecreators / brightdata）');
+    }
+
+    let lastError = null;
+    for (const provider of providers) {
+      try {
+        const fallback = provider === 'brightdata'
+          ? await brightdataFinderAdapter({
+            ...request,
+            search_source: request.target_platform === 'instagram' ? 'brightdata_instagram' : 'brightdata_tiktok'
+          })
+          : await scrapeCreatorsFinderAdapterV2({
+            ...request,
+            search_source: request.target_platform === 'instagram' ? 'instagram_search' : 'tiktok_search'
+          });
+        attempts.push(...(fallback.attempts || []));
+        attempts.push({ search_source: fallback.provider, provider: fallback.provider, ok: true, endpoint: fallback.endpoint });
+        return { ...fallback, attempts };
+      } catch (error) {
+        lastError = error;
+        appendProviderErrorAttempts(attempts, error, {
+          search_source: provider === 'brightdata' ? `brightdata_${request.target_platform}` : `${request.target_platform}_search`,
+          provider
+        });
+      }
+    }
+    throw providerErrorWithAttempts(lastError || new Error('Instagram/TikTok 全部数据源均失败'), attempts);
   } catch (error) {
+    if (error.attempts) throw error;
     appendProviderErrorAttempts(attempts, error, {
       search_source: `${request.target_platform}_search`,
       provider: 'scrapecreators'

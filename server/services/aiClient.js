@@ -27,6 +27,8 @@ const PROVIDER_LABELS = {
   youtube_search: 'YouTube Search',
   instagram_search: 'Instagram Search',
   tiktok_search: 'TikTok Search',
+  brightdata_instagram: 'Bright Data Instagram Search',
+  brightdata_tiktok: 'Bright Data TikTok Search',
   youtube_to_instagram: 'YouTube -> Instagram',
   google_web_to_instagram: 'Google/Web -> Instagram',
   seed_posts_to_profile: 'Seed Posts -> Profile',

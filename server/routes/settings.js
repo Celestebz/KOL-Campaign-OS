@@ -95,6 +95,7 @@ function cleanProvider(row, provider) {
     auth_scheme: extra.auth_scheme || '',
     connection_id: extra.connection_id || '',
     custom_provider_name: extra.custom_provider_name || '',
+    dataset_ids: extra.dataset_ids || '',
     notes: extra.notes || ''
   };
 }
@@ -178,12 +179,22 @@ async function upsertProvider(key, row = {}) {
     && (!submittedBaseUrl || /^https:\/\/api\.minimaxi?\.com\/v1\/?$/i.test(submittedBaseUrl) || /^https:\/\/api\.minimax\.io\/v1\/?$/i.test(submittedBaseUrl))
     ? 'https://api.minimaxi.com/anthropic'
     : submittedBaseUrl;
+  let datasetIds = row.dataset_ids;
+  if (datasetIds && typeof datasetIds !== 'string') datasetIds = JSON.stringify(datasetIds);
+  datasetIds = String(datasetIds || '').trim();
+  if (datasetIds) {
+    const parsed = parseJson(datasetIds, null);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('dataset_ids 必须是 JSON 对象，例如 {"instagram_search": "gd_xxx"}');
+    }
+  }
   const extraConfig = {
     api_protocol: apiProtocol,
     auth_header_name: row.auth_header_name || '',
     auth_scheme: row.auth_scheme || '',
     connection_id: row.connection_id || '',
     custom_provider_name: row.custom_provider_name || '',
+    dataset_ids: datasetIds,
     notes: row.notes || ''
   };
 
@@ -408,6 +419,32 @@ router.post('/test-ai', async (req, res) => {
       'Return exactly {"summary":"connection ok"}.'
     );
     res.json({ success: true, data: { provider: result.provider, model: result.model } });
+  } catch (error) {
+    res.status(error.status || 502).json({ success: false, error: error.message });
+  }
+});
+
+// 连接测试：列出当前账号可用的 Bright Data 数据集（含 dataset_id）。
+// discover 类数据集（关键词搜索、按主页拉全部 Reels 等）的 dataset_id 以此为准。
+router.get('/brightdata/datasets', async (req, res) => {
+  try {
+    const brightdata = require('../services/brightdataClient');
+    const rows = await dbOperations.query(
+      'SELECT provider, api_key, base_url, extra_config FROM api_settings WHERE owner_user_id = ? AND provider IN (?, ?, ?) ORDER BY provider',
+      [ownerId(req), 'instagram.brightdata', 'tiktok.brightdata', 'brightdata']
+    );
+    const row = rows.find((item) => hasUsableSecret(item?.api_key)) || rows[0];
+    if (!row || !hasUsableSecret(row.api_key)) {
+      return res.status(400).json({ success: false, error: 'Bright Data API Token 未配置，请先在平台数据源中保存 Bright Data API Key' });
+    }
+    const config = brightdata.configFromSettingRow(row);
+    const datasets = await brightdata.listDatasets(config);
+    const normalized = (datasets || []).map((item) => ({
+      id: item?.id || item?.dataset_id || '',
+      name: item?.name || item?.description || '',
+      type: item?.type || ''
+    })).filter((item) => item.id);
+    res.json({ success: true, data: { source: row.provider, datasets: normalized } });
   } catch (error) {
     res.status(error.status || 502).json({ success: false, error: error.message });
   }

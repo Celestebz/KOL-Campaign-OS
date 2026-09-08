@@ -20,6 +20,7 @@ const {
   callAi
 } = require('../services/aiClient');
 const scYoutube = require('../services/scrapecreatorsYoutube');
+const brightdataClient = require('../services/brightdataClient');
 const { scVideoDetailToNormalized, scCommentsToNormalized } = require('../utils/scrapecreatorsYoutubeSearch');
 
 const EXPORT_HEADERS = [
@@ -451,12 +452,47 @@ async function fetchScrapeCreators(platform, url, setting) {
   };
 }
 
+// Bright Data：单条帖子/Reel/视频按 URL 采集（评论走独立数据集，暂不拉取）。
+async function fetchBrightData(platform, url, setting) {
+  if (!setting?.api_key) throw new Error('Bright Data API Token 未配置');
+  const config = brightdataClient.configFromSettingRow(setting);
+  const media = platform === 'instagram'
+    ? await brightdataClient.fetchInstagramMediaByUrl(config, url)
+    : await brightdataClient.fetchTikTokMediaByUrl(config, url);
+  const raw = media.raw || {};
+  const author = clean(raw.user_posted || raw.username || media.handle || '');
+  const contentType = platform === 'instagram' ? detectInstagramContentType(raw, url) : 'video';
+  const metrics = {
+    play_count: normalizeCount(media.views),
+    like_count: normalizeCount(media.likes),
+    comment_count: normalizeCount(media.comments),
+    collect_count: null,
+    share_count: null
+  };
+  return {
+    platform,
+    platform_video_id: media.id,
+    kol_name: author,
+    title: media.title || '',
+    author_name: author,
+    content_type: contentType,
+    published_at: normalizeTimestamp(media.publishedAt),
+    metrics,
+    exposure: buildExposure(platform, contentType, metrics),
+    comments: [],
+    raw
+  };
+}
+
 async function fetchWithProvider(platform, provider, url, setting) {
   if (platform === 'youtube' && provider === 'google_official') return fetchYouTubeGoogle(url, setting);
   if (platform === 'youtube' && provider === 'maton_gateway') return fetchYouTubeMaton(url, setting);
   if (platform === 'youtube' && provider === 'scrapecreators') return fetchYouTubeScrapeCreators(url, setting);
   if ((platform === 'instagram' || platform === 'tiktok') && provider === 'scrapecreators') {
     return fetchScrapeCreators(platform, url, setting);
+  }
+  if ((platform === 'instagram' || platform === 'tiktok') && provider === 'brightdata') {
+    return fetchBrightData(platform, url, setting);
   }
 
   throw new Error(`${PROVIDER_LABELS[provider] || provider} 当前仅预留，尚未接入数据 adapter`);

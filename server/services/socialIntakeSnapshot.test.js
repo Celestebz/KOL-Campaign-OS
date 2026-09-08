@@ -1,11 +1,54 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { median, publishedAtDate, profileHandle, instagramFollowers, instagramVideo, tiktokVideo } = require('./socialIntakeSnapshot');
+const { median, optionalNumber, aggregateSocialVideos, publishedAtDate, profileHandle, instagramFollowers, instagramVideo, tiktokVideo, socialProviderOrder } = require('./socialIntakeSnapshot');
+
+test('socialProviderOrder respects primary, fallback toggle and deduplication', () => {
+  const selection = {
+    platforms: { instagram: { primary: 'scrapecreators', fallbacks: ['brightdata', 'scrapecreators'] } },
+    fallbackStrategy: { enableFallback: true }
+  };
+  assert.deepEqual(socialProviderOrder(selection, 'instagram'), ['scrapecreators', 'brightdata']);
+
+  const noFallback = { ...selection, fallbackStrategy: { enableFallback: false } };
+  assert.deepEqual(socialProviderOrder(noFallback, 'instagram'), ['scrapecreators']);
+
+  assert.deepEqual(socialProviderOrder({}, 'tiktok'), ['scrapecreators']);
+});
 
 test('median calculates odd and even platform exposure values', () => {
   assert.equal(median([30, 10, 20]), 20);
   assert.equal(median([10, 20, 30, 40]), 25);
   assert.equal(median([]), null);
+});
+
+test('optionalNumber distinguishes missing metrics from a real zero', () => {
+  assert.equal(optionalNumber(undefined), null);
+  assert.equal(optionalNumber(null), null);
+  assert.equal(optionalNumber(''), null);
+  assert.equal(optionalNumber('invalid'), null);
+  assert.equal(optionalNumber(0), 0);
+  assert.equal(optionalNumber('1234'), 1234);
+});
+
+test('aggregateSocialVideos excludes missing views without dropping the post count', () => {
+  assert.deepEqual(aggregateSocialVideos([
+    { views: null, likes: 100, comments: 10 },
+    { views: 0, likes: 0, comments: 0 },
+    { views: 200, likes: 20, comments: 4 }
+  ]), {
+    posts: 3,
+    averageViews: 100,
+    medianViews: 100,
+    engagementRate: 0.12
+  });
+  assert.deepEqual(aggregateSocialVideos([
+    { views: null, likes: 100, comments: 10 }
+  ]), {
+    posts: 1,
+    averageViews: null,
+    medianViews: null,
+    engagementRate: null
+  });
 });
 
 test('publishedAtDate converts ISO timestamps to a MySQL-bindable Date', () => {
@@ -36,6 +79,13 @@ test('instagramVideo maps Reels and rejects image posts', () => {
     id: 'REEL1', title: 'Demo reel', url: 'https://www.instagram.com/reel/REEL1/',
     publishedAt: '2026-08-20T00:00:00Z', views: 1234, likes: 50, comments: 6, handle: 'demo'
   });
+
+  assert.equal(instagramVideo({
+    code: 'MISSING_VIEWS', media_type: 2, like_count: 50, comment_count: 6
+  }, 'demo').views, null);
+  assert.equal(instagramVideo({
+    code: 'ZERO_VIEWS', media_type: 2, play_count: 0
+  }, 'demo').views, 0);
 });
 
 test('tiktokVideo maps videos and rejects photo posts', () => {

@@ -36,7 +36,7 @@ export const PLATFORM_META = {
     label: 'Instagram',
     providers: [
       provider('scrapecreators', 'ScrapeCreators'),
-      provider('brightdata', 'Bright Data', { reserved: true }),
+      provider('brightdata', 'Bright Data', { fields: ['api_key', 'base_url', 'dataset_ids'] }),
       provider('apify', 'Apify', { reserved: true }),
       provider('custom', 'Custom', {
         reserved: true,
@@ -48,7 +48,7 @@ export const PLATFORM_META = {
     label: 'TikTok',
     providers: [
       provider('scrapecreators', 'ScrapeCreators'),
-      provider('brightdata', 'Bright Data', { reserved: true }),
+      provider('brightdata', 'Bright Data', { fields: ['api_key', 'base_url', 'dataset_ids'] }),
       provider('apify', 'Apify', { reserved: true }),
       provider('custom', 'Custom', {
         reserved: true,

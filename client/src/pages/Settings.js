@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Divider, Form, Input, Row, Select, Space, Switch, Tabs, Tag, Typography, message
+  Alert, Button, Card, Col, Divider, Form, Input, Modal, Row, Select, Space, Switch, Tabs, Tag, Typography, message
 } from 'antd';
-import { ArrowRightOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, CloudDownloadOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import {
   AI_PROVIDERS,
@@ -61,6 +61,8 @@ const Settings = () => {
   const [campaignLoadError, setCampaignLoadError] = useState('');
   const [unresolvedMappings, setUnresolvedMappings] = useState([]);
   const [unresolvedTrackingMappings, setUnresolvedTrackingMappings] = useState([]);
+  const [brightdataTesting, setBrightdataTesting] = useState(false);
+  const [brightdataDatasets, setBrightdataDatasets] = useState(null);
 
   const fetchSettings = useCallback(async () => {
     setLoading(true);
@@ -165,6 +167,19 @@ const Settings = () => {
     setDrawerError('');
   };
 
+  const testBrightData = async () => {
+    setBrightdataTesting(true);
+    try {
+      const result = await axios.get('/api/settings/brightdata/datasets');
+      setBrightdataDatasets(result.data.data || { datasets: [] });
+      message.success('Bright Data 连接成功');
+    } catch (error) {
+      message.error(error.response?.data?.error || 'Bright Data 连接失败');
+    } finally {
+      setBrightdataTesting(false);
+    }
+  };
+
   const saveProvider = async (providerValues) => {
     try {
       const pendingPageValues = form.getFieldsValue(true).settings || {};
@@ -251,6 +266,21 @@ const Settings = () => {
         extra={<Switch aria-label="显示预留项" checked={showReserved} onChange={setShowReserved} checkedChildren="显示预留" unCheckedChildren="隐藏预留" />}
       />
       <Tabs activeKey={activePlatform} onChange={setActivePlatform} items={Object.entries(PLATFORM_META).map(([key, value]) => ({ key, label: value.label }))} />
+      {activePlatform !== 'youtube' ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={(
+            <Space wrap>
+              <span>Bright Data 已接入：IG/TikTok 资料查询、帖子/Reels、达人搜索。discover 类数据集（关键词搜索、按主页拉全部 Reels）的 dataset_id 需从账号实际数据集里获取。</span>
+              <Button size="small" icon={<CloudDownloadOutlined />} loading={brightdataTesting} onClick={testBrightData}>
+                测试连接并列出数据集
+              </Button>
+            </Space>
+          )}
+        />
+      ) : null}
       <Alert
         type={settings.fallbackStrategy.enableFallback ? 'info' : 'success'}
         showIcon
@@ -421,6 +451,25 @@ const Settings = () => {
       )}
 
       <ProviderDrawer drawer={drawer} saving={saving} error={drawerError} onCancel={() => { setDrawer(null); setDrawerError(''); }} onSave={saveProvider} />
+
+      <Modal
+        title="Bright Data 账号数据集"
+        open={Boolean(brightdataDatasets)}
+        onCancel={() => setBrightdataDatasets(null)}
+        footer={<Button onClick={() => setBrightdataDatasets(null)}>关闭</Button>}
+        width={560}
+      >
+        <Text type="secondary">把需要的能力对应的 dataset_id 填入 Bright Data 配置的「数据集 ID 覆盖」（JSON），即可覆盖官方默认值。</Text>
+        <div style={{ marginTop: 12, maxHeight: 360, overflowY: 'auto' }}>
+          {(brightdataDatasets?.datasets || []).map((item) => (
+            <div key={item.id} style={{ display: 'flex', gap: 12, padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>
+              <Text code copyable style={{ flexShrink: 0 }}>{item.id}</Text>
+              <Text>{item.name}</Text>
+            </div>
+          ))}
+          {!(brightdataDatasets?.datasets || []).length ? <Text type="secondary">账号下没有可用数据集，请先在 Bright Data 控制台开通爬虫。</Text> : null}
+        </div>
+      </Modal>
     </div>
   );
 };

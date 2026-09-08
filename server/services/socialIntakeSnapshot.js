@@ -1,10 +1,16 @@
 const { dbOperations } = require('../database');
-const { getSetting, providerKey, legacyKeysFor } = require('./aiClient');
+const { getSetting, getSelection, providerKey, legacyKeysFor } = require('./aiClient');
+const brightdata = require('./brightdataClient');
 
 const LIMIT = 10;
 
 function clean(value) { return String(value ?? '').trim(); }
 function number(value) { const n = Number(value); return Number.isFinite(n) ? n : 0; }
+function optionalNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 function publishedAtDate(value) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -15,6 +21,18 @@ function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+function aggregateSocialVideos(videos) {
+  const videosWithViews = videos.filter((video) => video.views !== null);
+  const views = videosWithViews.map((video) => video.views);
+  const totalViews = views.reduce((sum, value) => sum + value, 0);
+  const totalEngagement = videosWithViews.reduce((sum, video) => sum + video.likes + video.comments, 0);
+  return {
+    posts: videos.length,
+    averageViews: views.length ? Math.round(totalViews / views.length) : null,
+    medianViews: median(views),
+    engagementRate: totalViews ? totalEngagement / totalViews : null
+  };
 }
 function profileHandle(platform, value) {
   const text = clean(value).split(String.fromCharCode(92)).join('');
@@ -52,7 +70,7 @@ function instagramVideo(item, handle) {
     id, title: clean(media.caption?.text || media.caption || media.accessibility_caption),
     url: 'https://www.instagram.com/reel/' + id + '/',
     publishedAt: media.created_at || (media.taken_at ? new Date(number(media.taken_at) * 1000).toISOString() : null),
-    views: number(media.play_count ?? media.video_play_count ?? media.view_count),
+    views: optionalNumber(media.play_count ?? media.video_play_count ?? media.view_count),
     likes: number(media.like_count), comments: number(media.comment_count), handle
   };
 }
@@ -116,6 +134,51 @@ async function fetchTikTok(config, handle) {
   }
   return { videos, followers };
 }
+
+// Bright Data 采集：资料 + 主页近况视频（discover 类数据集需在设置里填 dataset_id）。
+async function fetchInstagramBrightData(config, profileUrl) {
+  const result = await brightdata.fetchInstagramProfileVideos(config, profileUrl, LIMIT);
+  return { videos: result.videos, followers: result.followers };
+}
+
+async function fetchTikTokBrightData(config, profileUrl) {
+  const result = await brightdata.fetchTikTokProfileVideos(config, profileUrl, LIMIT);
+  return { videos: result.videos, followers: result.followers };
+}
+
+// 平台数据源顺序：主源优先（缺省 scrapecreators）；开启 Fallback 时追加备用源。
+function socialProviderOrder(selection, platform) {
+  const config = selection.platforms?.[platform] || {};
+  const order = [config.primary || 'scrapecreators'];
+  if (selection.fallbackStrategy?.enableFallback) order.push(...(config.fallbacks || []));
+  return [...new Set(order.filter(Boolean))];
+}
+
+async function fetchPlatformVideos(platform, profileUrl, handle) {
+  const selection = await getSelection();
+  const order = socialProviderOrder(selection, platform);
+  const attempts = [];
+  for (const provider of order) {
+    try {
+      if (provider === 'scrapecreators') {
+        const config = await setting(platform);
+        return platform === 'instagram'
+          ? await fetchInstagram(config, handle)
+          : await fetchTikTok(config, handle);
+      }
+      if (provider === 'brightdata') {
+        const config = await brightdata.getBrightDataSetting(platform);
+        return platform === 'instagram'
+          ? await fetchInstagramBrightData(config, profileUrl)
+          : await fetchTikTokBrightData(config, profileUrl);
+      }
+    } catch (error) {
+      attempts.push(`${provider}: ${error.message}`);
+    }
+  }
+  if (attempts.length) throw new Error(attempts.join('；'));
+  throw new Error('没有可用的 ' + platform + ' 数据源 Provider');
+}
 async function runSocialIntakeSnapshot(customerId, platform) {
   if (!['instagram', 'tiktok'].includes(platform)) throw new Error('仅支持 Instagram 或 TikTok');
   const customer = await dbOperations.get('SELECT * FROM customers WHERE id = ?', [customerId]);
@@ -125,15 +188,11 @@ async function runSocialIntakeSnapshot(customerId, platform) {
   if (!profileUrl) throw new Error('KOL 没有 ' + platform + ' 主页链接');
   await dbOperations.run('UPDATE customers SET ' + platform + "_snapshot_status = 'fetching', " + platform + '_snapshot_error = NULL WHERE id = ?', [customerId]);
   try {
-    const config = await setting(platform);
     const handle = profileHandle(platform, profileUrl);
-    const fetched = platform === 'instagram' ? await fetchInstagram(config, handle) : await fetchTikTok(config, handle);
+    const fetched = await fetchPlatformVideos(platform, profileUrl, handle);
     const videos = fetched.videos.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0)).slice(0, LIMIT);
     const snapshotAt = new Date();
-    const views = videos.map((video) => video.views);
-    const totalViews = views.reduce((sum, value) => sum + value, 0);
-    const totalEngagement = videos.reduce((sum, video) => sum + video.likes + video.comments, 0);
-    const aggregate = { posts: videos.length, averageViews: videos.length ? Math.round(totalViews / videos.length) : null, medianViews: median(views), engagementRate: totalViews ? totalEngagement / totalViews : null };
+    const aggregate = aggregateSocialVideos(videos);
     await dbOperations.run('DELETE FROM kol_social_snapshot_videos WHERE customer_id = ? AND platform = ?', [customerId, platform]);
     for (const video of videos) {
       await dbOperations.run('INSERT INTO kol_social_snapshot_videos (customer_id, platform, platform_video_id, title, video_url, published_at, play_count, like_count, comment_count, snapshot_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)', [customerId, platform, video.id, video.title, video.url, publishedAtDate(video.publishedAt), video.views, video.likes, video.comments, snapshotAt]);
@@ -152,4 +211,4 @@ async function runSocialIntakeSnapshot(customerId, platform) {
   }
 }
 
-module.exports = { LIMIT, median, publishedAtDate, profileHandle, instagramFollowers, instagramVideo, tiktokVideo, runSocialIntakeSnapshot };
+module.exports = { LIMIT, median, optionalNumber, aggregateSocialVideos, publishedAtDate, profileHandle, instagramFollowers, instagramVideo, tiktokVideo, socialProviderOrder, fetchPlatformVideos, runSocialIntakeSnapshot };
