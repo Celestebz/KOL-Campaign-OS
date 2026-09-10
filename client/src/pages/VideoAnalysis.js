@@ -125,7 +125,7 @@ const VideoAnalysis = () => {
   const fetchVideos = async (nextFilters = filters) => {
     setLoading(true);
     try {
-      const params = { collaboration_only: 1 };
+      const params = {};
       Object.entries(nextFilters).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') params[key] = value;
       });
@@ -280,7 +280,6 @@ const VideoAnalysis = () => {
       Object.entries(filters).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') params.set(key, value);
       });
-      params.set('collaboration_only', '1');
     }
     const query = params.toString();
     window.location.href = query ? `/api/videos/export?${query}` : '/api/videos/export';
@@ -460,11 +459,13 @@ const VideoAnalysis = () => {
           <Form.Item label="视频链接" name="source_url" rules={[{ required: true, message: '请输入视频链接' }]}>
             <Input disabled={Boolean(editingVideo)} placeholder="https://www.youtube.com/watch?v=..." />
           </Form.Item>
-          <Form.Item label="所属项目" name="campaign_id" rules={[{ required: true, message: '请选择所属项目' }]}>
+          <Form.Item label="所属项目" name="campaign_id">
             <Select
               showSearch
+              allowClear
               options={campaignOptions}
               optionFilterProp="label"
+              placeholder="可选"
               onChange={(value) => {
                 form.setFieldValue('campaign_kol_id', undefined);
                 fetchCollaborationKols(value);
@@ -472,11 +473,12 @@ const VideoAnalysis = () => {
             />
           </Form.Item>
           {!editingVideo && (
-            <Form.Item label="合作达人" name="campaign_kol_id" rules={[{ required: true, message: '请选择合作达人' }]}>
+            <Form.Item label="合作达人" name="campaign_kol_id">
               <Select
                 showSearch
+                allowClear
                 optionFilterProp="label"
-                placeholder="请先选择项目"
+                placeholder="可选，请先选择项目"
                 disabled={!selectedCampaignId}
                 options={collaborationKols.map((item) => ({
                   value: item.id,
