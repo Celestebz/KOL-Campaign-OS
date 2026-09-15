@@ -428,12 +428,17 @@ router.post('/test-ai', async (req, res) => {
 // discover 类数据集（关键词搜索、按主页拉全部 Reels 等）的 dataset_id 以此为准。
 router.get('/brightdata/datasets', async (req, res) => {
   try {
+    const platform = req.query?.platform;
+    if (platform !== undefined && !['instagram', 'tiktok'].includes(platform)) {
+      return res.status(400).json({ success: false, error: 'Bright Data 平台仅支持 instagram 或 tiktok' });
+    }
     const brightdata = require('../services/brightdataClient');
     const rows = await dbOperations.query(
       'SELECT provider, api_key, base_url, extra_config FROM api_settings WHERE owner_user_id = ? AND provider IN (?, ?, ?) ORDER BY provider',
-      [ownerId(req), 'instagram.brightdata', 'tiktok.brightdata', 'brightdata']
+      [ownerId(req), platform ? `${platform}.brightdata` : 'instagram.brightdata', platform ? `${platform}.brightdata` : 'tiktok.brightdata', 'brightdata']
     );
-    const row = rows.find((item) => hasUsableSecret(item?.api_key)) || rows[0];
+    const scopedRow = platform && rows.find((item) => item.provider === `${platform}.brightdata` && hasUsableSecret(item.api_key));
+    const row = scopedRow || rows.find((item) => hasUsableSecret(item?.api_key)) || rows[0];
     if (!row || !hasUsableSecret(row.api_key)) {
       return res.status(400).json({ success: false, error: 'Bright Data API Token 未配置，请先在平台数据源中保存 Bright Data API Key' });
     }

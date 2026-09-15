@@ -170,7 +170,7 @@ const Settings = () => {
   const testBrightData = async () => {
     setBrightdataTesting(true);
     try {
-      const result = await axios.get('/api/settings/brightdata/datasets');
+      const result = await axios.get('/api/settings/brightdata/datasets', { params: { platform: activePlatform } });
       setBrightdataDatasets(result.data.data || { datasets: [] });
       message.success('Bright Data 连接成功');
     } catch (error) {

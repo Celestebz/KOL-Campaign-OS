@@ -10,7 +10,7 @@ function findHandler(router, method, path) {
   return layer.route.stack[0].handle;
 }
 
-function callHandler(handler, { body = {}, user } = {}) {
+function callHandler(handler, { body = {}, user, query = {} } = {}) {
   return new Promise((resolve, reject) => {
     const response = {
       statusCode: 200,
@@ -25,9 +25,42 @@ function callHandler(handler, { body = {}, user } = {}) {
         return this;
       }
     };
-    Promise.resolve(handler({ body, user }, response, reject)).catch(reject);
+    Promise.resolve(handler({ body, user, query }, response, reject)).catch(reject);
   });
 }
+
+test('Bright Data dataset listing uses the selected platform and prefers its credentials', async () => {
+  const bd = require('../services/brightdataClient');
+  const originalQuery = dbOperations.query;
+  const originalList = bd.listDatasets;
+  try {
+    const handler = findHandler(require('./settings'), 'get', '/brightdata/datasets');
+    for (const platform of ['instagram', 'tiktok']) {
+      dbOperations.query = async (sql, params) => {
+        assert.deepEqual(params.slice(1), [`${platform}.brightdata`, `${platform}.brightdata`, 'brightdata']);
+        return [
+          { provider: 'brightdata', api_key: 'legacy-token' },
+          { provider: `${platform}.brightdata`, api_key: 'platform-token' }
+        ];
+      };
+      bd.listDatasets = async (config) => {
+        assert.equal(config.api_key, 'platform-token');
+        return [{ dataset_id: 'gd_demo', name: 'Demo' }];
+      };
+      const response = await callHandler(handler, { query: { platform } });
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.payload.data.source, `${platform}.brightdata`);
+      assert.equal(response.payload.data.datasets[0].id, 'gd_demo');
+      assert.equal(JSON.stringify(response.payload).includes('platform-token'), false);
+    }
+    dbOperations.query = async () => { throw new Error('Invalid platform must not query settings'); };
+    const invalid = await callHandler(handler, { query: { platform: 'youtube' } });
+    assert.equal(invalid.statusCode, 400);
+  } finally {
+    dbOperations.query = originalQuery;
+    bd.listDatasets = originalList;
+  }
+});
 
 test('GET /api/settings masks stored secrets', async () => {
   const originalQuery = dbOperations.query;
