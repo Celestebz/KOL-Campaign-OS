@@ -195,7 +195,8 @@ function splitRecords(records) {
 async function scrapeDataset(config, datasetKey, inputs, options = {}) {
   const datasetId = resolveDatasetId(config, datasetKey);
   const url = config.base_url + '/datasets/v3/scrape?dataset_id=' + encodeURIComponent(datasetId)
-    + '&format=json&include_errors=true&notify=false';
+    + '&format=json&include_errors=true&notify=false'
+    + (options.discoverBy ? '&type=discover_new&discover_by=' + encodeURIComponent(options.discoverBy) : '');
   const data = await bdFetch(url, config, { method: 'POST', body: JSON.stringify({ input: inputs }) });
   const records = await collectSnapshotPayload(config, data, options);
   const { ok, failed } = splitRecords(records);
@@ -312,13 +313,16 @@ async function fetchTikTokProfile(config, handleOrUrl) {
 // 主页近况视频列表（discover 类数据集，需在设置中填 dataset_id）。
 async function fetchInstagramProfileVideos(config, handleOrUrl, limit = 10) {
   const profileUrl = instagramProfileUrl(handleOrUrl);
+  const numOfPosts = Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : 10;
   const [videos, profile] = await Promise.all([
-    discoverDataset(config, 'instagram_reels_from_profile', [{ url: profileUrl }]),
+    scrapeDataset(config, 'instagram_reels_from_profile', [{
+      url: profileUrl, num_of_posts: numOfPosts, country_code: ''
+    }], { discoverBy: 'url_all_reels' }),
     fetchInstagramProfile(config, profileUrl).catch(() => null)
   ]);
   const handle = clean((profile?.username) || profileUrl.split('/').filter(Boolean).pop());
   return {
-    videos: (videos || []).map((record) => normalizeInstagramMedia(record, handle)).filter((video) => video.id),
+    videos: (videos || []).map((record) => normalizeInstagramMedia(record, handle)).filter((video) => video.id).slice(0, numOfPosts),
     followers: profile?.followers ?? null
   };
 }

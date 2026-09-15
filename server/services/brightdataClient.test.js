@@ -206,10 +206,10 @@ test('fetchInstagramProfileVideos combines profile and reels datasets', async ()
   const originalFetch = global.fetch;
   global.fetch = async (url, options = {}) => {
     requests.push({ url, options });
-    if (url.includes('/scrape')) {
+    if (url.includes('dataset_id=gd_l1vikfch901nx3by4')) {
       return { ok: true, status: 200, text: async () => JSON.stringify([{ account: 'demo.creator', followers: 1234, url: 'https://www.instagram.com/demo.creator/' }]) };
     }
-    if (url.includes('/trigger')) {
+    if (url.includes('dataset_id=gd_reels')) {
       return { ok: true, status: 200, text: async () => JSON.stringify([{ snapshot_id: 'snap_4', status: 'collecting' }]) };
     }
     if (url.includes('/progress')) {
@@ -229,6 +229,34 @@ test('fetchInstagramProfileVideos combines profile and reels datasets', async ()
     assert.equal(result.videos.length, 2);
     assert.equal(result.videos[0].handle, 'demo.creator');
     assert.ok(requests.some((r) => r.url.includes('dataset_id=gd_reels')));
+    const reelsRequest = requests.find((r) => r.url.includes('dataset_id=gd_reels'));
+    const endpoint = new URL(reelsRequest.url);
+    assert.equal(endpoint.pathname, '/datasets/v3/scrape');
+    assert.equal(endpoint.searchParams.get('type'), 'discover_new');
+    assert.equal(endpoint.searchParams.get('discover_by'), 'url_all_reels');
+    assert.deepEqual(JSON.parse(reelsRequest.options.body), { input: [{
+      url: 'https://www.instagram.com/demo.creator/', num_of_posts: 10, country_code: ''
+    }] });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('fetchInstagramProfileVideos accepts immediate results and respects the requested limit', async () => {
+  const config = { api_key: 'token', base_url: 'https://api.brightdata.com', dataset_ids: { ...bd.DEFAULT_DATASETS, instagram_reels_from_profile: 'gd_reels' } };
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    const isReels = url.includes('dataset_id=gd_reels');
+    if (isReels) assert.equal(JSON.parse(options.body).input[0].num_of_posts, 1);
+    return { ok: true, status: 200, text: async () => JSON.stringify(isReels
+      ? [{ url: 'https://www.instagram.com/reel/A/' }, { url: 'https://www.instagram.com/reel/B/' }]
+      : [{ account: 'demo', followers: 3 }]) };
+  };
+  try {
+    const result = await bd.fetchInstagramProfileVideos(config, 'demo', 1);
+    assert.equal(result.videos.length, 1);
+    assert.equal(result.videos[0].id, 'A');
+    assert.equal(result.followers, 3);
   } finally {
     global.fetch = originalFetch;
   }
