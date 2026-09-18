@@ -359,7 +359,7 @@ const Settings = () => {
         <Col xs={24} md={17}><Form.Item label="Agent API Token" name={['settings', 'externalAgent', 'api_token']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 token；输入新值则更新" /></Form.Item></Col>
       </Row>
       <Form.Item label="Agent 使用备注" name={['settings', 'externalAgent', 'notes']}><Input placeholder="例如：只允许写候选池；通过永远人工确认。" /></Form.Item>
-      <Alert type="info" showIcon message="Brief API: GET /api/agent/brief/:strategyId；写入 API: POST /api/agent/raw-candidates/import" />
+      <Alert type="info" showIcon message="找达人控制台：在 /discovery 生成任务指令交给外部 Agent。Agent 使用当前用户的 Token 读取 GET /api/agent/discovery-requests/:id，领取并回报进度；结果进入 Raw 候选人工审核。" />
       <SaveSectionButton />
     </>
   );

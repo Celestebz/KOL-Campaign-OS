@@ -117,6 +117,11 @@ describe('RawCandidates product-scoped UI', () => {
     expect(screen.queryByRole('button', { name: /创建寻找任务/ })).not.toBeInTheDocument();
   });
 
+  test('scopes console result review to the requested Finder task', async () => {
+    render(<RawCandidates finderTaskId="42" />);
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/raw-candidates', { params: { finder_task_id: '42', actionable: 1 } }));
+  });
+
   test('renders finder task controls in the dedicated task view', async () => {
     render(<RawCandidates view="tasks" />);
 

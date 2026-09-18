@@ -6,6 +6,7 @@ const { requireAgentToken } = require('../middleware/agentAuth');
 
 const router = express.Router();
 const TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
+router.use('/discovery-requests', requireAgentToken, require('./discoveryRequests').createRouter({ agent: true }));
 
 
 const creatorMetricRequests = new Map();

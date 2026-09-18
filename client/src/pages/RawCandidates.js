@@ -170,7 +170,7 @@ const renderClue = (record = {}) => {
   );
 };
 
-const RawCandidates = ({ view = 'candidates' }) => {
+const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
   const isTaskView = view === 'tasks';
   const [candidates, setCandidates] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -185,7 +185,7 @@ const RawCandidates = ({ view = 'candidates' }) => {
   const [rawSheetSyncIds, setRawSheetSyncIds] = useState('');
   const [rawSheetSyncOwner, setRawSheetSyncOwner] = useState('');
   const [rawSheetSyncCampaignId, setRawSheetSyncCampaignId] = useState(null);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState(finderTaskId ? { finder_task_id: finderTaskId } : {});
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [videoEvidence, setVideoEvidence] = useState([]);
   const [videoEvidenceLoading, setVideoEvidenceLoading] = useState(false);
@@ -658,6 +658,12 @@ const RawCandidates = ({ view = 'candidates' }) => {
             : '这里仅保留 Finder 找到的原始候选；人工确认后进入项目候选池，不代表已经确认合作。'}
         </p>
       </div>
+
+      {!isTaskView && finderTaskId && <Space style={{ marginBottom: 16 }}>
+        <Tag color="blue">当前仅显示寻找任务 #{finderTaskId} 的候选</Tag>
+        <a href="/discovery">返回找达人控制台</a>
+        <a href="/finder">查看全部原始候选</a>
+      </Space>}
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>

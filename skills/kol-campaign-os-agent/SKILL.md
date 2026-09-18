@@ -37,6 +37,13 @@ Prefer the restricted `/api/agent` endpoints for KOL Master, candidate-pool, and
 
 ## Confirm Context
 
+When given a **discovery request ID from the OS console**, first read
+[references/discovery-console.md](references/discovery-console.md). The saved
+request supplies the user's explicit project/product/platform and search
+requirements. Execute its claimed workflow and report progress; do not ask
+the user to manually advance evidence analysis or candidate generation.
+The console is a handoff surface, not an Agent runtime.
+
 Before a write or Finder run, confirm the exact campaign/product and target platform. Before Finder, also confirm a ready strategy. Do not infer these from the newest record, previous task, UI state, candidate pool, or `Default Campaign`.
 
 ## Strategy

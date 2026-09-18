@@ -70,6 +70,7 @@ app.use('/api/sync/feishu-sheet', feishuSheetSyncRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/kol-strategies', kolStrategyRoutes);
 app.use('/api/finder-tasks', finderTaskRoutes);
+app.use('/api/discovery-requests', require('./routes/discoveryRequests').createRouter());
 app.use('/api/finder-subtasks', finderSubtaskRoutes);
 app.use('/api/agent', agentRoutes);
 app.use('/api/emails', emailRoutes);

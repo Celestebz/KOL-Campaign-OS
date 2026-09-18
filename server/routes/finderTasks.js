@@ -4033,7 +4033,8 @@ async function createFinderTask({
   shardIndex = null,
   instagramPagesPerQuery = 1,
   instagramDatePosted = '',
-  autoStart = true
+  autoStart = true,
+  transaction: parentTransaction = null
 } = {}) {
   if (!TARGET_PLATFORMS.includes(targetPlatform)) {
     throw new Error('Finder requires exactly one target_platform: youtube, instagram, or tiktok');
@@ -4043,7 +4044,8 @@ async function createFinderTask({
   const resolvedSearchSource = searchSource
     ? validateSearchSource(targetPlatform, searchSource)
     : await preferredSearchSourceForTargetPlatform(targetPlatform);
-  const task = await sequelize.transaction(async (transaction) => {
+  if (parentTransaction && autoStart) throw new Error('Caller-owned transactions require autoStart=false');
+  const insertTask = async (transaction) => {
     const strategy = await getReadyStrategy(strategyId, {
       requireActiveProduct: true,
       transaction
@@ -4086,7 +4088,8 @@ async function createFinderTask({
       transaction
     );
     return scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [result.id], transaction);
-  });
+  };
+  const task = parentTransaction ? await insertTask(parentTransaction) : await sequelize.transaction(insertTask);
   if (autoStart && process.env.NODE_ENV !== 'test') {
     const ctxUser = requestContext.currentUserId() ? { id: requestContext.currentUserId() } : null;
     setImmediate(() => {

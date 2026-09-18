@@ -510,7 +510,7 @@ async function approveCandidate(id, body = {}) {
 
 router.get('/', async (req, res) => {
   try {
-    const { campaign_id, strategy_id, platform, status, min_score, search, identity_status, campaign_product_id, actionable } = req.query;
+    const { campaign_id, strategy_id, platform, status, min_score, search, identity_status, campaign_product_id, actionable, finder_task_id } = req.query;
     let sql = `
       SELECT rc.*, c.name as campaign_name, ft.name as finder_task_name,
         ks.name as strategy_name, ks.status as strategy_status,
@@ -558,6 +558,10 @@ router.get('/', async (req, res) => {
     if (strategy_id) {
       sql += ' AND rc.strategy_id = ?';
       params.push(strategy_id);
+    }
+    if (finder_task_id) {
+      sql += ' AND rc.finder_task_id = ?';
+      params.push(finder_task_id);
     }
     if (campaign_product_id) {
       sql += ' AND rcpf.campaign_product_id = ?';

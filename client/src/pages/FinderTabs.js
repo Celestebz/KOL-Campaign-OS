@@ -3,12 +3,14 @@ import { Tabs } from 'antd';
 import { useNavigate } from 'react-router-dom';
 
 const tabItems = [
+  { key: 'discovery', label: '找达人控制台' },
   { key: 'finder', label: '原始候选' },
   { key: 'strategy', label: '策略管理' },
   { key: 'tasks', label: '寻找任务' }
 ];
 
 const tabPaths = {
+  discovery: '/discovery',
   finder: '/finder',
   strategy: '/strategy',
   tasks: '/finder-tasks'
