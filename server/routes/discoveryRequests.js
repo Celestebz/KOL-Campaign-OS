@@ -8,9 +8,10 @@ function createRouter({ agent = false, service = getService, finderRouter } = {}
     catch (e) { res.status(e.statusCode || e.status || 400).json({ success: false, error: e.message }); }
   };
   router.get('/', handle((s, req) => s.list(req.user.id)));
+  router.get('/catalog', handle((s) => s.catalog()));
+  router.post('/', handle((s, req) => s.create(req.user.id, req.body)));
   router.get('/:id', handle((s, req) => s.get(req.user.id, req.params.id)));
   if (!agent) {
-    router.post('/', handle((s, req) => s.create(req.user.id, req.body)));
     router.post('/:id/cancel', handle((s, req) => s.control(req.user.id, req.params.id, 'cancel')));
     router.post('/:id/retry', handle((s, req) => s.control(req.user.id, req.params.id, 'retry')));
   } else {

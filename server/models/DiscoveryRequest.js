@@ -9,6 +9,7 @@ module.exports = (sequelize, D) => sequelize.define('DiscoveryRequest', {
   target_platform: D.STRING(20),
   target_count: D.INTEGER,
   requirements: D.TEXT,
+  context_json: D.TEXT('long'),
   status: { type: D.STRING(20), defaultValue: 'queued' },
   stage: { type: D.STRING(30), defaultValue: 'waiting' },
   execution_id: D.STRING(80),

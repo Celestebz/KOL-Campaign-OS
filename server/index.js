@@ -133,8 +133,10 @@ async function startServer() {
       if (interruptedRuns || interruptedFinderTasks) {
         console.log(`[recovery] 服务重启中断标记：automation_runs ${interruptedRuns} 条，finder_tasks ${interruptedFinderTasks} 条`);
       }
-      await startEmailSync();
-      startFollowUpTimer();
+      if (process.env.DISABLE_EMAIL_BACKGROUND_JOBS !== '1') {
+        await startEmailSync();
+        startFollowUpTimer();
+      }
     }
     app.listen(PORT, () => {
       console.log(`KOL Campaign OS server is running on http://localhost:${PORT}`);

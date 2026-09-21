@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -42,4 +42,28 @@ test('handoff includes the explicit selected server and never embeds access cred
   expect(text).toContain('https://os.example.com');
   expect(text).toContain('US home creators');
   expect(text).not.toContain('secret-example');
+});
+
+test('creates a request using project and nested product data without loading strategies', async () => {
+  axios.get.mockImplementation((url) => Promise.resolve({ data: { data:
+    url === '/api/campaigns' ? [{ id: 1, name: 'Trees project' }]
+      : url === '/api/campaigns/1/products' ? [{ id: 2, status: 'active', product: { name: 'Tree product' } }] : []
+  } }));
+  axios.post.mockResolvedValue({ data: { data: item } });
+  render(<MemoryRouter><DiscoveryConsole /></MemoryRouter>);
+  await waitFor(() => expect(screen.getByRole('combobox', { name: '项目' })).toBeInTheDocument());
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: '项目' }));
+  await userEvent.click(await screen.findByText('Trees project'));
+  await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/campaigns/1/products'));
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: '产品' }));
+  await userEvent.click(await screen.findByText('Tree product'));
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: '平台' }));
+  await userEvent.click(await screen.findByText('TikTok'));
+  fireEvent.change(screen.getByRole('textbox', { name: '找人要求' }), { target: { value: 'US home creators' } });
+  await userEvent.click(screen.getByRole('button', { name: /生成 Agent 任务指令/ }));
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/discovery-requests', expect.objectContaining({
+    campaign_id: 1, campaign_product_id: 2, target_platform: 'tiktok', target_count: 10, requirements: 'US home creators'
+  })));
+  expect(axios.post.mock.calls[0][1]).not.toHaveProperty('strategy_id');
+  expect(axios.get.mock.calls.some(([url]) => url.includes('strateg'))).toBe(false);
 });

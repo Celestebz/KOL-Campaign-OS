@@ -26,14 +26,17 @@ function fixture() {
   const service = createDiscoveryService({ model, sequelize: { transaction },
     query: async (sql, params) => sql.includes('FROM discovery_requests') ? rows.filter((r) => r.owner_user_id === params[0]).map((r) => r.toJSON())
       : sql.includes('COUNT(*)') ? [{ candidate_count: 3 }]
-      : params[0] === 1 ? [{ id: 1, campaign_id: 2, campaign_product_id: 3, campaign_name: 'Campaign', product_name: 'Product' }] : [],
+      : params[0] === 1 && params[1] === 1 ? [{ campaign_id: 1, campaign_product_id: 1, campaign_name: 'Campaign', product_name: 'Product' }] : [],
     createFinderTask: async (options) => {
       assert.equal(options.autoStart, false);
+      assert.equal(options.strategyId, null);
+      assert.equal(options.discoveryContext.id, null);
+      assert.equal(options.discoveryContext.requirements, 'US home creators');
       assert.ok(options.transaction);
       return { id: ++taskCount };
     }
   });
-  const body = { request_key: 'request-0001', strategy_id: 1, target_platform: 'tiktok', target_count: 10, requirements: 'US home creators' };
+  const body = { request_key: 'request-0001', campaign_id: 1, campaign_product_id: 1, target_platform: 'tiktok', target_count: 10, requirements: 'US home creators' };
   return { service, rows, body, taskCount: () => taskCount };
 }
 
@@ -94,7 +97,7 @@ test('completion retries are safe and result count comes from stored Raw candida
 });
 test('invalid scope, oversized input and unsupported platform are rejected before work', async () => {
   const f = fixture();
-  for (const change of [{ strategy_id: 2 }, { target_platform: 'all' }, { target_count: 51 }, { target_count: NaN }, { requirements: ' ' }, { requirements: 'a'.repeat(5001) }]) {
+  for (const change of [{ campaign_id: 2 }, { target_platform: 'all' }, { target_count: 51 }, { target_count: NaN }, { requirements: ' ' }, { requirements: 'a'.repeat(5001) }]) {
     await assert.rejects(f.service.create(1, { ...f.body, ...change }));
   }
   assert.equal(f.rows.length, 0);

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import axios from 'axios';
@@ -122,6 +122,21 @@ describe('RawCandidates product-scoped UI', () => {
     await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/raw-candidates', { params: { finder_task_id: '42', actionable: 1 } }));
   });
 
+  test('approves a strategy-free candidate without asking for a strategy', async () => {
+    const originalGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, ...args) => url === '/api/raw-candidates'
+      ? Promise.resolve({ data: { data: [{ id: 102, kol_name: 'Agent Creator', campaign_id: 1,
+        strategy_id: null, finder_task_id: 42, fit_campaign_product_id: 2, status: 'manual_review' }] } })
+      : originalGet(url, ...args));
+    axios.post.mockResolvedValue({ data: { success: true } });
+    render(<RawCandidates finderTaskId="42" />);
+    const creator = await screen.findByText('Agent Creator');
+    await userEvent.click(within(creator.closest('tr')).getByRole('button', { name: /加入候选池/ }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/raw-candidates/102/approve', {
+      campaign_id: 1, campaign_product_id: 2
+    }));
+  });
+
   test('renders finder task controls in the dedicated task view', async () => {
     render(<RawCandidates view="tasks" />);
 
@@ -145,6 +160,6 @@ test('handles initial campaign and strategy network failures without unhandled r
 
   await waitFor(() => {
     expect(message.error).toHaveBeenCalledWith('获取产品/活动失败，请确认后端服务已启动');
-    expect(message.error).toHaveBeenCalledWith('获取策略失败，请确认后端服务已启动');
+    expect(axios.get).not.toHaveBeenCalledWith('/api/kol-strategies', expect.anything());
   });
 });

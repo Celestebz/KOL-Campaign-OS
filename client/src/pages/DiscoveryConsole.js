@@ -11,12 +11,13 @@ const colors = { queued: 'default', running: 'blue', blocked: 'orange', complete
 const newKey = () => `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 
 export function handoffText(request, origin) {
-  return `请使用 kol-campaign-os-agent Skill 执行找人需求 #${request.id}。\nOS 地址：${origin}\n先读取 GET /api/agent/discovery-requests/${request.id}，按 Skill 的控制台需求流程领取并执行。\n项目：${request.campaign_name || request.campaign_id}；产品：${request.product_name || request.campaign_product_id}；平台：${request.target_platform}；目标：${request.target_count} 人。\n要求：${request.requirements}\n持续回报进度，把核验合格的人选写入 Raw 候选，停止于人工审核，不批准、不发送邮件。\n若尚未安装新版 Skill，请从 OS 项目 skills/kol-campaign-os-agent 安装；读取 references/discovery-console.md。访问凭据在本机安全配置，不要粘贴到聊天中。`;
+  return `请重新读取新版 kol-campaign-os-agent Skill，执行找人需求 #${request.id}。\nOS 地址：${origin}\n先读取 GET /api/agent/discovery-requests/${request.id}，按 Skill 的控制台需求流程领取并执行。\n使用需求中的 context 和 requirements，不选 Strategy、不修改旧策略、不写脚本调用 createFinderTask。\n项目：${request.campaign_name || request.campaign_id}；产品：${request.product_name || request.campaign_product_id}；平台：${request.target_platform}；目标：${request.target_count} 人。\n要求：${request.requirements}\n持续回报进度，把核验合格的人选写入 Raw 候选，停止于人工审核，不批准、不发送邮件。\n若尚未安装新版 Skill，请从 OS 项目 skills/kol-campaign-os-agent 安装；读取 references/discovery-console.md。访问凭据在本机安全配置，不要粘贴到聊天中。`;
 }
 
 export default function DiscoveryConsole() {
   const [form] = Form.useForm();
-  const [strategies, setStrategies] = useState([]);
+  const [campaigns, setCampaigns] = useState([]);
+  const [products, setProducts] = useState([]);
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -40,12 +41,23 @@ export default function DiscoveryConsole() {
   useEffect(() => {
     alive.current = true;
     setLoading(true);
-    Promise.all([load(), axios.get('/api/kol-strategies', { params: { status: 'ready' } })
-      .then((response) => { if (alive.current) setStrategies(response.data.data || []); })
-      .catch(() => { if (alive.current) message.error('读取项目搜索方案失败，请刷新'); })])
+    Promise.all([load(), axios.get('/api/campaigns')
+      .then((response) => { if (alive.current) setCampaigns(response.data.data || []); })
+      .catch(() => { if (alive.current) message.error('读取项目失败，请刷新'); })])
       .finally(() => { if (alive.current) setLoading(false); });
     return () => { alive.current = false; };
   }, [load]);
+  const campaignId = Form.useWatch('campaign_id', form);
+  useEffect(() => {
+    if (!campaignId) { setProducts([]); return undefined; }
+    let cancelled = false;
+    setProducts([]);
+    form.setFieldsValue({ campaign_product_id: undefined });
+    axios.get(`/api/campaigns/${campaignId}/products`).then((response) => {
+      if (!cancelled) setProducts((response.data.data || []).filter((p) => p.status === 'active'));
+    }).catch(() => { if (!cancelled) message.error('读取项目产品失败，请刷新'); });
+    return () => { cancelled = true; };
+  }, [campaignId, form]);
   useEffect(() => {
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
@@ -85,11 +97,13 @@ export default function DiscoveryConsole() {
       <Col xs={24} lg={9}>
         <Card title="这次想找什么达人？" loading={loading}>
           <Form form={form} layout="vertical" initialValues={{ target_count: 10 }} onFinish={create}>
-            <Form.Item label="项目 / 产品搜索方案" name="strategy_id" rules={[{ required: true, message: '请选择项目产品的搜索方案' }]}>
-              <Select showSearch optionFilterProp="label" placeholder="选择本次项目与产品" options={strategies.map((s) => ({ value: s.id,
-                label: `${s.campaign_name || '项目'} / ${s.product_name || s.name} · ${s.name}` }))} />
+            <Form.Item label="项目" name="campaign_id" rules={[{ required: true, message: '请选择项目' }]}>
+              <Select showSearch optionFilterProp="label" placeholder="选择项目" options={campaigns.map((c) => ({ value: c.id, label: c.name }))} />
             </Form.Item>
-            {!strategies.length && <Paragraph>暂无已发布方案。<Link to="/strategy">先设置项目产品的搜索策略</Link>，后续可重复使用。</Paragraph>}
+            <Form.Item label="产品" name="campaign_product_id" rules={[{ required: true, message: '请选择产品' }]}>
+              <Select showSearch optionFilterProp="label" placeholder={campaignId ? '选择项目产品' : '请先选择项目'} disabled={!campaignId}
+                options={products.map((p) => ({ value: p.id, label: p.product?.name || p.product_name || p.name }))} />
+            </Form.Item>
             <Form.Item label="平台" name="target_platform" rules={[{ required: true, message: '请选择一个平台' }]}>
               <Select placeholder="选择平台" options={['youtube', 'instagram', 'tiktok'].map((p) => ({ value: p, label: { youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' }[p] }))} />
             </Form.Item>

@@ -460,13 +460,20 @@ async function approveCandidate(id, body = {}) {
     if (!candidate) throw approvalError('Raw candidate not found');
     if (candidate.status === 'ignored') throw approvalError('Ignored candidate cannot be approved');
 
-    const strategy = await getReadyStrategy(body.strategy_id || candidate.strategy_id, transaction);
     const finderTask = candidate.finder_task_id
       ? await scopedGet('SELECT * FROM finder_tasks WHERE id = ?', [candidate.finder_task_id], transaction)
       : null;
 
+    const strategy = finderTask && !finderTask.strategy_id
+      ? await require('./finderTasks').getFinderTaskContext(finderTask, { transaction })
+      : await getReadyStrategy(body.strategy_id || candidate.strategy_id, transaction);
+
     const campaignId = Number(body.campaign_id || candidate.campaign_id || strategy.campaign_id || 1);
     const campaignProductId = parseBodyId(body.campaign_product_id || candidate.campaign_product_id || strategy.campaign_product_id);
+
+    if (!strategy.id && (body.strategy_id || campaignId !== Number(strategy.campaign_id))) {
+      throw approvalError('Candidate must remain in its discovery request project');
+    }
 
     if (campaignProductId && Number(strategy.campaign_product_id) !== campaignProductId) {
       throw approvalError('Campaign Product does not match Strategy');

@@ -218,7 +218,7 @@ const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
 
   useEffect(() => {
     fetchCampaigns();
-    fetchStrategies();
+    if (isTaskView) fetchStrategies();
     if (isTaskView) fetchFinderTasks();
     else fetchCandidates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -415,14 +415,10 @@ const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
 
   const approveOne = async (record) => {
     const strategyId = record.strategy_id || selectedStrategy?.id;
-    if (!strategyId) {
-      message.warning('请先选择一个已发布策略');
-      return;
-    }
     try {
       await axios.post(`/api/raw-candidates/${record.id}/approve`, {
-        strategy_id: strategyId,
-        campaign_id: record.campaign_id || selectedStrategy?.campaign_id || filters.campaign_id || 1,
+        ...(strategyId ? { strategy_id: strategyId } : {}),
+        campaign_id: record.campaign_id || selectedStrategy?.campaign_id || filters.campaign_id,
         campaign_product_id: record.fit_campaign_product_id || selectedStrategy?.campaign_product_id || undefined
       });
       message.success('已加入 KOL 管理和当前项目子表');
@@ -434,14 +430,9 @@ const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
   };
 
   const batchApprove = async () => {
-    if (!selectedStrategy) {
-      message.warning('请先选择一个已发布策略');
-      return;
-    }
     const res = await axios.post('/api/raw-candidates/batch-approve', {
       ids: selectedRowKeys,
-      strategy_id: selectedStrategy.id,
-      campaign_id: selectedStrategy.campaign_id
+      ...(selectedStrategy ? { strategy_id: selectedStrategy.id, campaign_id: selectedStrategy.campaign_id } : {})
     });
     const data = res.data.data;
     message.success(`批量完成：成功 ${data.success_count}，失败 ${data.failed_count}`);
@@ -581,12 +572,12 @@ const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
       )
     },
     {
-      title: '策略',
+      title: '需求来源',
       key: 'strategy',
       width: 190,
       render: (_, r) => (
         <Space direction="vertical" size={2}>
-          <span>{r.strategy_name || '未绑定策略'}</span>
+          <span>{r.strategy_name || r.finder_task_name || 'Agent 找人需求'}</span>
           {r.strategy_status ? <Tag color={r.strategy_status === 'ready' ? 'green' : 'default'}>{r.strategy_status}</Tag> : null}
         </Space>
       )
@@ -635,7 +626,7 @@ const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
       render: (_, record) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />} onClick={() => setDetail(record)}>详情</Button>
-          <Button size="small" type="primary" icon={<CheckOutlined />} disabled={['approved', 'duplicate'].includes(record.status) || (!record.strategy_id && !selectedStrategy)} onClick={() => approveOne(record)}>加入候选池</Button>
+          <Button size="small" type="primary" icon={<CheckOutlined />} disabled={['approved', 'duplicate'].includes(record.status)} onClick={() => approveOne(record)}>加入候选池</Button>
           <Button size="small" icon={<StopOutlined />} disabled={record.status === 'ignored'} onClick={() => ignoreOne(record)}>忽略本项目</Button>
           <Button size="small" danger onClick={() => openGlobalRiskModal(record)}>标记不合作</Button>
         </Space>
@@ -667,7 +658,7 @@ const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
 
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Select allowClear placeholder="选择已发布策略" value={filters.strategy_id} onChange={updateStrategyFilter} options={strategyOptions} style={{ width: 300 }} />
+          {isTaskView && <Select allowClear placeholder="选择已发布策略" value={filters.strategy_id} onChange={updateStrategyFilter} options={strategyOptions} style={{ width: 300 }} />}
           <Select allowClear placeholder="项目/产品" value={filters.campaign_id} onChange={(v) => updateFilter('campaign_id', v)} options={campaignOptions} style={{ width: 180 }} />
           {!isTaskView ? <Select allowClear placeholder="项目产品" value={filters.campaign_product_id} onChange={(v) => updateFilter('campaign_product_id', v)} options={campaignProducts.map((item) => ({ value: item.id, label: `${item.product?.name || item.product_name || ''} (${item.role || 'hero'})`.trim() }))} style={{ width: 200 }} /> : null}
           {!isTaskView ? <Select allowClear placeholder="平台" value={filters.platform} onChange={(v) => updateFilter('platform', v)} options={platformOptions} style={{ width: 140 }} /> : null}

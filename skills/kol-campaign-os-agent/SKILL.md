@@ -37,6 +37,15 @@ Prefer the restricted `/api/agent` endpoints for KOL Master, candidate-pool, and
 
 ## Confirm Context
 
+**Default creator discovery is strategy-free.** Read
+[references/discovery-console.md](references/discovery-console.md) for every
+new creator-search request, including requests made directly in chat.
+Use the discovery-request HTTP APIs. Never import server modules, run
+`createFinderTask` in scripts, query the business database, modify Strategy
+gates, or fall back to the legacy Finder when the new API is unavailable.
+Report an API/version/authentication blocker instead. Existing Strategy
+records are historical context, not authorization or filters for new work.
+
 When given a **discovery request ID from the OS console**, first read
 [references/discovery-console.md](references/discovery-console.md). The saved
 request supplies the user's explicit project/product/platform and search
@@ -44,13 +53,16 @@ requirements. Execute its claimed workflow and report progress; do not ask
 the user to manually advance evidence analysis or candidate generation.
 The console is a handoff surface, not an Agent runtime.
 
-Before a write or Finder run, confirm the exact campaign/product and target platform. Before Finder, also confirm a ready strategy. Do not infer these from the newest record, previous task, UI state, candidate pool, or `Default Campaign`.
+Before a write, identify the exact campaign/product and target platform from the user's instruction or saved request. Do not infer them from the newest record or `Default Campaign`. Only an explicitly requested legacy Finder run requires a ready strategy.
 
 ## Strategy
 
 When creating or improving a strategy, read [references/strategy.md](references/strategy.md) and [references/strategy-output-schema.md](references/strategy-output-schema.md). Keep product facts, creator personas, scoring, evidence guidance, and Finder handoff grounded in the campaign brief. Publish a strategy only when requested.
 
-## Video Evidence Finder
+## Legacy Video Evidence Finder (explicit legacy requests only)
+
+Do not use this section for new creator discovery. Use the discovery-request
+flow above; it has no Strategy prerequisite.
 
 Use exactly one target platform per Finder task:
 

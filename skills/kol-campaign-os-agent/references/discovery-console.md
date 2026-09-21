@@ -1,6 +1,6 @@
 # External Agent discovery console
 
-Use this flow when the user hands off a request created at `/discovery`.
+Use this flow for all new creator searches, from chat or `/discovery`.
 The user has authorized discovery for the saved project, product, platform,
 target count, and requirements. Approval of candidates and email sending
 remain human actions. Read the request; never infer it from the latest row.
@@ -20,6 +20,29 @@ Review existing local customizations before replacing an installed skill.
 The console never launches an external Agent automatically. The user pastes
 the generated instruction into their Agent session.
 
+## Direct chat requests (no saved request ID)
+
+Read `GET /api/agent/discovery-requests/catalog` to identify the user's exact
+project and project-product IDs. Ask only when the user's description is
+ambiguous. Create the request through `POST /api/agent/discovery-requests`:
+
+```json
+{
+  "request_key": "<stable-uuid>",
+  "campaign_id": 1,
+  "campaign_product_id": 2,
+  "target_platform": "tiktok",
+  "target_count": 20,
+  "requirements": "The user's exact requirements, including metric windows"
+}
+```
+
+Retain the request key across retries. This does not start server-side search.
+No Strategy ID is required or created. Never copy an old strategy's follower,
+view, or geography limits into a new request unless the user asked for them.
+Then continue below with the returned request ID. If these APIs return 404,
+report a server-version mismatch; do not call server JavaScript or SQL.
+
 ## Claim and execute
 
 1. `GET /api/health`, then `GET /api/agent/discovery-requests/{id}`.
@@ -33,12 +56,12 @@ the generated instruction into their Agent session.
    A 409 means another execution owns it or it has stopped. Do not invent a
    new execution ID to bypass that response. Ask the user to stop/requeue
    only if their previous Agent execution is no longer available.
-3. Read `GET /api/agent/brief/{strategy_id}` for product and scoring context.
-   The console currently requires a published strategy. Saved additional
-   requirements are Agent-side qualification conditions, not a replacement
-   strategy. If they conflict materially with the strategy, report blocked
-   and explain the conflict; do not silently loosen a condition or publish a
-   new strategy.
+3. Use the request's `context` product snapshot and `requirements` as the
+   search and qualification context. Do not read `/brief/{strategy_id}`,
+   choose an old Strategy, publish one, or adjust its gates. If the request
+   itself contains conflicting conditions, report the conflict. When an old
+   saved request still has a non-null `strategy_id`, stop and ask the user to
+   create a new strategy-free request instead of silently continuing legacy work.
 4. Search using available public-data tools. Check identity, geography and
    requested metric windows before importing. Do not fabricate unavailable
    metrics. Skip or report blocked when required verification is unavailable.

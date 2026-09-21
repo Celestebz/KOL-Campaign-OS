@@ -768,6 +768,7 @@ function taskBindingError(message) {
 
 async function getReadyStrategyForTask(task, { transaction = null } = {}) {
   if (!task?.campaign_product_id) throw taskBindingError('Finder task requires a Campaign Product binding');
+  if (!task.strategy_id) return require('../services/discoveryContext').getTaskDiscoveryContext(task, transaction);
   let strategy;
   try {
     strategy = await getReadyStrategy(task.strategy_id, { requireActiveProduct: true, transaction });
@@ -2565,7 +2566,10 @@ async function upsertRawCandidate(candidate, task, provider, creatorContext = nu
   if (!candidate.kol_name && !candidate.profile_url) {
     return { inserted: false, skipped: true, reason: 'Missing kol_name/profile_url' };
   }
-  const existing = await rawCandidateExists(candidate, task.strategy_id, transaction);
+  const existing = task.strategy_id
+    ? await rawCandidateExists(candidate, task.strategy_id, transaction)
+    : await scopedGet(`SELECT * FROM raw_candidates WHERE finder_task_id = ? AND platform = ? AND ${candidate.profile_url ? 'profile_url' : 'kol_name'} = ? LIMIT 1`,
+      [task.id, candidate.platform, candidate.profile_url || candidate.kol_name], transaction);
   const desiredStatus = ['new', 'ignored', 'error', 'manual_review', 'risk_review'].includes(candidate.status) ? candidate.status : '';
   const globalRisk = creatorContext?.cooperation_status === 'do_not_contact';
   const status = desiredStatus || 'new';
@@ -3584,7 +3588,7 @@ router.get('/:id/video-evidence', async (req, res) => {
   try {
     const task = await dbOperations.get('SELECT * FROM finder_tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ success: false, error: 'Finder task not found' });
-    const strategy = await getReadyStrategy(task.strategy_id);
+    const strategy = await getReadyStrategyForTask(task);
     const rows = await dbOperations.query(`
       SELECT fve.*, vs.source_url as video_url, vs.title, vs.author_name, vs.kol_name, vs.author_profile_url,
         vs.crawl_status, vs.analysis_status as video_analysis_status,
@@ -4034,6 +4038,7 @@ async function createFinderTask({
   instagramPagesPerQuery = 1,
   instagramDatePosted = '',
   autoStart = true,
+  discoveryContext = null,
   transaction: parentTransaction = null
 } = {}) {
   if (!TARGET_PLATFORMS.includes(targetPlatform)) {
@@ -4046,7 +4051,7 @@ async function createFinderTask({
     : await preferredSearchSourceForTargetPlatform(targetPlatform);
   if (parentTransaction && autoStart) throw new Error('Caller-owned transactions require autoStart=false');
   const insertTask = async (transaction) => {
-    const strategy = await getReadyStrategy(strategyId, {
+    const strategy = discoveryContext || await getReadyStrategy(strategyId, {
       requireActiveProduct: true,
       transaction
     });
@@ -4083,7 +4088,7 @@ async function createFinderTask({
         JSON.stringify(['target_platform_first']),
         JSON.stringify(rawRequest),
         clean(notes),
-        'video_evidence_finder'
+        discoveryContext ? 'external_agent' : 'video_evidence_finder'
       ],
       transaction
     );
@@ -4250,6 +4255,7 @@ module.exports.applyFinderGates = applyFinderGates;
 module.exports.youtubePreflightConfig = youtubePreflightConfig;
 module.exports.finderScanLimit = finderScanLimit;
 module.exports.createFinderTask = createFinderTask;
+module.exports.getFinderTaskContext = getReadyStrategyForTask;
 module.exports.normalizeKeywordShards = normalizeKeywordShards;
 module.exports.markInterruptedFinderTasks = markInterruptedFinderTasks;
 module.exports.validateSearchSource = validateSearchSource;
