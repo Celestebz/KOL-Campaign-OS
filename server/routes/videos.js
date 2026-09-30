@@ -1066,7 +1066,7 @@ function buildVideoListSql(filters = {}) {
   const params = [];
 
   if (collaborationOnly) {
-    sql += ' AND cv.campaign_kol_id IS NOT NULL';
+    sql += " AND (cv.added_reason IS NULL OR cv.added_reason != 'finder')";
   }
 
   if (ids?.length) {
