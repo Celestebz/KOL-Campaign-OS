@@ -16,12 +16,12 @@ function app() {
   return instance;
 }
 
-test('template has exactly four input columns and no sample records', async () => {
+test('template has five input columns including project and no sample records', async () => {
   const response = await request(app()).get('/import/template').buffer(true).parse((res, callback) => {
     const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('end', () => callback(null, Buffer.concat(chunks)));
   }).expect(200);
   const workbook = xlsx.read(response.body, { type: 'buffer' });
-  assert.deepEqual(xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1 }), [['视频链接', '合作报价', '达人名称', '备注']]);
+  assert.deepEqual(xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1 }), [['视频链接', '所属项目', '合作报价', '达人名称', '备注']]);
 });
 test('preview CSV and confirm report partial success and IDs for follow-up crawling', async () => {
   const preview = await request(app()).post('/import/preview').field('default_currency', 'CNY').attach('file', Buffer.from(`视频链接,合作报价\n${url},500\nbad,20`), 'input.csv').expect(200);
@@ -36,4 +36,8 @@ test('confirm revalidates forged rows and malformed requests', async () => {
   assert.equal(result.body.data.failed, 1);
   await request(app()).post('/import/confirm').send({ rows: [] }).expect(400);
   await request(app()).post('/import/preview').attach('file', Buffer.from('x'), 'bad.txt').expect(400);
+  const staleProject = await request(app()).post('/import/validate').send({ rows: [{ source_url: url, campaign_override_id: 999 }] }).expect(200);
+  assert.equal(staleProject.body.data.rows[0].status, 'invalid');
+  const confirmed = await request(app()).post('/import/confirm').send({ rows: [{ source_url: url, campaign_override_id: 999, campaign_id: 999, status: 'new' }] }).expect(200);
+  assert.equal(confirmed.body.data.failed, 1);
 });

@@ -2,7 +2,7 @@ const xlsx = require('xlsx');
 const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
 
 const CURRENCIES = ['USD', 'CNY', 'EUR', 'GBP', 'JPY', 'HKD', 'CAD', 'AUD', 'SGD'];
-const HEADERS = ['视频链接', '合作报价', '达人名称', '备注'];
+const HEADERS = ['视频链接', '所属项目', '合作报价', '达人名称', '备注'];
 const MAX_ROWS = 500;
 const text = value => String(value ?? '').trim();
 
@@ -39,10 +39,11 @@ function readImportFile(file) {
   return matrix.map((cells, index) => ({
     row_number: index + 2,
     source_url: text(cells[headers.indexOf('视频链接')]),
+    campaign_name: text(cells[headers.indexOf('所属项目')]),
     quote: text(cells[headers.indexOf('合作报价')]),
     kol_name: text(cells[headers.indexOf('达人名称')]),
     notes: text(cells[headers.indexOf('备注')])
-  })).filter(row => row.source_url || row.quote || row.kol_name || row.notes);
+  })).filter(row => row.source_url || row.campaign_name || row.quote || row.kol_name || row.notes);
 }
 
 async function previewImport(rows, options, db) {
@@ -53,29 +54,50 @@ async function previewImport(rows, options, db) {
   const campaignId = options.campaign_id ? Number(options.campaign_id) : null;
   if (campaignId && (!Number.isSafeInteger(campaignId) || campaignId < 1)) throw new Error('所属项目无效');
   if (options.campaign_id && !campaignId) throw new Error('所属项目无效');
-  if (campaignId && !await db.get('SELECT id FROM campaigns WHERE id = ?', [campaignId])) throw new Error('所属项目不存在');
+  const defaultCampaign = campaignId ? await db.get('SELECT id, name FROM campaigns WHERE id = ?', [campaignId]) : null;
+  if (campaignId && !defaultCampaign) throw new Error('默认项目不存在');
   const seen = new Set();
+  const plannedVideos = new Set();
+  const projectCache = new Map();
   const result = [];
   for (const [index, input] of rows.entries()) {
-    const row = { row_number: Number(input?.row_number) || index + 2, source_url: text(input?.source_url), quote: text(input?.quote), kol_name: text(input?.kol_name), notes: text(input?.notes) };
+    const row = { row_number: Number(input?.row_number) || index + 2, source_url: text(input?.source_url), campaign_name: text(input?.campaign_name), campaign_override_id: input?.campaign_override_id, quote: text(input?.quote), kol_name: text(input?.kol_name), notes: text(input?.notes) };
     try {
+      let campaign = defaultCampaign;
+      if (row.campaign_override_id !== undefined && row.campaign_override_id !== null && row.campaign_override_id !== '') {
+        const id = Number(row.campaign_override_id);
+        if (!Number.isSafeInteger(id) || id < 1) throw new Error('手动选择的项目无效');
+        campaign = await db.get('SELECT id, name FROM campaigns WHERE id = ?', [id]);
+        if (!campaign) throw new Error('手动选择的项目不存在，请重新选择');
+      } else if (row.campaign_name) {
+        if (!projectCache.has(row.campaign_name)) projectCache.set(row.campaign_name, await db.query('SELECT id, name FROM campaigns WHERE name = ?', [row.campaign_name]));
+        const matches = projectCache.get(row.campaign_name);
+        if (matches.length !== 1) throw new Error(matches.length ? '存在同名项目，请手动选择' : '项目不存在，请手动选择');
+        campaign = matches[0];
+      }
+      row.campaign_id = campaign?.id || null;
+      row.resolved_campaign_name = campaign?.name || '';
       if (!row.source_url) throw new Error('视频链接不能为空');
       if (row.source_url.length > 2048 || row.kol_name.length > 255 || row.notes.length > 10000) throw new Error('链接、达人名称或备注过长');
       row.normalized = normalizeVideoUrl(row.source_url);
       if (row.normalized.platform === 'unknown') throw new Error('请填写 YouTube、Instagram 或 TikTok 的完整视频链接');
       row.price = parseQuote(row.quote, defaultCurrency);
       const hash = row.normalized.canonicalUrlHash;
-      if (seen.has(hash)) { row.status = 'skip'; row.reason = '表格内重复链接'; }
+      const key = `${hash}:${row.campaign_id || 'none'}`;
+      if (seen.has(key)) { row.status = 'skip'; row.reason = '表格内同一链接与项目重复'; }
       else {
-        seen.add(hash);
         const existing = await db.get('SELECT id FROM video_sources WHERE canonical_url_hash = ?', [hash]);
-        row.status = existing ? (options.duplicate_mode === 'update' ? 'update' : 'skip') : 'new';
-        row.reason = existing ? (row.status === 'skip' ? '链接已存在' : '仅更新非空信息，保留抓取和分析结果') : '';
+        const linked = existing && row.campaign_id ? await db.get('SELECT video_source_id FROM campaign_videos WHERE campaign_id = ? AND video_source_id = ?', [row.campaign_id, existing.id]) : null;
+        const exists = existing || plannedVideos.has(hash);
+        row.status = !exists ? 'new' : options.duplicate_mode === 'update' ? 'update' : row.campaign_id && !linked ? 'link' : 'skip';
+        row.reason = { new: '', update: '仅更新非空信息，保留抓取和分析结果', link: '仅新增项目关联，保留已有视频信息', skip: '链接及所选项目关联已存在，或未选择项目' }[row.status];
+        seen.add(key);
+        plannedVideos.add(hash);
       }
     } catch (error) { row.status = 'invalid'; row.reason = error.message; }
     result.push(row);
   }
-  return { rows: result, campaign_id: campaignId, summary: Object.fromEntries(['new', 'update', 'skip', 'invalid'].map(status => [status, result.filter(row => row.status === status).length])) };
+  return { rows: result, campaign_id: campaignId, summary: Object.fromEntries(['new', 'link', 'update', 'skip', 'invalid'].map(status => [status, result.filter(row => row.status === status).length])) };
 }
 
 // Each row is atomic: metadata and its optional project association succeed together.
@@ -84,10 +106,15 @@ async function saveImportRow(row, options, sequelize) {
     const select = (sql, replacements) => sequelize.query(sql, { replacements, transaction, type: 'SELECT' });
     const run = (sql, replacements) => sequelize.query(sql, { replacements, transaction });
     const hash = row.normalized.canonicalUrlHash;
+    const campaignId = row.campaign_id;
+    if (campaignId && !(await select('SELECT id FROM campaigns WHERE id = ? FOR UPDATE', [campaignId]))[0]) throw new Error('项目已不存在');
     const existing = (await select('SELECT id FROM video_sources WHERE canonical_url_hash = ? FOR UPDATE', [hash]))[0];
-    if (existing && options.duplicate_mode !== 'update') return { status: 'skip', id: existing.id, reason: '链接已存在' };
+    if (existing && options.duplicate_mode !== 'update') {
+      const linked = campaignId ? (await select('SELECT video_source_id FROM campaign_videos WHERE campaign_id = ? AND video_source_id = ?', [campaignId, existing.id]))[0] : null;
+      if (!campaignId || linked) return { status: 'skip', id: existing.id, reason: '链接及所选项目关联已存在，或未选择项目' };
+    }
     let id = existing?.id;
-    if (existing) {
+    if (existing && options.duplicate_mode === 'update') {
       const fields = []; const values = [];
       for (const key of ['kol_name', 'notes']) if (row[key]) { fields.push(`${key} = ?`); values.push(row[key]); }
       if (row.price) {
@@ -95,16 +122,16 @@ async function saveImportRow(row, options, sequelize) {
         values.push(row.price.display, row.price.amount, row.price.currency);
       }
       if (fields.length) await run(`UPDATE video_sources SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...values, id]);
-    } else {
+    } else if (!existing) {
       await run(`INSERT INTO video_sources (platform, platform_video_id, source_url, canonical_url, canonical_url_hash, kol_name, cooperation_price, cooperation_amount, cooperation_currency, notes, status, crawl_status, analysis_status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', 'not_analyzed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [row.normalized.platform, row.normalized.platformVideoId, row.source_url, row.normalized.canonicalUrl, hash, row.kol_name, row.price?.display || '', row.price?.amount ?? null, row.price?.currency ?? null, row.notes]);
       id = (await select('SELECT id FROM video_sources WHERE canonical_url_hash = ?', [hash]))[0].id;
     }
-    if (options.campaign_id) await run(`INSERT INTO campaign_videos (campaign_id, video_source_id, added_reason, created_at, updated_at)
+    if (campaignId) await run(`INSERT INTO campaign_videos (campaign_id, video_source_id, added_reason, created_at, updated_at)
       VALUES (?, ?, 'manual', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON DUPLICATE KEY UPDATE added_reason = IF(added_reason = 'finder', 'manual', added_reason), updated_at = CURRENT_TIMESTAMP`, [options.campaign_id, id]);
-    return { status: existing ? 'updated' : 'imported', id };
+      ON DUPLICATE KEY UPDATE added_reason = IF(added_reason = 'finder', 'manual', added_reason), updated_at = CURRENT_TIMESTAMP`, [campaignId, id]);
+    return { status: existing ? (options.duplicate_mode === 'update' ? 'updated' : 'linked') : 'imported', id };
   });
 }
 
