@@ -5,8 +5,14 @@ const path = require('path');
 const fs = require('fs');
 const { dbOperations, models } = require('../database');
 const { normalizeVideoUrl } = require('../utils/videoUrlNormalizer');
+const { parseQuote } = require('../services/videoImport');
+
+function structuredQuote(value) {
+  try { return parseQuote(value, ''); } catch { return null; }
+}
 
 const router = express.Router();
+router.use('/import', require('./videoImport')({ dbOperations, sequelize: models.sequelize }));
 
 const {
   DEFAULT_SELECTION,
@@ -785,6 +791,8 @@ async function upsertVideoSource(input) {
         kol_name = COALESCE(NULLIF(?, ''), kol_name),
         author_name = COALESCE(NULLIF(?, ''), author_name),
         cooperation_price = COALESCE(NULLIF(?, ''), cooperation_price),
+        cooperation_amount = CASE WHEN ? = '' THEN cooperation_amount ELSE ? END,
+        cooperation_currency = CASE WHEN ? = '' THEN cooperation_currency ELSE ? END,
         notes = COALESCE(NULLIF(?, ''), notes),
         updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
@@ -797,6 +805,8 @@ async function upsertVideoSource(input) {
         clean(input.kol_name),
         clean(input.author_name),
         clean(input.cooperation_price),
+        clean(input.cooperation_price), structuredQuote(input.cooperation_price)?.amount ?? null,
+        clean(input.cooperation_price), structuredQuote(input.cooperation_price)?.currency ?? null,
         clean(input.notes),
         video.id
       ]
@@ -1249,7 +1259,8 @@ router.post('/analyze', async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const { sql, params } = buildVideoListSql(req.query);
+    const ids = clean(req.query.ids) ? clean(req.query.ids).split(',').map(Number).filter(id => Number.isSafeInteger(id) && id > 0) : undefined;
+    const { sql, params } = buildVideoListSql({ ...req.query, ids });
     const videos = await dbOperations.query(sql, params);
     res.json({ success: true, data: videos });
   } catch (error) {
@@ -1274,8 +1285,8 @@ router.put('/:id', async (req, res) => {
   try {
     const campaignId = req.body.campaign_id ? await getOrCreateCampaignId(req.body) : null;
     await dbOperations.run(
-      `UPDATE video_sources SET kol_name = ?, cooperation_price = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [clean(req.body.kol_name), clean(req.body.cooperation_price), clean(req.body.notes), req.params.id]
+      `UPDATE video_sources SET kol_name = ?, cooperation_price = ?, cooperation_amount = ?, cooperation_currency = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [clean(req.body.kol_name), clean(req.body.cooperation_price), structuredQuote(req.body.cooperation_price)?.amount ?? null, structuredQuote(req.body.cooperation_price)?.currency ?? null, clean(req.body.notes), req.params.id]
     );
     if (campaignId) {
       await dbOperations.run(

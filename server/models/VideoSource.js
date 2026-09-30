@@ -13,6 +13,8 @@ module.exports = (sequelize, DataTypes) => {
     content_type: DataTypes.STRING(100),
     published_at: DataTypes.STRING(100),
     cooperation_price: DataTypes.STRING(255),
+    cooperation_amount: DataTypes.DECIMAL(14, 2),
+    cooperation_currency: DataTypes.STRING(3),
     notes: DataTypes.TEXT,
     crawl_status: { type: DataTypes.STRING(50), defaultValue: 'pending' },
     analysis_status: { type: DataTypes.STRING(50), defaultValue: 'not_analyzed' },

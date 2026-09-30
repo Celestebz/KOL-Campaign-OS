@@ -28,6 +28,7 @@ import {
   SyncOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
+import VideoImportModal from './VideoImportModal';
 
 const { TextArea } = Input;
 
@@ -91,6 +92,7 @@ const VideoAnalysis = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingVideo, setEditingVideo] = useState(null);
   const [detailVideo, setDetailVideo] = useState(null);
+  const [importVisible, setImportVisible] = useState(false);
   const [form] = Form.useForm();
   const selectedCampaignId = Form.useWatch('campaign_id', form);
 
@@ -315,6 +317,7 @@ const VideoAnalysis = () => {
         <Tag color={statusColor(record.analysis_status, 'analysis')}>{statusText(record.analysis_status, 'analysis')}</Tag>
       </Space>
     },
+    { title: '合作报价', dataIndex: 'cooperation_price', width: 140, render: value => value || '—' },
     { title: '最近抓取', dataIndex: 'last_crawled_at', key: 'last_crawled_at', width: 160, render: (value) => value ? new Date(value).toLocaleString() : '-' },
     {
       title: '数据表现',
@@ -363,7 +366,7 @@ const VideoAnalysis = () => {
     <div>
       <div className="page-header">
         <h1 className="page-title">内容分析</h1>
-        <p className="page-subtitle">仅分析已合作达人发布的视频，复盘真实合作效果并沉淀内容经验。</p>
+        <p className="page-subtitle">添加视频链接，抓取内容数据并进行 AI 分析。</p>
       </div>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -376,6 +379,7 @@ const VideoAnalysis = () => {
       <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>新建链接</Button>
+          <Button icon={<PlusOutlined />} onClick={() => setImportVisible(true)}>表格导入</Button>
           <Button icon={<SyncOutlined />} loading={crawlLoading} disabled={!selectedRowKeys.length || crawlLoading} onClick={() => runBatch('crawl')}>批量抓取 ({selectedRowKeys.length})</Button>
           <Button icon={<BarChartOutlined />} loading={analyzeLoading} disabled={!selectedRowKeys.length || analyzeLoading} onClick={() => runBatch('analyze')}>批量分析 ({selectedRowKeys.length})</Button>
           <Popconfirm title="确定删除选中的视频？" disabled={!selectedRowKeys.length} onConfirm={() => handleDelete(selectedRowKeys)}>
@@ -435,6 +439,7 @@ const VideoAnalysis = () => {
             <Button block onClick={clearFilters}>清空</Button>
           </Col>
         </Row>
+        {filters.ids && <Tag closable onClose={() => updateFilter('ids', undefined)} style={{ marginTop: 12 }}>仅显示本次导入的记录</Tag>}
       </Card>
 
       <Card className="content-card">
@@ -449,6 +454,10 @@ const VideoAnalysis = () => {
         />
       </Card>
 
+      {importVisible && <VideoImportModal campaigns={campaignOptions} onClose={() => setImportVisible(false)}
+        onImported={() => fetchVideos()}
+        onView={(ids) => { setImportVisible(false); setSelectedRowKeys(ids); const next = { ids: ids.join(',') }; setFilters(next); fetchVideos(next); }}
+        onCrawl={(ids) => { setImportVisible(false); setSelectedRowKeys(ids); runBatch('crawl', ids); }} />}
       <Modal
         title={editingVideo ? '编辑链接' : '新建链接'}
         open={modalVisible}
