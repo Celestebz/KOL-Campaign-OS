@@ -843,7 +843,7 @@ const Customers = () => {
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <div>
-            <div style={{ marginBottom: 4 }}>项目/SKU（必选）</div>
+            <div style={{ marginBottom: 4 }}>项目（必选）</div>
             <Select
               showSearch
               optionFilterProp="label"
