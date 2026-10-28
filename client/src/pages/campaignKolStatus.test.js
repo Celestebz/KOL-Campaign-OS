@@ -1,4 +1,4 @@
-import { getMainStatus, getSubStatusLabel, MAIN_STATUSES, SUB_STATUS_LABELS } from './campaignKolStatus';
+import { getMainStatus, getSubStatusLabel, MAIN_STATUSES, SUB_STATUS_LABELS, COOPERATION_STAGE_OPTIONS } from './campaignKolStatus';
 
 describe('campaignKolStatus 主状态映射', () => {
   test('8 个细分状态按 8.3 收敛到 5 个主状态', () => {
@@ -35,4 +35,8 @@ describe('campaignKolStatus 主状态映射', () => {
     expect(getSubStatusLabel('candidate')).toBe('candidate');
     expect(getSubStatusLabel(undefined)).toBe('');
   });
+});
+
+test('合作阶段仅提供当前启用的五个阶段', () => {
+  expect(COOPERATION_STAGE_OPTIONS.map((item) => item.label)).toEqual(['待发货', '已发货', '待上线', '部分发布', '已完成']);
 });

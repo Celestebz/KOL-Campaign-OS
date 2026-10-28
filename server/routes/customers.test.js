@@ -291,13 +291,15 @@ test('projects rejects terminated candidates and historical rows', async () => {
 
 
 test('projects accepts selected cooperation stages and rejects invalid ones before writing', async () => {
-  for (const project_status of ['content_preparation', 'partially_published', 'completed']) {
+  for (const project_status of ['pending_shipping', 'shipped', 'pending_publish', 'partially_published', 'completed']) {
     const { response, writes } = await runCandidatePool({ confirmImmediately: true, body: { campaign_id: 2, project_status } });
     assert.equal(response.statusCode, 200);
     const update = writes.find((write) => write.sql.includes("pipeline_stage = 'confirmed'"));
     assert.equal(update.params[0], project_status);
   }
-  const { response, writes } = await runCandidatePool({ confirmImmediately: true, body: { campaign_id: 2, project_status: 'invalid' } });
-  assert.equal(response.statusCode, 400);
-  assert.equal(writes.length, 0);
+  for (const project_status of ['invalid', 'delivered', 'content_preparation']) {
+    const { response, writes } = await runCandidatePool({ confirmImmediately: true, body: { campaign_id: 2, project_status } });
+    assert.equal(response.statusCode, 400);
+    assert.equal(writes.length, 0);
+  }
 });

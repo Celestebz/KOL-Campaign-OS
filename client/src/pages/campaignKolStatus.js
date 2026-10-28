@@ -14,7 +14,7 @@ export const SUB_STATUS_LABELS = {
   cancelled: '已取消'
 };
 
-export const COOPERATION_STAGE_OPTIONS = ['pending_shipping', 'shipped', 'delivered', 'content_preparation', 'pending_publish', 'partially_published', 'completed'].map((value) => ({ value, label: SUB_STATUS_LABELS[value] }));
+export const COOPERATION_STAGE_OPTIONS = ['pending_shipping', 'shipped', 'pending_publish', 'partially_published', 'completed'].map((value) => ({ value, label: SUB_STATUS_LABELS[value] }));
 
 export const MAIN_STATUSES = {
   pending_confirmation: { value: 'pending_confirmation', label: '待确认', color: 'blue' },

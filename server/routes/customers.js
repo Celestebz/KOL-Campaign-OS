@@ -905,7 +905,7 @@ router.post('/', async (req, res) => {
 function addCustomerToCampaign(confirmImmediately = false) {
   return async (req, res) => {
     const projectStatus = req.body.project_status || 'pending_shipping';
-    const allowedStages = new Set(['pending_shipping', 'shipped', 'delivered', 'content_preparation', 'pending_publish', 'partially_published', 'completed']);
+    const allowedStages = new Set(['pending_shipping', 'shipped', 'pending_publish', 'partially_published', 'completed']);
     if (confirmImmediately && !allowedStages.has(projectStatus)) {
       return res.status(400).json({ success: false, error: '请选择有效的合作阶段' });
     }

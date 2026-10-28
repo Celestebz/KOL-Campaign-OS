@@ -170,8 +170,6 @@ const INTENT_LABELS = Object.fromEntries(INTENT_OPTIONS.map((item) => [item.valu
 export const PROJECT_STATUS_OPTIONS = [
   { value: 'pending_shipping', label: '待发货' },
   { value: 'shipped', label: '已发货' },
-  { value: 'delivered', label: '已签收' },
-  { value: 'content_preparation', label: '待制作' },
   { value: 'pending_publish', label: '待上线' },
   { value: 'partially_published', label: '部分发布' },
   { value: 'completed', label: '已完成' },
