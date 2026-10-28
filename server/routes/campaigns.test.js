@@ -110,7 +110,7 @@ test('GET /:id/detail 空项目（无产品无策略无 KOL）不报错且全零
     candidates_pending_review: 0,
     by_project_status: {
       pending_confirmation: 0, pending_shipping: 0, shipped: 0, delivered: 0,
-      content_preparation: 0, pending_publish: 0, published: 0, cancelled: 0
+      content_preparation: 0, pending_publish: 0, partially_published: 0, completed: 0, cancelled: 0
     },
     contacted: 0,
     replied: 0,
@@ -159,7 +159,7 @@ test('GET /:id/detail summary 各计数口径正确', async () => {
   assert.equal(data.summary.kols_confirmed, 5);
   assert.equal(data.summary.candidates_pending_review, 0);
   assert.equal(data.summary.by_project_status.pending_confirmation, 24);
-  assert.equal(data.summary.by_project_status.published, 1);
+  assert.equal(data.summary.by_project_status.completed, 1);
   assert.equal(data.summary.by_project_status.shipped, 0);
   assert.equal(data.summary.contacted, 3);
   assert.equal(data.summary.replied, 1);

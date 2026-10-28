@@ -268,8 +268,12 @@ router.get('/', async (req, res) => {
       params.push(campaign_id);
     }
     if (status) {
-      whereSql += ' AND ck.project_status = ?';
-      params.push(status);
+      if (status === 'completed') {
+        whereSql += " AND ck.project_status IN ('completed', 'published')";
+      } else {
+        whereSql += ' AND ck.project_status = ?';
+        params.push(status);
+      }
     }
     if (outreach_status) {
       // 旧值兼容：筛选“待回复/已终止”时同时命中 replied/rejected

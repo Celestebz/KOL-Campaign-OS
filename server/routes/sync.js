@@ -108,7 +108,7 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
     replace_options: true,
     property: { options: [
       { name: '待确认' }, { name: '待发货' }, { name: '已发货' }, { name: '已签收' },
-      { name: '内容准备中' }, { name: '待上线' }, { name: '已上线' }, { name: '已取消' }
+      { name: '待制作' }, { name: '待上线' }, { name: '部分发布' }, { name: '已完成' }, { name: '已取消' }
     ] }
   },
   { field_name: '备注', aliases: ['合作备注', '项目备注'], type: 1, accepted_types: [1], merge_alias: true },
@@ -122,7 +122,7 @@ const PROJECT_TRACKING_FIELD_SCHEMA = [
 // campaign's candidate pool subtable from campaign_subtable_map.
 const EXECUTION_STATUSES = new Set([
   'pending_shipping', 'shipped', 'delivered', 'content_preparation',
-  'pending_publish', 'published', 'cancelled'
+  'pending_publish', 'published', 'partially_published', 'completed', 'cancelled'
 ]);
 
 // campaign_kols.outreach_status stores English codes; Feishu shows Chinese labels.
@@ -573,9 +573,10 @@ async function ensureProjectTrackingFields(config, token, tableId, { backfillPla
 
   const statusMap = {
     未联系: '待确认', 已联系: '待确认', 已回复: '待确认', 未回复: '待确认',
-    confirmed: '待发货', rejected: '已取消', archived: '已取消'
+    confirmed: '待发货', rejected: '已取消', archived: '已取消',
+    已上线: '已完成', 已发布: '已完成', 内容准备中: '待制作'
   };
-  const validStatuses = new Set(['待确认', '待发货', '已发货', '已签收', '内容准备中', '待上线', '已上线', '已取消']);
+  const validStatuses = new Set(['待确认', '待发货', '已发货', '已签收', '待制作', '内容准备中', '待上线', '已上线', '部分发布', '已完成', '已取消']);
   const shouldNormalizeStatuses = actions.some((action) => action.definition.field_name === '项目状态' && action.needsOptionUpdate);
   let normalizedStatuses = [];
   if (shouldNormalizeStatuses) {
@@ -584,7 +585,7 @@ async function ensureProjectTrackingFields(config, token, tableId, { backfillPla
       const oldStatus = record.fields?.项目状态;
       return {
         record_id: record.record_id,
-        status: validStatuses.has(oldStatus) ? oldStatus : (statusMap[oldStatus] || '待确认')
+        status: statusMap[oldStatus] || (validStatuses.has(oldStatus) ? oldStatus : '待确认')
       };
     });
   }
@@ -941,9 +942,9 @@ const CAMPAIGN_KOL_STATUS_LABELS = {
   pending_shipping: '待发货',
   shipped: '已发货',
   delivered: '已签收',
-  content_preparation: '内容准备中',
+  content_preparation: '待制作',
   pending_publish: '待上线',
-  published: '已上线',
+  published: '已完成', partially_published: '部分发布', completed: '已完成',
   cancelled: '已取消'
 };
 

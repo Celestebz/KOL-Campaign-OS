@@ -453,7 +453,8 @@ const CampaignDetail = () => {
               <Col span={8}><Statistic title="KOL合作" value={summary.kols_confirmed ?? 0} /></Col>
               <Col span={8}><Statistic title="已联系" value={summary.contacted ?? 0} /></Col>
               <Col span={8}><Statistic title="已回复" value={summary.replied ?? 0} /></Col>
-              <Col span={8}><Statistic title="已上线" value={summary.by_project_status?.published ?? 0} /></Col>
+              <Col span={8}><Statistic title="部分发布" value={summary.by_project_status?.partially_published ?? 0} />
+                <Statistic title="已完成" value={(summary.by_project_status?.completed ?? 0) + (summary.by_project_status?.published ?? 0)} /></Col>
             </Row>
           </Card>
         </Col>

@@ -58,7 +58,9 @@ function stageMetrics(row) {
   if (row.stage === 'fulfillment') return [['已合作', row.confirmedKols], ['项目达人', row.totalKols]];
   const published = Number(row.detail.summary?.by_project_status?.published || 0);
   const pending = Number(row.detail.summary?.by_project_status?.pending_publish || 0);
-  return [['已上线', published], ['待上线', pending]];
+  const completed = Number(row.detail.summary?.by_project_status?.completed || 0) + published;
+  const partial = Number(row.detail.summary?.by_project_status?.partially_published || 0);
+  return [['已完成', completed], ['部分发布', partial], ['待上线', pending]];
 }
 
 function ProjectCard({ row }) {

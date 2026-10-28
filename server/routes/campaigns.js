@@ -123,7 +123,7 @@ router.get('/', async (req, res) => {
 
 const PROJECT_STATUS_KEYS = [
   'pending_confirmation', 'pending_shipping', 'shipped', 'delivered',
-  'content_preparation', 'pending_publish', 'published', 'cancelled'
+  'content_preparation', 'pending_publish', 'partially_published', 'completed', 'cancelled'
 ];
 
 function toCount(value) {
@@ -279,7 +279,10 @@ router.get('/:id/detail', async (req, res) => {
 
     const byProjectStatus = Object.fromEntries(PROJECT_STATUS_KEYS.map((key) => [key, 0]));
     for (const row of statusRows) {
-      if (row.project_status) byProjectStatus[row.project_status] = toCount(row.count);
+      if (row.project_status) {
+        const status = row.project_status === 'published' ? 'completed' : row.project_status;
+        byProjectStatus[status] = (byProjectStatus[status] || 0) + toCount(row.count);
+      }
     }
 
     const candidates = toCount(kolAgg?.candidates);

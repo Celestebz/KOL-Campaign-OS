@@ -10,7 +10,7 @@ const {
 test('normalizes legacy project statuses to the current workflow', () => {
   assert.equal(normalizeProjectStatus('confirmed'), 'pending_shipping');
   assert.equal(normalizeProjectStatus('candidate'), 'pending_confirmation');
-  assert.equal(normalizeProjectStatus('PUBLISHED'), 'published');
+  assert.equal(normalizeProjectStatus('PUBLISHED'), 'completed');
   assert.equal(PROJECT_STATUSES.has(normalizeProjectStatus('confirmed')), true);
 });
 

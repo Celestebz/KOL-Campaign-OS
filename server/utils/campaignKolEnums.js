@@ -1,6 +1,6 @@
 const PROJECT_STATUSES = new Set([
   'pending_confirmation', 'pending_shipping', 'shipped', 'delivered',
-  'content_preparation', 'pending_publish', 'published', 'cancelled'
+  'content_preparation', 'pending_publish', 'partially_published', 'completed', 'cancelled'
 ]);
 
 const PRIORITY_LEVELS = new Set(['t1', 't2', 't3', 't4']);
@@ -25,6 +25,7 @@ function normalizeOutreachStatus(value) {
 }
 
 const LEGACY_PROJECT_STATUS_MAP = {
+  published: 'completed',
   confirmed: 'pending_shipping',
   candidate: 'pending_confirmation'
 };

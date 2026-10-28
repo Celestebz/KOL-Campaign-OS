@@ -103,8 +103,8 @@ function cooperationTypeLabel(value) {
 function projectStatusLabel(value) {
   return ({
     candidate: '候选', pending_confirmation: '待确认', pending_shipping: '待发货',
-    shipped: '已发货', delivered: '已签收', content_preparation: '内容准备中',
-    pending_publish: '待上线', published: '已上线', cancelled: '已取消'
+    shipped: '已发货', delivered: '已签收', content_preparation: '待制作',
+    pending_publish: '待上线', published: '已完成', partially_published: '部分发布', completed: '已完成', cancelled: '已取消'
   })[compact(value)] || compact(value);
 }
 

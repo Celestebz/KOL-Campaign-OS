@@ -81,7 +81,7 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
       onCancel={onCancel}
       onOk={handleSubmit}
       confirmLoading={submitting}
-      okText={createAndContinue ? '创建并加入候选池' : '创建项目'}
+      okText={createAndContinue ? '创建并加入项目' : '创建项目'}
       destroyOnClose
     >
       <Form form={form} layout="vertical">

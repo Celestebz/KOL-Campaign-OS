@@ -138,13 +138,18 @@ async function runCandidatePool({
   existing = null,
   body = { campaign_id: 2, cooperation_platforms: ['YouTube'], priority_level: 'T1', notes: '适合农场设备内容' },
   accounts = [],
-  customerId = 7
+  customerId = 7,
+  confirmImmediately = false
 } = {}) {
   const writes = [];
   const createdRow = { id: 501, campaign_id: 2, customer_id: 7, pipeline_stage: 'candidate' };
   const originalGet = dbOperations.get;
   const originalQuery = dbOperations.query;
   const originalRun = dbOperations.run;
+  const syncService = require('../services/confirmCooperationSync');
+  const originalSync = syncService.syncConfirmedToFeishu;
+  const syncCalls = [];
+  syncService.syncConfirmedToFeishu = async (id) => { syncCalls.push(id); return { targets: [] }; };
 
   dbOperations.get = async (sql) => {
     const text = String(sql);
@@ -165,13 +170,14 @@ async function runCandidatePool({
   };
 
   try {
-    const handler = findRouteHandler(customersRoute, 'post', '/:id/candidate-pool');
+    const handler = findRouteHandler(customersRoute, 'post', confirmImmediately ? '/:id/projects' : '/:id/candidate-pool');
     const response = await invoke(handler, { body, params: { id: String(customerId) } });
-    return { response, writes, createdRow };
+    return { response, writes, createdRow, syncCalls };
   } finally {
     dbOperations.get = originalGet;
     dbOperations.query = originalQuery;
     dbOperations.run = originalRun;
+    syncService.syncConfirmedToFeishu = originalSync;
   }
 }
 
@@ -242,4 +248,56 @@ test('candidate-pool warns when the KOL has no primary platform profile', async 
   assert.equal(response.statusCode, 200);
   assert.equal(response.payload.success, true);
   assert.equal(response.payload.warning, '该 KOL 尚未填写主平台主页，飞书中的主页和粉丝数据将为空。');
+});
+
+
+test('projects confirms a new KOL and synchronizes cooperation tracking', async () => {
+  const { response, writes, syncCalls } = await runCandidatePool({ confirmImmediately: true });
+  assert.equal(response.payload.success, true);
+  assert.equal(response.payload.message, '已加入项目');
+  const confirmation = writes.find((write) => write.sql.includes("pipeline_stage = 'confirmed'"));
+  assert.ok(confirmation.sql.includes('project_status = ?'));
+  assert.ok(confirmation.sql.includes("outreach_status = 'confirmed'"));
+  assert.ok(confirmation.sql.includes('confirmed_at = CURRENT_TIMESTAMP'));
+  assert.equal(confirmation.params[0], 'pending_shipping');
+  assert.deepEqual(syncCalls, [501]);
+});
+
+test('projects promotes existing candidates without creating duplicates', async () => {
+  const { response, writes, syncCalls } = await runCandidatePool({ confirmImmediately: true,
+    existing: { id: 88, pipeline_stage: 'candidate', outreach_status: 'not_contacted' } });
+  assert.equal(response.payload.duplicate, false);
+  assert.equal(writes.some((write) => write.sql.startsWith('INSERT')), false);
+  assert.deepEqual(syncCalls, [88]);
+});
+
+test('projects preserves confirmed fulfillment progress and retries sync', async () => {
+  const { response, writes, syncCalls } = await runCandidatePool({ confirmImmediately: true,
+    existing: { id: 88, pipeline_stage: 'confirmed', project_status: 'shipped' } });
+  assert.equal(response.payload.duplicate, true);
+  assert.equal(writes.length, 0);
+  assert.deepEqual(syncCalls, [88]);
+});
+
+test('projects rejects terminated candidates and historical rows', async () => {
+  for (const existing of [{ id: 88, pipeline_stage: 'candidate', outreach_status: 'terminated' },
+    { id: 88, pipeline_stage: 'historical' }]) {
+    const { response, writes, syncCalls } = await runCandidatePool({ confirmImmediately: true, existing });
+    assert.equal(response.statusCode, 409);
+    assert.equal(writes.length, 0);
+    assert.deepEqual(syncCalls, []);
+  }
+});
+
+
+test('projects accepts selected cooperation stages and rejects invalid ones before writing', async () => {
+  for (const project_status of ['content_preparation', 'partially_published', 'completed']) {
+    const { response, writes } = await runCandidatePool({ confirmImmediately: true, body: { campaign_id: 2, project_status } });
+    assert.equal(response.statusCode, 200);
+    const update = writes.find((write) => write.sql.includes("pipeline_stage = 'confirmed'"));
+    assert.equal(update.params[0], project_status);
+  }
+  const { response, writes } = await runCandidatePool({ confirmImmediately: true, body: { campaign_id: 2, project_status: 'invalid' } });
+  assert.equal(response.statusCode, 400);
+  assert.equal(writes.length, 0);
 });

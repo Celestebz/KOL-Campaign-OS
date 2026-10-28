@@ -21,7 +21,9 @@ export function deriveCampaignStage(detail = {}) {
   if (
     projectStatusCount(summary, 'content_preparation')
     + projectStatusCount(summary, 'pending_publish')
-    + projectStatusCount(summary, 'published') > 0
+    + projectStatusCount(summary, 'published')
+    + projectStatusCount(summary, 'partially_published')
+    + projectStatusCount(summary, 'completed') > 0
   ) return 'content';
   if (
     count(summary.kols_confirmed)
@@ -87,7 +89,8 @@ export function deriveSubstage(detail = {}, stage = deriveCampaignStage(detail))
     return '合作推进中';
   }
   if (projectStatusCount(summary, 'pending_publish') > 0) return '等待上线';
-  if (projectStatusCount(summary, 'published') > 0) return '内容已上线';
+  if (projectStatusCount(summary, 'partially_published') > 0) return '内容部分发布';
+  if (projectStatusCount(summary, 'completed') + projectStatusCount(summary, 'published') > 0) return '合作已完成';
   return '内容制作中';
 }
 
@@ -117,7 +120,8 @@ export function deriveProgressText(detail = {}, stage = deriveCampaignStage(deta
     return '合作履约推进中';
   }
   if (projectStatusCount(summary, 'pending_publish') > 0) return '合作内容等待上线';
-  if (projectStatusCount(summary, 'published') > 0) return '合作内容已上线';
+  if (projectStatusCount(summary, 'partially_published') > 0) return '合作内容部分发布';
+  if (projectStatusCount(summary, 'completed') + projectStatusCount(summary, 'published') > 0) return '合作已完成';
   return '合作内容制作中';
 }
 

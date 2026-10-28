@@ -164,7 +164,7 @@ test('initializes missing Feishu fields from the KOL management page', async () 
   await waitFor(() => expect(message.success).toHaveBeenCalledWith('飞书字段检查完成：新建 1，已存在 1'));
 });
 
-describe('KOL 总表加入项目候选池', () => {
+describe('KOL 总表加入项目', () => {
   function mockWithCampaigns() {
     axios.get.mockImplementation((url) => {
       if (url === '/api/customers') return Promise.resolve({ data: { data: [{ id: 11, name: 'Alice', platform: 'YouTube' }] } });
@@ -192,10 +192,10 @@ describe('KOL 总表加入项目候选池', () => {
   async function openPoolModalForAlice() {
     render(<Customers />);
     expect(await screen.findByText('Alice')).toBeInTheDocument();
-    const buttons = screen.getAllByRole('button', { name: '加入项目候选池' });
+    const buttons = screen.getAllByRole('button', { name: '加入项目' });
     // antd 固定列会克隆一份 pointer-events:none 的按钮，fireEvent 绕过该限制
     fireEvent.click(buttons[buttons.length - 1]);
-    expect(await screen.findByText('加入项目候选池（1 个 KOL）')).toBeInTheDocument();
+    expect(await screen.findByText('加入项目（1 个 KOL）')).toBeInTheDocument();
   }
 
   async function selectTmbCampaign() {
@@ -216,31 +216,44 @@ describe('KOL 总表加入项目候选池', () => {
     expect(screen.getByText('推荐理由/备注（可选）')).toBeInTheDocument();
   });
 
-  test('提交后调用 candidate-pool 接口并提示成功', async () => {
+  test('提交后调用 projects 接口并提示成功', async () => {
     mockWithCampaigns();
     axios.post.mockResolvedValue({
-      data: { success: true, data: { id: 501 }, message: '已加入项目候选池', warning: null }
+      data: { success: true, data: { id: 501 }, message: '已加入项目', warning: null }
     });
     await openPoolModalForAlice();
     await selectTmbCampaign();
-    await userEvent.click(screen.getByRole('button', { name: '加入候选池' }));
-    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/candidate-pool', expect.objectContaining({
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入项目' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/projects', expect.objectContaining({
       campaign_id: 2,
-      priority_level: 't2'
+      priority_level: 't2',
+      project_status: 'pending_shipping'
     })));
-    await waitFor(() => expect(message.success).toHaveBeenCalledWith('已将 1 个 KOL 加入项目候选池'));
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith('已将 1 个 KOL 加入项目'));
     expect(message.error).not.toHaveBeenCalled();
+  });
+
+  test('选择部分发布后按所选阶段加入合作区', async () => {
+    mockWithCampaigns();
+    axios.post.mockResolvedValue({ data: { success: true, data: { id: 501 } } });
+    await openPoolModalForAlice();
+    await selectTmbCampaign();
+    const dialog = screen.getByRole('dialog');
+    await userEvent.click(within(dialog).getAllByRole('combobox')[1]);
+    await userEvent.click(await screen.findByText('部分发布'));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入项目' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/projects', expect.objectContaining({ project_status: 'partially_published' })));
   });
 
   test('重复加入同一项目显示明确提示', async () => {
     mockWithCampaigns();
     axios.post.mockResolvedValue({
-      data: { success: true, duplicate: true, data: { id: 88 }, message: '该 KOL 已在此项目候选池中' }
+      data: { success: true, duplicate: true, data: { id: 88 }, message: '该 KOL 已在此项目合作区中' }
     });
     await openPoolModalForAlice();
     await selectTmbCampaign();
-    await userEvent.click(screen.getByRole('button', { name: '加入候选池' }));
-    await waitFor(() => expect(message.warning).toHaveBeenCalledWith('1 个 KOL 已在此项目候选池中'));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入项目' }));
+    await waitFor(() => expect(message.warning).toHaveBeenCalledWith('1 个 KOL 已在此项目合作区中'));
     expect(message.success).not.toHaveBeenCalled();
   });
 
@@ -250,13 +263,13 @@ describe('KOL 总表加入项目候选池', () => {
       data: {
         success: true,
         data: { id: 501 },
-        message: '已加入项目候选池',
+        message: '已加入项目',
         warning: '该 KOL 尚未填写主平台主页，飞书中的主页和粉丝数据将为空。'
       }
     });
     await openPoolModalForAlice();
     await selectTmbCampaign();
-    await userEvent.click(screen.getByRole('button', { name: '加入候选池' }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入项目' }));
     await waitFor(() => expect(message.warning).toHaveBeenCalledWith('该 KOL 尚未填写主平台主页，飞书中的主页和粉丝数据将为空。'));
   });
 });

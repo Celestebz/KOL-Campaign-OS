@@ -8,6 +8,8 @@ describe('campaignKolStatus 主状态映射', () => {
     expect(getMainStatus('delivered')).toEqual(MAIN_STATUSES.in_progress);
     expect(getMainStatus('content_preparation')).toEqual(MAIN_STATUSES.in_progress);
     expect(getMainStatus('pending_publish')).toEqual(MAIN_STATUSES.pending_publish);
+    expect(getMainStatus('partially_published')).toEqual(MAIN_STATUSES.partially_published);
+    expect(getMainStatus('completed')).toEqual(MAIN_STATUSES.completed);
     expect(getMainStatus('published')).toEqual(MAIN_STATUSES.completed);
     expect(getMainStatus('cancelled')).toEqual(MAIN_STATUSES.terminated);
   });
@@ -21,9 +23,9 @@ describe('campaignKolStatus 主状态映射', () => {
   });
 
   test('每个细分状态都有中文标签', () => {
-    expect(Object.keys(SUB_STATUS_LABELS)).toHaveLength(8);
-    expect(getSubStatusLabel('content_preparation')).toBe('内容准备中');
-    expect(getSubStatusLabel('published')).toBe('已上线');
+    expect(Object.keys(SUB_STATUS_LABELS)).toHaveLength(10);
+    expect(getSubStatusLabel('content_preparation')).toBe('待制作');
+    expect(getSubStatusLabel('published')).toBe('已完成');
   });
 
   test('未知值原样兜底，空值兜底为 -', () => {
