@@ -868,7 +868,7 @@ const Customers = () => {
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>推荐理由/备注（可选）</div>
+            <div style={{ marginBottom: 4 }}>备注（可选）</div>
             <TextArea
               rows={3}
               value={poolNotes}

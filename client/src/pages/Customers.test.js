@@ -213,7 +213,7 @@ describe('KOL 总表加入项目', () => {
     expect(screen.getByText('2026 Q3')).toBeInTheDocument();
     expect(screen.getByText('合作平台（可选）')).toBeInTheDocument();
     expect(screen.queryByText('优先级（可选）')).not.toBeInTheDocument();
-    expect(screen.getByText('推荐理由/备注（可选）')).toBeInTheDocument();
+    expect(screen.getByText('备注（可选）')).toBeInTheDocument();
   });
 
   test('提交后调用 projects 接口并提示成功', async () => {
