@@ -212,7 +212,7 @@ describe('KOL 总表加入项目', () => {
     expect(screen.getByText('48-inch PTO Finish Mower')).toBeInTheDocument();
     expect(screen.getByText('2026 Q3')).toBeInTheDocument();
     expect(screen.getByText('合作平台（可选）')).toBeInTheDocument();
-    expect(screen.getByText('优先级（可选）')).toBeInTheDocument();
+    expect(screen.queryByText('优先级（可选）')).not.toBeInTheDocument();
     expect(screen.getByText('推荐理由/备注（可选）')).toBeInTheDocument();
   });
 
@@ -226,7 +226,6 @@ describe('KOL 总表加入项目', () => {
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入项目' }));
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/projects', expect.objectContaining({
       campaign_id: 2,
-      priority_level: 't2',
       project_status: 'pending_shipping'
     })));
     await waitFor(() => expect(message.success).toHaveBeenCalledWith('已将 1 个 KOL 加入项目'));

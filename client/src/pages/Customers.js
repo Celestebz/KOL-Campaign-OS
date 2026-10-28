@@ -55,13 +55,6 @@ const poolPlatformOptions = [
   { value: 'x', label: 'X' }
 ];
 
-const poolPriorityOptions = [
-  { value: 't1', label: 'T1' },
-  { value: 't2', label: 'T2' },
-  { value: 't3', label: 'T3' },
-  { value: 't4', label: 'T4' }
-];
-
 const Customers = () => {
   const [kols, setKols] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -95,7 +88,6 @@ const Customers = () => {
   const [addingToProject, setAddingToProject] = useState(false);
   const [poolPlatforms, setPoolPlatforms] = useState([]);
   const [projectStage, setProjectStage] = useState('pending_shipping');
-  const [poolPriority, setPoolPriority] = useState('t2');
   const [poolNotes, setPoolNotes] = useState('');
   const [poolCampaignProducts, setPoolCampaignProducts] = useState([]);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -204,7 +196,6 @@ const Customers = () => {
     setProjectCustomerIds(ids);
     setTargetCampaignId(null);
     setPoolPlatforms([]);
-    setPoolPriority('t2');
     setProjectStage('pending_shipping');
     setPoolNotes('');
     setPoolCampaignProducts([]);
@@ -234,7 +225,6 @@ const Customers = () => {
         axios.post(`/api/customers/${customerId}/projects`, {
           campaign_id: campaignId,
           cooperation_platforms: poolPlatforms,
-          priority_level: poolPriority,
           project_status: projectStage,
           notes: poolNotes
         })
@@ -875,15 +865,6 @@ const Customers = () => {
               onChange={setPoolPlatforms}
               style={{ width: '100%' }}
               options={poolPlatformOptions}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>优先级（可选）</div>
-            <Select
-              value={poolPriority}
-              onChange={setPoolPriority}
-              style={{ width: '100%' }}
-              options={poolPriorityOptions}
             />
           </div>
           <div>
