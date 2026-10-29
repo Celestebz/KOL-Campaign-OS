@@ -5,7 +5,7 @@ import { getEmailSettings } from './emailApi';
 
 const { TextArea } = Input;
 
-const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = false }) => {
+const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = false, continueLabel = '创建并加入项目' }) => {
   const [form] = Form.useForm();
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
@@ -81,7 +81,7 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
       onCancel={onCancel}
       onOk={handleSubmit}
       confirmLoading={submitting}
-      okText={createAndContinue ? '创建并加入项目' : '创建项目'}
+      okText={createAndContinue ? continueLabel : '创建项目'}
       destroyOnClose
     >
       <Form form={form} layout="vertical">

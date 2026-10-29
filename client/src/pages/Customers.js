@@ -87,6 +87,7 @@ const Customers = () => {
   const [projectCustomerIds, setProjectCustomerIds] = useState([]);
   const [addingToProject, setAddingToProject] = useState(false);
   const [poolPlatforms, setPoolPlatforms] = useState([]);
+  const [addToPool, setAddToPool] = useState(false);
   const [projectStage, setProjectStage] = useState('pending_shipping');
   const [poolNotes, setPoolNotes] = useState('');
   const [poolCampaignProducts, setPoolCampaignProducts] = useState([]);
@@ -192,7 +193,8 @@ const Customers = () => {
     setSelectedCountry(null);
   };
 
-  const openAddToProject = (ids) => {
+  const openAddToProject = (ids, candidatePool = false) => {
+    setAddToPool(candidatePool);
     setProjectCustomerIds(ids);
     setTargetCampaignId(null);
     setPoolPlatforms([]);
@@ -222,10 +224,10 @@ const Customers = () => {
     setAddingToProject(true);
     try {
       const results = await Promise.all(projectCustomerIds.map((customerId) => (
-        axios.post(`/api/customers/${customerId}/projects`, {
+        axios.post(`/api/customers/${customerId}/${addToPool ? 'candidate-pool' : 'projects'}`, {
           campaign_id: campaignId,
           cooperation_platforms: poolPlatforms,
-          project_status: projectStage,
+          ...(!addToPool ? { project_status: projectStage } : {}),
           notes: poolNotes
         })
           .then((res) => res.data)
@@ -235,13 +237,13 @@ const Customers = () => {
       const duplicates = results.filter((item) => item.success && item.duplicate);
       const failed = results.filter((item) => !item.success);
       const noProfile = results.filter((item) => item.success && item.warning);
-      if (created.length) message.success(`已将 ${created.length} 个 KOL 加入项目`);
-      if (duplicates.length) message.warning(`${duplicates.length} 个 KOL 已在此项目合作区中`);
+      if (created.length) message.success(`已将 ${created.length} 个 KOL ${addToPool ? '加入候选池' : '加入项目'}`);
+      if (duplicates.length) message.warning(`${duplicates.length} 个 KOL ${addToPool ? '已在此项目中' : '已在此项目合作区中'}`);
       const syncFailure = results.flatMap((item) => item.syncs || []).find((item) => !item.success);
       if (syncFailure) message.warning(`已加入项目，但飞书同步失败：${syncFailure.error || '请稍后重试同步'}`);
       if (noProfile.length) message.warning(noProfile[0].warning);
       if (failed.length) {
-        message.error(failed[0].error || '加入项目失败');
+        message.error(failed[0].error || (addToPool ? '加入候选池失败' : '加入项目失败'));
       } else {
         setAddToProjectOpen(false);
         setSelectedRowKeys([]);
@@ -541,6 +543,7 @@ const Customers = () => {
       render: (_, record) => (
         <Space direction="vertical" size={0} align="start">
           <Button type="link" onClick={() => openDrawer(record)}>查看</Button>
+          <Button type="link" onClick={() => openAddToProject([record.id], true)}>加入候选池</Button>
           <Button type="link" onClick={() => openAddToProject([record.id])}>加入项目</Button>
           <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)}>编辑</Button>
           <Popconfirm title="确定删除这个 KOL？" onConfirm={() => handleDelete(record.id)}>
@@ -681,6 +684,7 @@ const Customers = () => {
           <span>已选 {selectedRowKeys.length} 个 KOL</span>
           <Button onClick={selectCurrentPage} disabled={!currentPageKolIds.length}>全选当前页</Button>
           <Button onClick={() => setSelectedRowKeys([])} disabled={!selectedRowKeys.length}>清空选择</Button>
+          <Button type="default" icon={<PlusOutlined />} onClick={() => openAddToProject(selectedRowKeys, true)}>加入候选池</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openAddToProject(selectedRowKeys)}>加入项目</Button>
           <Popconfirm
             title={`确定删除选中的 ${selectedRowKeys.length} 个 KOL？`}
@@ -718,6 +722,7 @@ const Customers = () => {
             disabled={!snapshotAccounts.has(activeSnapshotPlatform)}>
             抓取{snapshotPlatformLabels[activeSnapshotPlatform]}
           </Button>
+          <Button type="default" icon={<PlusOutlined />} onClick={() => openAddToProject([drawerKol.id], true)}>加入候选池</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openAddToProject([drawerKol.id])}>加入项目</Button>
           <Button icon={<EditOutlined />} onClick={() => handleEdit(drawerKol)}>编辑基本资料</Button>
         </Space>}>
@@ -821,12 +826,12 @@ const Customers = () => {
       </Drawer>
 
       <Modal
-        title={`加入项目（${projectCustomerIds.length} 个 KOL）`}
+        title={`${addToPool ? '加入候选池' : '加入项目'}（${projectCustomerIds.length} 个 KOL）`}
         open={addToProjectOpen}
         onCancel={() => setAddToProjectOpen(false)}
         onOk={() => addToProject()}
         confirmLoading={addingToProject}
-        okText="加入项目"
+        okText={addToPool ? '加入候选池' : '加入项目'}
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <div>
@@ -848,10 +853,10 @@ const Customers = () => {
               <Descriptions.Item label="项目周期">{poolCampaign?.period || '-'}</Descriptions.Item>
             </Descriptions>
           )}
-          <div>
+          {!addToPool && <div>
             <div style={{ marginBottom: 4 }}>合作阶段（必选）</div>
             <Select value={projectStage} onChange={setProjectStage} options={COOPERATION_STAGE_OPTIONS} style={{ width: '100%' }} />
-          </div>
+          </div>}
           <div>
             <div style={{ marginBottom: 4 }}>合作平台（可选）</div>
             <Select
@@ -883,6 +888,7 @@ const Customers = () => {
         open={newProjectOpen}
         onCancel={() => setNewProjectOpen(false)}
         createAndContinue
+        continueLabel={addToPool ? '创建并加入候选池' : '创建并加入项目'}
         onCreated={async (created) => {
           setCampaigns((items) => (
             items.some((item) => item.id === created.id) ? items : [...items, created]

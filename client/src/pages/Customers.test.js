@@ -216,6 +216,26 @@ describe('KOL 总表加入项目', () => {
     expect(screen.getByText('备注（可选）')).toBeInTheDocument();
   });
 
+
+  test('未确认合作时加入候选池，不提交合作履约阶段', async () => {
+    mockWithCampaigns();
+    axios.post.mockResolvedValue({ data: { success: true, data: { id: 502 } } });
+    render(<Customers />);
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    const buttons = screen.getAllByRole('button', { name: '加入候选池' });
+    fireEvent.click(buttons[buttons.length - 1]);
+    expect(await screen.findByText('加入候选池（1 个 KOL）')).toBeInTheDocument();
+    expect(screen.queryByText('合作阶段（必选）')).not.toBeInTheDocument();
+    expect(screen.queryByText('优先级（可选）')).not.toBeInTheDocument();
+    await selectTmbCampaign();
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入候选池' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/candidate-pool', {
+      campaign_id: 2, cooperation_platforms: [], notes: ''
+    }));
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty('project_status');
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith('已将 1 个 KOL 加入候选池'));
+  });
+
   test('提交后调用 projects 接口并提示成功', async () => {
     mockWithCampaigns();
     axios.post.mockResolvedValue({
