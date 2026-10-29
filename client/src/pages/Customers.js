@@ -97,6 +97,9 @@ const Customers = () => {
   const [addProductOpen, setAddProductOpen] = useState(false);
   const [productLibrary, setProductLibrary] = useState([]);
   const [libraryProductId, setLibraryProductId] = useState(null);
+  const [productEntryMode, setProductEntryMode] = useState('new');
+  const [newProductName, setNewProductName] = useState('');
+  const [newProductSku, setNewProductSku] = useState('');
   const [addingProduct, setAddingProduct] = useState(false);
   const productRequest = useRef(0);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -241,6 +244,9 @@ const Customers = () => {
   const openAddProduct = async () => {
     if (!targetCampaignId) return;
     setLibraryProductId(null);
+    setProductEntryMode('new');
+    setNewProductName('');
+    setNewProductSku('');
     setProductLibrary([]);
     setAddProductOpen(true);
     try {
@@ -252,13 +258,33 @@ const Customers = () => {
   };
 
   const attachProduct = async () => {
-    if (!libraryProductId) return message.warning('请选择产品');
+    if (productEntryMode === 'new' && !newProductName.trim()) return message.warning('请输入产品名称');
+    if (productEntryMode === 'existing' && !libraryProductId) return message.warning('请选择产品');
     const campaignId = targetCampaignId;
     setAddingProduct(true);
     try {
-      await axios.post(`/api/campaigns/${campaignId}/products`, { product_id: libraryProductId, role: 'secondary' });
+      let productId = libraryProductId;
+      if (productEntryMode === 'new') {
+        const response = await axios.post('/api/products', {
+          name: newProductName.trim(),
+          sku: newProductSku.trim() || null,
+          brand: campaigns.find((item) => item.id === campaignId)?.brand || ''
+        });
+        const product = response.data.data;
+        if (!product?.id) throw new Error('创建产品失败，请重试');
+        if (product.status === 'archived') {
+          message.error('同名产品已归档，请在产品管理中恢复后再添加');
+          return;
+        }
+        productId = product.id;
+      }
+      try {
+        await axios.post(`/api/campaigns/${campaignId}/products`, { product_id: productId, role: 'secondary' });
+      } catch (error) {
+        if (error.response?.status !== 409 || error.response?.data?.error !== 'Product is already attached to this Campaign') throw error;
+      }
       const products = await handlePoolCampaignChange(campaignId);
-      const selected = products.find((item) => item.product_id === libraryProductId || item.product?.id === libraryProductId);
+      const selected = products.find((item) => item.product_id === productId || item.product?.id === productId);
       setSelectedProductId(selected?.product_id || selected?.product?.id || null);
       setAddProductOpen(false);
       message.success('产品已添加到项目');
@@ -961,8 +987,14 @@ const Customers = () => {
       </Modal>
 
       <Modal title="添加产品到项目" open={addProductOpen} onCancel={() => setAddProductOpen(false)} onOk={attachProduct} confirmLoading={addingProduct} okText="添加产品">
-        <Select showSearch optionFilterProp="label" placeholder="从产品库选择产品" value={libraryProductId} onChange={setLibraryProductId} style={{ width: '100%' }}
-          options={productLibrary.filter((product) => !poolCampaignProducts.some((item) => (item.product_id || item.product?.id) === product.id)).map((product) => ({ value: product.id, label: `${product.sku || '-'} | ${product.name}` }))} />
+        <Tabs activeKey={productEntryMode} onChange={setProductEntryMode} items={[
+          { key: 'new', label: '输入新产品', children: <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div><div style={{ marginBottom: 4 }}>产品名称（必填）</div><Input aria-label="产品名称" placeholder="请输入产品名称" value={newProductName} onChange={(event) => setNewProductName(event.target.value)} /></div>
+            <div><div style={{ marginBottom: 4 }}>SKU（可选）</div><Input aria-label="产品SKU" placeholder="如有 SKU 可填写" value={newProductSku} onChange={(event) => setNewProductSku(event.target.value)} /></div>
+          </Space> },
+          { key: 'existing', label: '选择已有产品', children: <Select showSearch optionFilterProp="label" placeholder="从产品库选择产品" value={libraryProductId} onChange={setLibraryProductId} style={{ width: '100%' }}
+            options={productLibrary.filter((product) => !poolCampaignProducts.some((item) => (item.product_id || item.product?.id) === product.id)).map((product) => ({ value: product.id, label: `${product.sku || '-'} | ${product.name}` }))} /> }
+        ]} />
       </Modal>
 
       <CampaignCreateModal

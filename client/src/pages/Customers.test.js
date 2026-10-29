@@ -258,6 +258,7 @@ describe('KOL 总表加入项目', () => {
     fireEvent.click(screen.getByRole('button', { name: /添加产品/ }));
     const productTitle = await screen.findByText('添加产品到项目');
     const productDialog = productTitle.closest('[role="dialog"]');
+    await userEvent.click(within(productDialog).getByRole('tab', { name: '选择已有产品' }));
     await userEvent.click(within(productDialog).getByRole('combobox'));
     await userEvent.click(await screen.findByText('SKU-20 | Second Product'));
     await userEvent.click(within(productDialog).getByRole('button', { name: '添加产品' }));
@@ -266,6 +267,31 @@ describe('KOL 总表加入项目', () => {
     const intakeDialog = screen.getAllByRole('dialog').find((dialog) => within(dialog).queryByText('加入项目（1 个 KOL）'));
     await userEvent.click(within(intakeDialog).getByRole('button', { name: '加入项目' }));
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/projects', expect.objectContaining({ product_id: 20 })));
+  });
+
+  test('直接输入产品名称创建并关联项目，SKU 可留空', async () => {
+    mockWithCampaigns();
+    const get = axios.get.getMockImplementation();
+    let attached = false;
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/campaigns/2/products' && attached) return Promise.resolve({ data: { data: [{ id: 3, product_id: 30, product: { id: 30, name: 'Custom Tree', sku: null } }] } });
+      return get(url);
+    });
+    axios.post.mockImplementation((url) => {
+      if (url === '/api/products') return Promise.resolve({ data: { success: true, data: { id: 30, name: 'Custom Tree', status: 'active' } } });
+      if (url === '/api/campaigns/2/products') attached = true;
+      return Promise.resolve({ data: { success: true } });
+    });
+    await openPoolModalForAlice();
+    await selectTmbCampaign();
+    fireEvent.click(screen.getByRole('button', { name: /添加产品/ }));
+    const title = await screen.findByText('添加产品到项目');
+    const dialog = title.closest('[role="dialog"]');
+    fireEvent.change(within(dialog).getByRole('textbox', { name: '产品名称' }), { target: { value: '  Custom Tree  ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '添加产品' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/products', { name: 'Custom Tree', sku: null, brand: '' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/campaigns/2/products', { product_id: 30, role: 'secondary' }));
+    await waitFor(() => expect(screen.getByText('Custom Tree')).toBeInTheDocument());
   });
 
   test('提交后调用 projects 接口并提示成功', async () => {
