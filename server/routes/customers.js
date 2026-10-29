@@ -910,13 +910,25 @@ function addCustomerToCampaign(confirmImmediately = false) {
       return res.status(400).json({ success: false, error: '请选择有效的合作阶段' });
     }
     const finish = async (row, duplicate, warning = null) => {
-      if (!confirmImmediately) return res.json({ success: true, data: row, duplicate: duplicate || undefined, message: duplicate ? '该 KOL 已在此项目候选池中' : '已加入项目候选池', warning });
+      if (req.body.product_id !== undefined && !['candidate', 'confirmed'].includes(row.pipeline_stage)) {
+        return res.status(409).json({ success: false, error: '历史合作记录不能更换产品' });
+      }
+      const assignProduct = async () => {
+        if (req.body.product_id !== undefined) {
+          await require('./campaignKols').switchCommunicationProduct(row.id, Number(req.body.product_id));
+        }
+      };
+      if (!confirmImmediately) {
+        await assignProduct();
+        return res.json({ success: true, data: row, duplicate: duplicate || undefined, message: duplicate ? '该 KOL 已在此项目候选池中' : '已加入项目候选池', warning });
+      }
       if (!['candidate', 'confirmed'].includes(row.pipeline_stage)) {
         return res.status(409).json({ success: false, error: '历史合作记录不能直接加入合作区' });
       }
       if (row.pipeline_stage === 'candidate' && ['terminated', 'rejected'].includes(row.outreach_status)) {
         return res.status(409).json({ success: false, error: '已终止的候选不能直接确认合作，请先恢复为其他外联状态' });
       }
+      await assignProduct();
       const alreadyConfirmed = row.pipeline_stage === 'confirmed';
       if (!alreadyConfirmed) {
         await dbOperations.run(
@@ -952,6 +964,19 @@ function addCustomerToCampaign(confirmImmediately = false) {
       if (!campaign) return res.status(404).json({ success: false, error: '项目不存在' });
       if (campaign.campaign_type !== 'active_project' || campaign.status !== 'active') {
         return res.status(400).json({ success: false, error: confirmImmediately ? '只有进行中的当前项目才能加入项目' : '只有进行中的当前项目才能加入候选池' });
+      }
+
+      if (req.body.product_id !== undefined) {
+        const productId = Number(req.body.product_id);
+        if (!Number.isSafeInteger(productId) || productId <= 0) {
+          return res.status(400).json({ success: false, error: '请选择有效产品' });
+        }
+        const product = await dbOperations.get(
+          `SELECT cp.id FROM campaign_products cp JOIN products p ON p.id = cp.product_id
+           WHERE cp.campaign_id = ? AND cp.product_id = ? AND cp.status = 'active' AND p.status = 'active'`,
+          [campaignId, productId]
+        );
+        if (!product) return res.status(400).json({ success: false, error: '所选产品未关联当前项目或已归档' });
       }
 
       // 防重复：同一个 KOL 在同一个 Campaign 下只能有一条记录

@@ -91,6 +91,14 @@ const Customers = () => {
   const [projectStage, setProjectStage] = useState('pending_shipping');
   const [poolNotes, setPoolNotes] = useState('');
   const [poolCampaignProducts, setPoolCampaignProducts] = useState([]);
+  const [selectedProductId, setSelectedProductId] = useState(null);
+  const [loadingProjectProducts, setLoadingProjectProducts] = useState(false);
+  const [productLoadError, setProductLoadError] = useState('');
+  const [addProductOpen, setAddProductOpen] = useState(false);
+  const [productLibrary, setProductLibrary] = useState([]);
+  const [libraryProductId, setLibraryProductId] = useState(null);
+  const [addingProduct, setAddingProduct] = useState(false);
+  const productRequest = useRef(0);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const drawerRequest = useRef(0);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
@@ -200,25 +208,74 @@ const Customers = () => {
     setPoolPlatforms([]);
     setProjectStage('pending_shipping');
     setPoolNotes('');
+    productRequest.current += 1;
     setPoolCampaignProducts([]);
+    setSelectedProductId(null);
+    setProductLoadError('');
+    setLoadingProjectProducts(false);
     setAddToProjectOpen(true);
   };
 
   const handlePoolCampaignChange = async (campaignId) => {
+    const requestId = ++productRequest.current;
     setTargetCampaignId(campaignId);
     setPoolCampaignProducts([]);
-    if (!campaignId) return;
+    setSelectedProductId(null);
+    setProductLoadError('');
+    setLoadingProjectProducts(Boolean(campaignId));
+    if (!campaignId) return [];
     try {
       const res = await axios.get(`/api/campaigns/${campaignId}/products`);
-      setPoolCampaignProducts(res.data.data || []);
+      const products = (res.data.data || []).filter((item) => item.status !== 'archived' && item.product?.status !== 'archived');
+      if (requestId !== productRequest.current) return [];
+      setPoolCampaignProducts(products);
+      return products;
     } catch (error) {
-      // 产品信息只用于展示，失败不阻断
+      if (requestId === productRequest.current) setProductLoadError('产品加载失败，请重新选择项目');
+      return [];
+    } finally {
+      if (requestId === productRequest.current) setLoadingProjectProducts(false);
     }
   };
 
-  const addToProject = async (campaignId = targetCampaignId) => {
+  const openAddProduct = async () => {
+    if (!targetCampaignId) return;
+    setLibraryProductId(null);
+    setProductLibrary([]);
+    setAddProductOpen(true);
+    try {
+      const response = await axios.get('/api/products');
+      setProductLibrary((response.data.data || []).filter((item) => item.status !== 'archived'));
+    } catch (error) {
+      message.error('产品库加载失败，请重试');
+    }
+  };
+
+  const attachProduct = async () => {
+    if (!libraryProductId) return message.warning('请选择产品');
+    const campaignId = targetCampaignId;
+    setAddingProduct(true);
+    try {
+      await axios.post(`/api/campaigns/${campaignId}/products`, { product_id: libraryProductId, role: 'secondary' });
+      const products = await handlePoolCampaignChange(campaignId);
+      const selected = products.find((item) => item.product_id === libraryProductId || item.product?.id === libraryProductId);
+      setSelectedProductId(selected?.product_id || selected?.product?.id || null);
+      setAddProductOpen(false);
+      message.success('产品已添加到项目');
+    } catch (error) {
+      message.error(error.response?.data?.error || '添加产品失败');
+    } finally {
+      setAddingProduct(false);
+    }
+  };
+
+  const addToProject = async (campaignId = targetCampaignId, productId = selectedProductId, products = poolCampaignProducts) => {
     if (!campaignId) {
       message.warning('请选择项目');
+      return;
+    }
+    if (!productId || !products.some((item) => (item.product_id || item.product?.id) === productId)) {
+      message.warning('请选择产品/SKU');
       return;
     }
     setAddingToProject(true);
@@ -226,6 +283,7 @@ const Customers = () => {
       const results = await Promise.all(projectCustomerIds.map((customerId) => (
         axios.post(`/api/customers/${customerId}/${addToPool ? 'candidate-pool' : 'projects'}`, {
           campaign_id: campaignId,
+          product_id: productId,
           cooperation_platforms: poolPlatforms,
           ...(!addToPool ? { project_status: projectStage } : {}),
           notes: poolNotes
@@ -504,7 +562,7 @@ const Customers = () => {
   };
 
   const poolCampaign = campaigns.find((campaign) => campaign.id === targetCampaignId) || null;
-  const poolHero = poolCampaignProducts.find((item) => item.role === 'hero') || poolCampaignProducts[0] || null;
+  const poolHero = poolCampaignProducts.find((item) => (item.product_id || item.product?.id) === selectedProductId) || null;
 
   const columns = [
     {
@@ -831,6 +889,7 @@ const Customers = () => {
         onCancel={() => setAddToProjectOpen(false)}
         onOk={() => addToProject()}
         confirmLoading={addingToProject}
+        okButtonProps={{ disabled: loadingProjectProducts || !selectedProductId || Boolean(productLoadError) }}
         okText={addToPool ? '加入候选池' : '加入项目'}
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -846,6 +905,23 @@ const Customers = () => {
               options={campaigns.map((campaign) => ({ value: campaign.id, label: campaign.name }))}
             />
           </div>
+          {targetCampaignId && <div>
+            <div style={{ marginBottom: 4 }}>产品/SKU（必选）</div>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="请选择产品/SKU"
+              value={selectedProductId}
+              onChange={setSelectedProductId}
+              loading={loadingProjectProducts}
+              disabled={loadingProjectProducts}
+              style={{ width: '100%' }}
+              options={poolCampaignProducts.map((item) => ({ value: item.product_id || item.product?.id, label: `${item.product?.sku || '-'} | ${item.product?.name || '-'}` }))}
+              notFoundContent={productLoadError || '项目暂无产品，请先添加产品'}
+            />
+            {productLoadError && <div style={{ color: '#ff4d4f' }}>{productLoadError}</div>}
+            <Button type="link" icon={<PlusOutlined />} style={{ paddingLeft: 0 }} onClick={openAddProduct} disabled={loadingProjectProducts}>添加产品</Button>
+          </div>}
           {targetCampaignId && (
             <Descriptions size="small" column={3} bordered>
               <Descriptions.Item label="SKU">{poolHero?.product?.sku || '-'}</Descriptions.Item>
@@ -884,6 +960,11 @@ const Customers = () => {
         </Button>
       </Modal>
 
+      <Modal title="添加产品到项目" open={addProductOpen} onCancel={() => setAddProductOpen(false)} onOk={attachProduct} confirmLoading={addingProduct} okText="添加产品">
+        <Select showSearch optionFilterProp="label" placeholder="从产品库选择产品" value={libraryProductId} onChange={setLibraryProductId} style={{ width: '100%' }}
+          options={productLibrary.filter((product) => !poolCampaignProducts.some((item) => (item.product_id || item.product?.id) === product.id)).map((product) => ({ value: product.id, label: `${product.sku || '-'} | ${product.name}` }))} />
+      </Modal>
+
       <CampaignCreateModal
         open={newProjectOpen}
         onCancel={() => setNewProjectOpen(false)}
@@ -896,7 +977,7 @@ const Customers = () => {
           setTargetCampaignId(created.id);
           setNewProjectOpen(false);
           await handlePoolCampaignChange(created.id);
-          await addToProject(created.id);
+          message.info('请选择本次加入的产品/SKU后提交');
         }}
       />
 

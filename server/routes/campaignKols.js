@@ -1018,3 +1018,5 @@ module.exports = router;
 // 供 approval_items 决定副作用复用（decisionDispatcher）
 module.exports.setCampaignKolStatus = setCampaignKolStatus;
 module.exports.setBudgetApprovalStatus = setBudgetApprovalStatus;
+
+module.exports.switchCommunicationProduct = switchCommunicationProduct;

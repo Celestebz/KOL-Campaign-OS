@@ -182,7 +182,7 @@ describe('KOL 总表加入项目', () => {
       }
       if (url === '/api/campaigns/2/products') {
         return Promise.resolve({
-          data: { data: [{ id: 1, role: 'hero', product: { sku: 'TMB-1401', name: '48-inch PTO Finish Mower' } }] }
+          data: { data: [{ id: 1, product_id: 10, role: 'hero', product: { id: 10, sku: 'TMB-1401', name: '48-inch PTO Finish Mower' } }] }
         });
       }
       return Promise.resolve({ data: { data: [] } });
@@ -202,6 +202,10 @@ describe('KOL 总表加入项目', () => {
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(within(dialog).getAllByRole('combobox')[0]);
     await userEvent.click(await screen.findByText('TMB-1401｜Finishing Mower'));
+    await waitFor(() => expect(within(dialog).getAllByRole('combobox').length).toBeGreaterThan(1));
+    await waitFor(() => expect(within(dialog).getAllByRole('combobox')[1]).not.toBeDisabled());
+    fireEvent.mouseDown(within(dialog).getAllByRole('combobox')[1]);
+    await userEvent.click(await screen.findByText('TMB-1401 | 48-inch PTO Finish Mower'));
   }
 
   test('行内按钮打开弹窗，选择项目后显示 SKU、产品名称与项目周期', async () => {
@@ -230,10 +234,38 @@ describe('KOL 总表加入项目', () => {
     await selectTmbCampaign();
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入候选池' }));
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/candidate-pool', {
-      campaign_id: 2, cooperation_platforms: [], notes: ''
+      campaign_id: 2, product_id: 10, cooperation_platforms: [], notes: ''
     }));
     expect(axios.post.mock.calls[0][1]).not.toHaveProperty('project_status');
     await waitFor(() => expect(message.success).toHaveBeenCalledWith('已将 1 个 KOL 加入候选池'));
+  });
+
+  test('从产品库添加产品后，提交关联新增产品', async () => {
+    mockWithCampaigns();
+    const get = axios.get.getMockImplementation();
+    let attached = false;
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/products') return Promise.resolve({ data: { data: [{ id: 20, sku: 'SKU-20', name: 'Second Product', status: 'active' }] } });
+      if (url === '/api/campaigns/2/products' && attached) return Promise.resolve({ data: { data: [{ id: 2, product_id: 20, status: 'active', product: { id: 20, sku: 'SKU-20', name: 'Second Product' } }] } });
+      return get(url);
+    });
+    axios.post.mockImplementation((url) => {
+      if (url === '/api/campaigns/2/products') attached = true;
+      return Promise.resolve({ data: { success: true, data: { id: 501 } } });
+    });
+    await openPoolModalForAlice();
+    await selectTmbCampaign();
+    fireEvent.click(screen.getByRole('button', { name: /添加产品/ }));
+    const productTitle = await screen.findByText('添加产品到项目');
+    const productDialog = productTitle.closest('[role="dialog"]');
+    await userEvent.click(within(productDialog).getByRole('combobox'));
+    await userEvent.click(await screen.findByText('SKU-20 | Second Product'));
+    await userEvent.click(within(productDialog).getByRole('button', { name: '添加产品' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/campaigns/2/products', { product_id: 20, role: 'secondary' }));
+    await waitFor(() => expect(screen.getByText('Second Product')).toBeInTheDocument());
+    const intakeDialog = screen.getAllByRole('dialog').find((dialog) => within(dialog).queryByText('加入项目（1 个 KOL）'));
+    await userEvent.click(within(intakeDialog).getByRole('button', { name: '加入项目' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/projects', expect.objectContaining({ product_id: 20 })));
   });
 
   test('提交后调用 projects 接口并提示成功', async () => {
@@ -246,6 +278,7 @@ describe('KOL 总表加入项目', () => {
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入项目' }));
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/projects', expect.objectContaining({
       campaign_id: 2,
+      product_id: 10,
       project_status: 'pending_shipping'
     })));
     await waitFor(() => expect(message.success).toHaveBeenCalledWith('已将 1 个 KOL 加入项目'));
@@ -258,7 +291,7 @@ describe('KOL 总表加入项目', () => {
     await openPoolModalForAlice();
     await selectTmbCampaign();
     const dialog = screen.getByRole('dialog');
-    await userEvent.click(within(dialog).getAllByRole('combobox')[1]);
+    await userEvent.click(within(dialog).getAllByRole('combobox')[2]);
     await userEvent.click(await screen.findByText('部分发布'));
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '加入项目' }));
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/customers/11/projects', expect.objectContaining({ project_status: 'partially_published' })));

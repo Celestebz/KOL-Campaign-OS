@@ -139,7 +139,8 @@ async function runCandidatePool({
   body = { campaign_id: 2, cooperation_platforms: ['YouTube'], priority_level: 'T1', notes: '适合农场设备内容' },
   accounts = [],
   customerId = 7,
-  confirmImmediately = false
+  confirmImmediately = false,
+  campaignProduct = { id: 21 }
 } = {}) {
   const writes = [];
   const createdRow = { id: 501, campaign_id: 2, customer_id: 7, pipeline_stage: 'candidate' };
@@ -148,11 +149,16 @@ async function runCandidatePool({
   const originalRun = dbOperations.run;
   const syncService = require('../services/confirmCooperationSync');
   const originalSync = syncService.syncConfirmedToFeishu;
+  const productService = require('./campaignKols');
+  const originalAssign = productService.switchCommunicationProduct;
+  const productCalls = [];
+  productService.switchCommunicationProduct = async (...args) => { productCalls.push(args); };
   const syncCalls = [];
   syncService.syncConfirmedToFeishu = async (id) => { syncCalls.push(id); return { targets: [] }; };
 
   dbOperations.get = async (sql) => {
     const text = String(sql);
+    if (text.includes('FROM campaign_products cp JOIN products')) return campaignProduct;
     if (text.includes('FROM customers WHERE id = ?')) return customer;
     if (text.includes('FROM campaigns WHERE id = ?')) return campaign;
     if (text.includes('FROM campaign_kols WHERE campaign_id = ? AND customer_id = ?')) return existing;
@@ -172,12 +178,13 @@ async function runCandidatePool({
   try {
     const handler = findRouteHandler(customersRoute, 'post', confirmImmediately ? '/:id/projects' : '/:id/candidate-pool');
     const response = await invoke(handler, { body, params: { id: String(customerId) } });
-    return { response, writes, createdRow, syncCalls };
+    return { response, writes, createdRow, syncCalls, productCalls };
   } finally {
     dbOperations.get = originalGet;
     dbOperations.query = originalQuery;
     dbOperations.run = originalRun;
     syncService.syncConfirmedToFeishu = originalSync;
+    productService.switchCommunicationProduct = originalAssign;
   }
 }
 
@@ -301,5 +308,25 @@ test('projects accepts selected cooperation stages and rejects invalid ones befo
     const { response, writes } = await runCandidatePool({ confirmImmediately: true, body: { campaign_id: 2, project_status } });
     assert.equal(response.statusCode, 400);
     assert.equal(writes.length, 0);
+  }
+});
+
+
+test('intake assigns the selected project product for candidate and confirmed paths', async () => {
+  for (const confirmImmediately of [false, true]) {
+    const { response, productCalls } = await runCandidatePool({ confirmImmediately, body: { campaign_id: 2, product_id: 10 } });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(productCalls, [[501, 10]]);
+  }
+});
+
+test('intake rejects products outside the project before creating any row', async () => {
+  for (const confirmImmediately of [false, true]) {
+    for (const product_id of [10, -1, 'invalid']) {
+      const { response, writes, productCalls } = await runCandidatePool({ confirmImmediately, campaignProduct: null, body: { campaign_id: 2, product_id } });
+      assert.equal(response.statusCode, 400);
+      assert.equal(writes.length, 0);
+      assert.deepEqual(productCalls, []);
+    }
   }
 });
