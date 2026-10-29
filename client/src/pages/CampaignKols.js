@@ -467,6 +467,7 @@ const CampaignKols = ({ view = 'cooperation', campaignId, embedded = false }) =>
       const publishedVideoUrls = formValues.published_video_urls || '';
       const values = { ...formValues };
       delete values.published_video_urls;
+      delete values.priority_level;
       // 阶段字段白名单：候选只提交外联状态，合作只提交项目状态
       if (isCandidatePool) {
         delete values.project_status;
@@ -1238,9 +1239,6 @@ const CampaignKols = ({ view = 'cooperation', campaignId, embedded = false }) =>
                 <Select options={PROJECT_STATUS_OPTIONS} style={{ width: 170 }} />
               </Form.Item>
             )}
-            <Form.Item label="优先级" name="priority_level">
-              <Select options={priorityOptions} style={{ width: 190 }} />
-            </Form.Item>
             <Form.Item label="跟进人" name="owner">
               <Input style={{ width: 170 }} />
             </Form.Item>
