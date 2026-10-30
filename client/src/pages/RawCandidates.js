@@ -652,7 +652,6 @@ const RawCandidates = ({ view = 'candidates', finderTaskId = null }) => {
 
       {!isTaskView && finderTaskId && <Space style={{ marginBottom: 16 }}>
         <Tag color="blue">当前仅显示寻找任务 #{finderTaskId} 的候选</Tag>
-        <a href="/discovery">返回找达人控制台</a>
         <a href="/finder">查看全部原始候选</a>
       </Space>}
 

@@ -16,7 +16,6 @@ import Records from './pages/Records';
 import Settings from './pages/Settings';
 import RawCandidates from './pages/RawCandidates';
 import FinderTabs from './pages/FinderTabs';
-import DiscoveryConsole from './pages/DiscoveryConsole';
 import CampaignKols from './pages/CampaignKols';
 import Emails from './pages/Emails';
 import KolStrategy from './pages/KolStrategy';
@@ -70,7 +69,7 @@ function App() {
       label: '项目',
       children: [
         { key: '/campaigns', label: '项目管理' },
-        { key: '/discovery', label: 'KOL 寻找' },
+        { key: '/finder', label: 'KOL 寻找' },
         { key: '/emails', label: '邮件中心' }
       ]
     },
@@ -119,8 +118,8 @@ function App() {
   );
   const menuPathKeys = new Set(Object.keys(pathToGroup));
   // 策略与任务属于「KOL 寻找」内部 Tab；候选池旧地址也继续归到该入口。
-  const selectedPath = ['/finder', '/strategy', '/finder-tasks', '/candidate-pool'].includes(location.pathname)
-    ? '/discovery'
+  const selectedPath = ['/discovery', '/strategy', '/finder-tasks', '/candidate-pool'].includes(location.pathname)
+    ? '/finder'
     : location.pathname;
   const selectedKey = menuPathKeys.has(selectedPath)
     ? selectedPath
@@ -193,7 +192,7 @@ function App() {
             <Route path="/campaigns/:id" element={<CampaignDetail />} />
             <Route path="/products" element={<Products />} />
             <Route path="/strategy" element={<FinderTabs activeKey="strategy"><KolStrategy /></FinderTabs>} />
-            <Route path="/discovery" element={<FinderTabs activeKey="discovery"><DiscoveryConsole /></FinderTabs>} />
+            <Route path="/discovery" element={<Navigate to={`/finder${location.search}`} replace />} />
             <Route path="/finder" element={<FinderTabs activeKey="finder"><RawCandidates key={location.search} finderTaskId={new URLSearchParams(location.search).get('finder_task_id')} /></FinderTabs>} />
             <Route path="/candidate-pool" element={<FinderTabs activeKey="candidate"><CampaignKols view="candidate" /></FinderTabs>} />
             <Route path="/finder-tasks" element={<FinderTabs activeKey="tasks"><RawCandidates view="tasks" /></FinderTabs>} />
