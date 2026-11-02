@@ -605,6 +605,56 @@ router.post('/drafts/:id/confirm-not-sent', async (req, res) => {
 
 // ---- 回复 ----
 
+// Persistent per-message todo list; counts and report cover all pages.
+router.get('/triage', async (req, res) => {
+  try {
+    const page = Math.max(1, Math.min(1000000, Number.parseInt(req.query.page, 10) || 1));
+    const pageSize = 30;
+    const state = req.query.state === 'done' ? 'done' : 'pending';
+    const params = [ownerId(req)];
+    let where = "r.owner_user_id = ? AND COALESCE(r.classification, 'needs_review') NOT IN ('spam', 'system')";
+    if (req.query.mailbox_id) {
+      const mailboxId = Number(req.query.mailbox_id);
+      if (!Number.isSafeInteger(mailboxId) || mailboxId <= 0) return res.status(400).json({ success: false, error: '邮箱参数无效' });
+      where += ' AND r.mailbox_id = ?'; params.push(mailboxId);
+    }
+    const groups = await dbOperations.query(`SELECT r.business_category AS category,
+      r.business_priority AS priority, r.triage_status AS analysis, COUNT(*) AS total
+      FROM email_replies r WHERE ${where} AND r.todo_status = 'pending'
+      GROUP BY r.business_category, r.business_priority, r.triage_status`, params);
+    const categories = ['payment', 'content_review', 'execution_issue', 'outreach_reply', 'inbound_offer', 'other', 'needs_review'];
+    if (req.query.category) {
+      if (!categories.includes(req.query.category)) return res.status(400).json({ success: false, error: '分类参数无效' });
+      where += ' AND r.business_category = ?'; params.push(req.query.category);
+    }
+    const count = await dbOperations.get(`SELECT COUNT(*) AS total FROM email_replies r
+      WHERE ${where} AND r.todo_status = ?`, [...params, state]);
+    const rows = await dbOperations.query(`SELECT r.*, k.name AS kol_name, c.name AS campaign_name,
+      ms.label AS mailbox_label, ms.username AS mailbox_username FROM email_replies r
+      LEFT JOIN customers k ON k.id = r.customer_id LEFT JOIN campaigns c ON c.id = r.campaign_id
+      LEFT JOIN email_settings ms ON ms.id = r.mailbox_id
+      WHERE ${where} AND r.todo_status = ?
+      ORDER BY CASE r.business_priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END,
+        r.received_at DESC, r.id DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+    [...params, state]);
+    res.json({ success: true, data: { rows, total: Number(count?.total || 0), page, pageSize, report: groups } });
+  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+});
+
+router.post('/replies/:id/complete', async (req, res) => {
+  try {
+    const result = await require('../services/emailTriage').setDone(req.params.id, true, ownerId(req));
+    res.json({ success: true, data: result });
+  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+});
+
+router.post('/replies/:id/reopen', async (req, res) => {
+  try {
+    const result = await require('../services/emailTriage').setDone(req.params.id, false, ownerId(req));
+    res.json({ success: true, data: result });
+  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+});
+
 router.get('/replies', async (req, res) => {
   try {
     const { confirm_status, scope, campaign_id, mailbox_id } = req.query || {};
@@ -759,6 +809,10 @@ router.post('/replies/:id/retry-summary', async (req, res) => {
   try {
     const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
     if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
+    if (reply.todo_status && reply.todo_status !== 'excluded') {
+      if (reply.todo_status === 'pending') await require('../services/emailTriage').retry(reply.id);
+      return res.json({ success: true, message: '已保留已有结果，失败任务已加入队列' });
+    }
     const { summarizeReply } = require('../services/emailReplyPoller');
     const result = await summarizeReply(reply.id);
     const updated = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
@@ -828,7 +882,7 @@ router.post('/replies/:id/bind', async (req, res) => {
     await require('../services/emailReplyPoller').markWaitingReply(campaignId, customerId);
     // 绑定后补 AI 摘要（未识别回复此前不做摘要，避免广告消耗 AI）
     const { summarizeReply } = require('../services/emailReplyPoller');
-    summarizeReply(reply.id).catch(() => {});
+    if (!reply.todo_status || reply.todo_status === 'excluded') summarizeReply(reply.id).catch(() => {});
 
     const updated = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [reply.id]);
     res.json({ success: true, message: '已绑定 KOL', data: updated });

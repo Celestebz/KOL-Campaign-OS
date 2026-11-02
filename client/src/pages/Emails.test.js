@@ -30,7 +30,7 @@ beforeAll(() => {
 
 function mockApi() {
   axios.get.mockImplementation((url, config) => {
-    if (url === '/api/emails/replies') {
+    if (url === '/api/emails/replies' || url === '/api/emails/triage') {
       if (config?.params?.scope === 'unmatched') {
         return Promise.resolve({
           data: { data: [{ id: 9, from_address: 'ad@x.com', subject: '促销邮件', received_at: '2026-07-27T06:00:00Z', body_text: '', mailbox_label: '默认邮箱' }] }
@@ -38,11 +38,11 @@ function mockApi() {
       }
       return Promise.resolve({
         data: {
-          data: [{
-            id: 5, kol_name: 'Alice', campaign_name: 'TMB-1401｜Finishing Mower',
+          data: { rows: [{
+            id: 5, customer_id: 7, todo_status: 'pending', business_category: 'outreach_reply', business_priority: 'important', kol_name: 'Alice', campaign_name: 'TMB-1401｜Finishing Mower',
             subject: 'Re: 合作', received_at: '2026-07-27T06:00:00Z',
             ai_status: 'success', ai_summary: '对合作有意向', ai_intent: 'interested', confirm_status: 'pending', mailbox_label: '默认邮箱'
-          }]
+          }], total: 1, report: [] }
         }
       });
     }
@@ -110,10 +110,41 @@ beforeEach(() => {
   mockApi();
 });
 
+test('未读待办可人工完成和恢复，汇报统计不受当前页限制', async () => {
+  const defaultGet = axios.get.getMockImplementation();
+  let completed = false;
+  const row = { id: 15, customer_id: 7, kol_name: '待审核红人', subject: '视频待审',
+    todo_status: 'pending', triage_status: 'success', ai_status: 'success', ai_summary: '已提交视频等待反馈',
+    business_category: 'content_review', business_priority: 'urgent', triage_reason: '请求审核视频', suggested_action: '打开视频审核' };
+  axios.get.mockImplementation((url, config) => {
+    if (url !== '/api/emails/triage') return defaultGet(url, config);
+    const doneView = config.params.state === 'done';
+    return Promise.resolve({ data: { data: {
+      rows: doneView === completed ? [row] : [], total: doneView === completed ? 1 : 0,
+      report: completed ? [] : [{ category: 'content_review', priority: 'urgent', analysis: 'success', total: 61 }]
+    } } });
+  });
+  axios.post.mockImplementation((url) => {
+    if (url.endsWith('/complete')) completed = true;
+    if (url.endsWith('/reopen')) completed = false;
+    return Promise.resolve({ data: { success: true } });
+  });
+  render(<Emails />);
+  await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
+  expect(await screen.findByText('待处理 61 封')).toBeInTheDocument();
+  expect(screen.getByText('打开视频审核')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: '已处理' }));
+  await waitFor(() => expect(screen.queryByText('已提交视频等待反馈')).not.toBeInTheDocument());
+  expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/15/complete');
+  await userEvent.click(screen.getByRole('radio', { name: '已处理' }).closest('label'));
+  await userEvent.click(await screen.findByRole('button', { name: '恢复待办' }));
+  expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/15/reopen');
+}, 30000);
+
 test('未识别回复列表支持绑定 KOL', async () => {
   render(<Emails />);
   await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
-  await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/emails/replies', { params: { scope: 'needs_reply' } }));
+  await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/emails/triage', { params: { state: 'pending', page: 1, mailbox_id: undefined, category: undefined } }));
   expect(await screen.findByText('Alice')).toBeInTheDocument();
 
   await userEvent.click(screen.getByText('未识别回复'));
@@ -152,14 +183,14 @@ test('邮件待办为 AI 摘要保留可读宽度，并可悬浮查看完整内�
 test('确认意向后列表优先显示人工确认值', async () => {
   const defaultGet = axios.get.getMockImplementation();
   axios.get.mockImplementation((url, config) => {
-    if (url === '/api/emails/replies') {
-      return Promise.resolve({ data: { data: [{
+    if (url === '/api/emails/triage') {
+      return Promise.resolve({ data: { data: { rows: [{
         id: 6, kol_name: 'Bob', campaign_name: '人工确认项目', subject: 'Re: 条款',
         received_at: '2026-08-17T06:00:00Z', ai_status: 'success',
         ai_summary: 'AI 原始摘要', ai_intent: 'interested',
         confirmed_summary: '人工修改后的摘要', confirmed_intent: 'rejected',
         confirm_status: 'confirmed', mailbox_label: '默认邮箱'
-      }] } });
+      }], total: 1, report: [] } } });
     }
     return defaultGet(url, config);
   });

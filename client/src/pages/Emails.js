@@ -20,6 +20,11 @@ import {
 import EmailThreadDrawer from './EmailThreadDrawer';
 
 const { TextArea } = Input;
+const MAIL_CATEGORIES = {
+  payment: '催款／付款问题', content_review: '视频／脚本待审核', execution_issue: '合作执行问题',
+  outreach_reply: '开发信回复', inbound_offer: '主动合作', other: '其他', needs_review: '待确认'
+};
+const MAIL_PRIORITIES = { urgent: { text: '紧急重要', color: 'red' }, important: { text: '重要不紧急', color: 'orange' }, normal: { text: '常规评估', color: 'blue' } };
 
 const INTENT_LABELS = {
   interested: { text: '有意向', color: 'green' },
@@ -629,7 +634,11 @@ function RepliesTab() {
   const [confirming, setConfirming] = useState(null);
   const [editedSummary, setEditedSummary] = useState('');
   const [editedIntent, setEditedIntent] = useState('unclear');
-  const [viewMode, setViewMode] = useState('pending'); // pending=待确认；unmatched=未识别回复
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [report, setReport] = useState([]);
+  const [category, setCategory] = useState();
+  const [viewMode, setViewMode] = useState('pending');
   const [binding, setBinding] = useState(null);
   const [bindCustomerId, setBindCustomerId] = useState(null);
   const [bindOptions, setBindOptions] = useState([]);
@@ -639,12 +648,30 @@ function RepliesTab() {
   const [blockScope, setBlockScope] = useState('sender');
   const [blockSaving, setBlockSaving] = useState(false);
   const prevCountRef = useRef(null);
+  const fetchVersion = useRef(0);
   const [mailboxes, setMailboxes] = useState([]);
   const [mailboxId, setMailboxId] = useState();
 
   const fetchReplies = useCallback(async ({ silent = false } = {}) => {
+    const version = ++fetchVersion.current;
     if (!silent) setLoading(true);
     try {
+      if (viewMode === 'pending' || viewMode === 'done') {
+        const response = await axios.get('/api/emails/triage', { params: {
+          state: viewMode, page, mailbox_id: mailboxId, category
+        } });
+        const data = response.data.data;
+        if (version !== fetchVersion.current) return;
+        if (viewMode === 'pending' && prevCountRef.current !== null && data.total > prevCountRef.current) {
+          message.info(`新增 ${data.total - prevCountRef.current} 封邮件待办`);
+        }
+        prevCountRef.current = data.total;
+        setReplies(data.rows || []);
+        setTotal(data.total || 0);
+        if (page > 1 && page > Math.max(1, Math.ceil((data.total || 0) / 30))) setPage(Math.max(1, Math.ceil((data.total || 0) / 30)));
+        setReport(data.report || []);
+        return;
+      }
       const rows = viewMode === 'unmatched'
         ? await getUnmatchedReplies(mailboxId)
         : (viewMode === 'blocked'
@@ -653,14 +680,15 @@ function RepliesTab() {
       if (viewMode === 'pending' && prevCountRef.current !== null && rows.length > prevCountRef.current) {
         message.info(`收到 ${rows.length - prevCountRef.current} 条新回复`);
       }
+      if (version !== fetchVersion.current) return;
       prevCountRef.current = rows.length;
       setReplies(rows);
     } catch (error) {
       if (!silent) message.error('获取回复列表失败');
     } finally {
-      if (!silent) setLoading(false);
+      if (version === fetchVersion.current) setLoading(false);
     }
-  }, [viewMode, mailboxId]);
+  }, [viewMode, mailboxId, page, category]);
 
   useEffect(() => { fetchReplies(); }, [fetchReplies]);
   useEffect(() => { getEmailSettings().then((rows) => setMailboxes(rows || [])).catch(() => {}); }, []);
@@ -673,6 +701,7 @@ function RepliesTab() {
 
   const changeView = (event) => {
     prevCountRef.current = null;
+    setPage(1);
     setViewMode(event.target.value);
   };
 
@@ -714,10 +743,18 @@ function RepliesTab() {
     }
   };
 
+  const handleTodo = async (record, done) => {
+    try {
+      await axios.post(`/api/emails/replies/${record.id}/${done ? 'complete' : 'reopen'}`);
+      message.success(done ? '已处理，不会重复进入待办' : '已恢复待办');
+      fetchReplies();
+    } catch (error) { message.error(error.response?.data?.error || '操作失败'); }
+  };
+
   const handleRetry = async (record) => {
     try {
       await retryReplySummary(record.id);
-      message.success('已重新总结');
+      message.success('已加入分析队列');
       fetchReplies();
     } catch (error) {
       message.error('重试失败');
@@ -799,7 +836,18 @@ function RepliesTab() {
   };
 
   const pendingColumns = [
-    { title: 'KOL', dataIndex: 'kol_name', width: 140 },
+    { title: 'KOL／发件人', dataIndex: 'kol_name', width: 170, render: (v, r) => v || r.from_address },
+    { title: '分类／优先级', width: 180, render: (_, r) => {
+      const priority = MAIL_PRIORITIES[r.business_priority];
+      return <Space direction="vertical" size={2}>
+        <Tag>{MAIL_CATEGORIES[r.business_category] || '待分析'}</Tag>
+        {priority && <Tag color={priority.color}>{priority.text}</Tag>}
+      </Space>;
+    } },
+    { title: '判断依据／建议动作', width: 260, render: (_, r) => <div>
+      <div>{r.triage_reason || '等待 AI 分析'}</div>
+      {r.suggested_action && <div style={{ color: '#1677ff' }}>{r.suggested_action}</div>}
+    </div> },
     { title: '项目', dataIndex: 'campaign_name', width: 160 },
     { title: '收件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
     { title: '回复时间', dataIndex: 'received_at', width: 160,
@@ -814,6 +862,9 @@ function RepliesTab() {
     {
       title: 'AI 摘要', dataIndex: 'ai_summary', width: 280, ellipsis: true,
       render: (v, record) => {
+        if (record.triage_status === 'pending' || record.triage_status === 'running') {
+          return <Tag color="processing">{record.triage_status === 'running' ? '分析中' : '待分析'}</Tag>;
+        }
         const ai = AI_STATUS_LABELS[record.ai_status] || {};
         if (record.ai_status === 'failed') {
           return <Space><Tooltip title={record.ai_error || '暂无详细错误'}><Tag color={ai.color}>{ai.text}</Tag></Tooltip><Button type="link" size="small" onClick={() => handleRetry(record)}>重试</Button></Space>;
@@ -837,10 +888,14 @@ function RepliesTab() {
     {
       title: '操作', width: 420, render: (_, record) => (
         <Space size={[0, 4]} wrap>
-          {record.confirm_status === 'pending'
+          {viewMode === 'done'
+            ? <Button type="link" size="small" onClick={() => handleTodo(record, false)}>恢复待办</Button>
+            : <Button type="primary" size="small" onClick={() => handleTodo(record, true)}>已处理</Button>}
+          {record.customer_id && record.confirm_status === 'pending'
             ? <Button type="link" size="small" onClick={() => openConfirm(record)}>确认意向</Button>
-            : <Tag color="green">已确认</Tag>}
-          <Button type="link" size="small" icon={<MailOutlined />} onClick={() => openThreadDrawer(record)}>回复草稿</Button>
+            : null}
+          {!record.customer_id && <Button type="link" size="small" onClick={() => openBind(record)}>绑定 KOL</Button>}
+          <Button type="link" size="small" icon={<MailOutlined />} onClick={() => openThreadDrawer(record)}>查看／回复</Button>
           <Popconfirm
             title="确认已经通过外部邮箱回复该达人？"
             description="系统只记录完成状态，不会发送邮件。"
@@ -930,19 +985,49 @@ function RepliesTab() {
           value={viewMode}
           onChange={changeView}
           options={[
-            { value: 'pending', label: '待回复' },
+            { value: 'pending', label: '待处理' },
+            { value: 'done', label: '已处理' },
             { value: 'unmatched', label: '未识别回复' },
             { value: 'system', label: '系统邮件/退信' },
             { value: 'blocked', label: '已屏蔽邮件' }
           ]}
           optionType="button"
         />
-        <Select allowClear placeholder="全部邮箱" style={{ width: 180 }} value={mailboxId} onChange={setMailboxId}
+        <Select allowClear placeholder="全部邮箱" style={{ width: 180 }} value={mailboxId} onChange={(value) => { prevCountRef.current = null; setMailboxId(value); setPage(1); }}
           options={mailboxes.map((m) => ({ value: m.id, label: m.label || m.username }))} />
         <Button icon={<ReloadOutlined />} onClick={() => fetchReplies()}>刷新</Button>
       </Space>
+      {(viewMode === 'pending' || viewMode === 'done') && <>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="只将同步时发现的未读邮件加入待办；打开邮件不会完成待办，点“已处理”后不重复提醒，新回复单独进入。"
+          description="AI 分析不改变邮箱已读状态。失败自动重试，仍失败可手动重试；历史未读将在同步时补入。" />
+        <Card size="small" title="AI 工作汇报" style={{ marginBottom: 12 }}>
+          <Space wrap>
+            <Tag>待处理 {report.reduce((sum, g) => sum + Number(g.total), 0)} 封</Tag>
+            {Object.entries(MAIL_PRIORITIES).map(([key, value]) => <Tag key={key} color={value.color}>
+              {value.text} {report.filter(g => g.priority === key).reduce((sum, g) => sum + Number(g.total), 0)}
+            </Tag>)}
+            <Tag>待分析／分析中 {report.filter(g => ['pending', 'running'].includes(g.analysis)).reduce((sum, g) => sum + Number(g.total), 0)}</Tag>
+            <Tag color="error">分析失败 {report.filter(g => g.analysis === 'failed').reduce((sum, g) => sum + Number(g.total), 0)}</Tag>
+          </Space>
+          <div style={{ marginTop: 8 }}>
+            {Object.entries(MAIL_CATEGORIES).map(([key, label]) => {
+              const count = report.filter(g => g.category === key).reduce((sum, g) => sum + Number(g.total), 0);
+              return count ? <Tag key={key}>{label} {count} 封</Tag> : null;
+            })}
+          </div>
+          <div style={{ marginTop: 8 }}>优先处理催款、内容审核和临近期限的执行问题。分类及建议以对应邮件证据为准。</div>
+        </Card>
+        <Select allowClear placeholder="全部业务分类" style={{ width: 200, marginBottom: 12 }} value={category}
+          onChange={(value) => { prevCountRef.current = null; setCategory(value); setPage(1); }}
+          options={Object.entries(MAIL_CATEGORIES).map(([value, label]) => ({ value, label }))} />
+      </>}
       <Table
         rowKey="id" loading={loading}
+        pagination={viewMode === 'pending' || viewMode === 'done' ? {
+          current: page, pageSize: 30, total, showSizeChanger: false, onChange: setPage,
+          showTotal: (count) => `共 ${count} 封`
+        } : undefined}
         columns={viewMode === 'unmatched'
           ? unmatchedColumns
           : (viewMode === 'blocked' ? blockedColumns : (viewMode === 'system' ? systemColumns : pendingColumns))}

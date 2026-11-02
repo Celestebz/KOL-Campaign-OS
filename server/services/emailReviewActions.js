@@ -90,7 +90,7 @@ async function confirmReply(
 async function ignoreReply(replyId, { closeApproval = true } = {}) {
   const reply = await getReplyOrThrow(replyId);
   await dbOperations.run(
-    `UPDATE email_replies SET confirm_status = 'ignored', updated_at = NOW() WHERE id = ?`,
+    `UPDATE email_replies SET confirm_status = 'ignored', todo_status = 'done', todo_completed_at = NOW(), updated_at = NOW() WHERE id = ?`,
     [reply.id]
   );
   if (reply.campaign_id && reply.customer_id) {
@@ -117,7 +117,7 @@ async function markReplyManuallyHandled(replyId, handledBy = 'boss') {
   }
   await dbOperations.run(
     `UPDATE email_replies
-     SET confirm_status = 'manually_replied', handled_at = NOW(), handled_by = ?, updated_at = NOW()
+     SET confirm_status = 'manually_replied', todo_status = 'done', todo_completed_at = NOW(), handled_at = NOW(), handled_by = ?, updated_at = NOW()
      WHERE id = ?`,
     [handledBy || 'boss', reply.id]
   );

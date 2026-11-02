@@ -1,7 +1,7 @@
 // 准实时收信：IMAP IDLE 长连接 + 断线递增重连 + 15 分钟补偿扫描 + UID 增量。
-// - UID 游标替代 UNSEEN 过滤：业务人员在网页端读过也不漏信，且不修改邮箱已读状态
+// - UID 增量存档 + UNSEEN 补扫入队，不修改邮箱已读状态
 // - Message-ID 唯一索引兜底幂等；未匹配邮件进入"未识别回复"（customer_id 为空）
-// - 未识别回复不做 AI 摘要（避免广告消耗 AI），人工绑定 KOL 后再触发
+// - 未读来信持久化进入独立待办，后台队列分析，已处理邮件不会重复入队
 // 注：imapflow / aiClient 通过模块对象引用（非解构），便于测试 monkey-patch。
 const imapflow = require('imapflow');
 const { dbOperations } = require('../database');
@@ -13,6 +13,7 @@ const { parseInboundBody } = require('./emailBodyParser');
 const emailMimeParser = require('./emailMimeParser');
 const emailThreader = require('./emailThreader');
 const requestContext = require('../utils/requestContext');
+const emailTriage = require('./emailTriage');
 
 const { normalizeAddress, findOwnerByAddress } = emailReplyPoller;
 const { toStoredMessageId } = emailMimeParser;
@@ -75,11 +76,18 @@ async function assignThreadSafely(params) {
 }
 
 // 处理一封已抓取的邮件：幂等去重 → MIME 解析（失败回退旧解析器）→ 匹配 → 入库 → 会话归属 → AI 摘要（仅已匹配）
-async function processFetchedMessage(message, mailboxId, ownerUserId = null) {
+async function processFetchedMessage(message, mailboxId, ownerUserId = null, uidValidity = '') {
   const uid = message.uid;
-  const messageId = message.envelope?.messageId || `uid-${uid}`;
-  const existing = await dbOperations.get('SELECT id FROM email_replies WHERE message_id = ? LIMIT 1', [messageId]);
-  if (existing) return { duplicate: true };
+  const messageId = message.envelope?.messageId || `uid-${mailboxId}-${uidValidity}-${uid}`;
+  const key = emailTriage.deliveryKey(message, mailboxId, ownerUserId, uidValidity);
+  const seen = Boolean(message.flags?.has('\\Seen'));
+  const existing = await dbOperations.get(
+    'SELECT id FROM email_replies WHERE message_id = ? AND mailbox_id <=> ? AND owner_user_id <=> ? LIMIT 1',
+    [messageId, mailboxId, ownerUserId]);
+  if (existing) {
+    await emailTriage.enqueue(existing.id, seen);
+    return { duplicate: true };
+  }
 
   // 标准 MIME 解析（优先用 RFC822 原始源）；失败回退旧自写解析器，入库与 UID 推进不中断
   const parsed = message.source ? await emailMimeParser.parseRawEmail(message.source) : null;
@@ -110,8 +118,8 @@ async function processFetchedMessage(message, mailboxId, ownerUserId = null) {
         ai_status, confirm_status, classification, classification_source, classification_reason, classified_at,
         created_at, updated_at,
         in_reply_to, references_json, clean_body_text, body_html, quoted_body_text, signature_text,
-        raw_source, parse_status, parse_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        raw_source, parse_status, parse_error, delivery_key, mail_seen, todo_status, triage_status, todo_enqueued_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [owner?.id || null, owner?.campaign_id || null, owner?.customer_id || null, fromAddress, messageId,
        subject, bodyText, receivedAt, mailboxId || null, ownerUserId, confirmStatus,
        classification, classificationSource, classificationReason,
@@ -123,7 +131,10 @@ async function processFetchedMessage(message, mailboxId, ownerUserId = null) {
        parseOk ? parsed.signatureText : null,
        rawSource,
        parseOk ? 'ok' : 'failed',
-       parseOk ? null : String(parsed?.parseError || 'IMAP 未返回邮件原始源').slice(0, 2000)]
+       parseOk ? null : String(parsed?.parseError || 'IMAP 未返回邮件原始源').slice(0, 2000), key,
+       seen ? 1 : 0, !seen && !filterRule && !systemMail.isSystem ? 'pending' : 'excluded',
+       !seen && !filterRule && !systemMail.isSystem ? 'pending' : null,
+       !seen && !filterRule && !systemMail.isSystem ? new Date() : null]
     );
     if (result.id) {
       await assignThreadSafely({
@@ -140,13 +151,13 @@ async function processFetchedMessage(message, mailboxId, ownerUserId = null) {
         , ownerUserId
       });
     }
-    if (owner?.customer_id && !filterRule && !systemMail.isSystem) {
+    if (!seen && owner?.customer_id && !filterRule && !systemMail.isSystem) {
       await emailReplyPoller.markWaitingReply(owner.campaign_id, owner.customer_id);
     }
     const asOwner = (fn) => requestContext.runWithUser({ id: ownerUserId }, fn);
     if (result.id && systemMail.isSystem) asOwner(() => emailBounceService.processSystemMail(result.id)).catch(() => {});
-    if (result.id && owner?.customer_id && !filterRule && !systemMail.isSystem) asOwner(() => emailReplyPoller.summarizeReply(result.id)).catch(() => {});
-    if (result.id && !owner?.customer_id && !filterRule && !systemMail.isSystem) asOwner(() => emailFilterService.classifyStoredReply(result.id)).catch(() => {});
+    if (result.id) await emailTriage.enqueue(result.id, seen);
+
     return { matched: Boolean(owner?.customer_id), replyId: result.id || null };
   } catch (error) {
     // Message-ID 唯一索引兜底：并发重复按已处理对待
@@ -162,23 +173,39 @@ async function fetchNew(worker, activeClient = worker.client) {
   const settings = worker.settings;
   try {
     let lastUid = Number(settings.last_uid) || 0;
-    if (!lastUid) {
-      // 首次初始化：只收启用之后的新邮件，历史邮件由一次性导入补齐
-      lastUid = Math.max(0, Number(activeClient.mailbox?.uidNext || 1) - 1);
-      await dbOperations.run('UPDATE email_settings SET last_uid = ? WHERE id = ?', [lastUid, settings.id]);
-      return { fetched: 0, matched: 0, unmatched: 0, initialized: true };
-    }
-
+    const uidValidity = String(activeClient.mailbox?.uidValidity || '');
     let fetched = 0;
     let matched = 0;
     let unmatched = 0;
+    // Every sweep includes historical unread mail, including mail older than the UID cursor.
+    // Persist before advancing the cursor; never change IMAP flags.
+    const unread = (await activeClient.search({ seen: false }, { uid: true })) || [];
+    const scanned = new Set();
+    const consume = async (message) => {
+      const outcome = await processFetchedMessage(message, settings.id, settings.owner_user_id, uidValidity);
+      scanned.add(message.uid);
+      if (!outcome.duplicate) {
+        fetched += 1;
+        if (outcome.matched) matched += 1;
+        else unmatched += 1;
+      }
+    };
+    for (let offset = 0; offset < unread.length; offset += 100) {
+      for await (const message of activeClient.fetch(unread.slice(offset, offset + 100),
+        { envelope: true, flags: true, bodyParts: ['text'], source: true }, { uid: true })) {
+        if (message?.uid) await consume(message);
+      }
+    }
+    if (!lastUid) {
+      lastUid = Math.max(0, Number(activeClient.mailbox?.uidNext || 1) - 1);
+      await dbOperations.run('UPDATE email_settings SET last_uid = ? WHERE id = ?', [lastUid, settings.id]);
+      settings.last_uid = lastUid;
+      return { fetched, matched, unmatched, initialized: true };
+    }
     const range = `${lastUid + 1}:*`;
-    for await (const message of activeClient.fetch(range, { envelope: true, bodyParts: ['text'], source: true }, { uid: true })) {
+    for await (const message of activeClient.fetch(range, { envelope: true, flags: true, bodyParts: ['text'], source: true }, { uid: true })) {
       if (!message?.uid || message.uid <= lastUid) continue;
-      const outcome = await processFetchedMessage(message, settings.id, settings.owner_user_id);
-      fetched += 1;
-      if (outcome.duplicate) { /* 不计入 */ } else if (outcome.matched) matched += 1;
-      else unmatched += 1;
+      if (!scanned.has(message.uid)) await consume(message);
       lastUid = message.uid;
       settings.last_uid = lastUid;
       worker.state.lastMailAt = new Date();
@@ -272,6 +299,7 @@ function startWorker(settings) {
     console.log(`[email] 回复追踪（${settings.username}）：定时轮询模式，每 ${minutes} 分钟一次。`);
     worker.pollTimer = setInterval(() => pollOnceLive(worker), minutes * 60 * 1000);
     worker.pollTimer.unref();
+    pollOnceLive(worker).catch(() => {});
     return worker;
   }
   console.log(`[email] 回复追踪（${settings.username}）：实时监听模式（IMAP IDLE）。`);
@@ -288,6 +316,7 @@ async function stopWorker(worker) {
 }
 
 async function stopMachinery() {
+  emailTriage.stop();
   if (fullScanTimer) { clearInterval(fullScanTimer); fullScanTimer = null; }
   for (const worker of workers.values()) await stopWorker(worker);
   workers.clear();
@@ -297,6 +326,7 @@ async function startEmailSync() {
   // 测试环境不建立真实连接（node --test 默认 NODE_ENV=test）
   if (process.env.NODE_ENV === 'test') return;
   await stopMachinery();
+  emailTriage.start();
   const backfilled = await emailBounceService.backfillSystemMails().catch((error) => {
     console.error('[email] 历史系统邮件整理失败:', error.message);
     return 0;

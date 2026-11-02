@@ -26,7 +26,12 @@ function fakeClient({ uidNext = 101, messages = [] } = {}) {
     mailbox: { uidNext, exists: messages.length },
     usable: true,
     on() {},
-    async *fetch() { for (const message of messages) yield message; },
+    async search() { return messages.filter(m => !m.flags?.has('\\Seen')).map(m => m.uid); },
+    async *fetch(range) {
+      for (const message of messages) {
+        if (Array.isArray(range) ? range.includes(message.uid) : message.uid >= Number(String(range).split(':')[0])) yield message;
+      }
+    },
     async messageFlagsAdd() { calls.flagsAdd += 1; },
     async connect() {},
     async mailboxOpen() {},
@@ -118,15 +123,38 @@ const baseSettings = {
   username: 'u@test.com', password: 'secret', sync_mode: 'idle', last_uid: 100
 };
 
-test('first connection initializes the UID cursor to the current mailbox high-water mark', async () => {
+test('read mail is archived without AI or todo; historical unread is still enrolled below the cursor', async () => {
+  const db = mockDb({ matchedEmails: { 'kol@example.com': 7 } });
+  try {
+    const read = makeMail(102); read.flags = new Set(['\\Seen']);
+    const unread = makeMail(50); unread.flags = new Set();
+    const client = fakeClient({ messages: [unread, read] });
+    await liveSync.fetchNew(makeWorkerForTest(client, { ...baseSettings }));
+    assert.equal(db.inserts.length, 2);
+    assert.equal(db.inserts.find(p => p[4] === '<m50@test>')[25], 'pending');
+    assert.equal(db.inserts.find(p => p[4] === '<m102@test>')[25], 'excluded');
+    assert.equal(client.calls.flagsAdd, 0);
+  } finally { db.restore(); }
+});
+
+test('cursor never advances after unread persistence fails, permitting recovery', async () => {
+  const db = mockDb({ throwOnInsert: new Error('database unavailable') });
+  try {
+    const client = fakeClient({ messages: [makeMail(101)] });
+    await assert.rejects(liveSync.fetchNew(makeWorkerForTest(client, { ...baseSettings })), /database unavailable/);
+    assert.deepEqual(db.uidWrites, []);
+  } finally { db.restore(); }
+});
+
+test('first connection imports historical unread mail before initializing the UID cursor', async () => {
   const settings = { ...baseSettings, last_uid: 0 };
   const db = mockDb({ settings });
   try {
     const client = fakeClient({ uidNext: 250, messages: [makeMail(249)] });
     const result = await liveSync.fetchNew(makeWorkerForTest(client, settings));
-    assert.deepEqual(result, { fetched: 0, matched: 0, unmatched: 0, initialized: true });
+    assert.deepEqual(result, { fetched: 1, matched: 0, unmatched: 1, initialized: true });
     assert.deepEqual(db.uidWrites, [249], 'cursor initialized to uidNext-1 so history is not re-imported');
-    assert.equal(db.inserts.length, 0);
+    assert.equal(db.inserts.length, 1);
   } finally {
     db.restore();
   }
@@ -166,7 +194,7 @@ test('message_id dedupe skips already imported mail', async () => {
   try {
     const client = fakeClient({ messages: [makeMail(101)] });
     const result = await liveSync.fetchNew(makeWorkerForTest(client, settings));
-    assert.equal(result.fetched, 1);
+    assert.equal(result.fetched, 0);
     assert.equal(result.matched, 0);
     assert.equal(db.inserts.length, 0);
   } finally {
@@ -183,14 +211,14 @@ test('a unique-constraint race is treated as a duplicate instead of an error', a
   try {
     const client = fakeClient({ messages: [makeMail(101)] });
     const result = await liveSync.fetchNew(makeWorkerForTest(client, settings));
-    assert.equal(result.fetched, 1);
+    assert.equal(result.fetched, 0);
     assert.deepEqual(db.uidWrites, [101], 'cursor still advances past the duplicate');
   } finally {
     db.restore();
   }
 });
 
-test('AI summary runs for matched replies only, not for unmatched', async () => {
+test('both known and unknown unread replies are queued without calling the legacy summarizer', async () => {
   const summarized = [];
   const original = emailReplyPoller.summarizeReply;
   emailReplyPoller.summarizeReply = async (id) => { summarized.push(id); };
@@ -201,7 +229,9 @@ test('AI summary runs for matched replies only, not for unmatched', async () => 
       messages: [makeMail(101, { from: 'kol@example.com' }), makeMail(102, { from: 'ad@spam.cn' })]
     });
     await liveSync.fetchNew(makeWorkerForTest(client, settings));
-    assert.equal(summarized.length, 1, 'only the matched reply is summarized');
+    assert.equal(summarized.length, 0, 'AI is handled by the persistent queue');
+    assert.equal(db.inserts[0][25], 'pending');
+    assert.equal(db.inserts[1][25], 'pending');
   } finally {
     emailReplyPoller.summarizeReply = original;
     db.restore();

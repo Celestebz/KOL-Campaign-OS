@@ -194,7 +194,7 @@ function parseAiContentRobust(content) {
 }
 
 // 按 provider 分发 AI 调用，返回 { parsed, raw, model, content }。
-async function callAi(setting, provider, systemPrompt, userPrompt) {
+async function callAi(setting, provider, systemPrompt, userPrompt, options = {}) {
   if (!setting?.api_key) throw new Error(`${PROVIDER_LABELS[provider] || provider} API Key is not configured`);
 
   if (provider === 'minimax') {
@@ -207,6 +207,7 @@ async function callAi(setting, provider, systemPrompt, userPrompt) {
         ? configuredBase
         : `${configuredBase}/v1/messages`;
       const data = await fetchJson(endpoint, {
+        signal: options.signal,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -234,6 +235,7 @@ async function callAi(setting, provider, systemPrompt, userPrompt) {
       : `${configuredBase.replace(/\/v1$/i, '')}/v1/text/chatcompletion_v2`;
     const modern = endpoint.endsWith('/chat/completions');
     const data = await fetchJson(endpoint, {
+      signal: options.signal,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -268,6 +270,7 @@ async function callAi(setting, provider, systemPrompt, userPrompt) {
   if (!baseUrl) throw new Error(`${PROVIDER_LABELS[provider] || provider} Base URL is not configured`);
   const model = setting.model || (provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini');
   const data = await fetchJson(`${baseUrl}/chat/completions`, {
+    signal: options.signal,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -293,13 +296,13 @@ async function getActiveAiSetting() {
   return { provider, setting };
 }
 
-async function callActiveAi(systemPrompt, userPrompt) {
+async function callActiveAi(systemPrompt, userPrompt, options = {}) {
   const { provider, setting } = await getActiveAiSetting();
   if (provider === 'custom_http_api') throw new Error('Custom HTTP API 当前仅预留，暂不可用于分析');
   if (!['minimax', 'openai', 'deepseek', 'custom_openai_compatible'].includes(provider)) {
     throw new Error(`${PROVIDER_LABELS[provider] || provider} 当前暂不可用于 AI 分析`);
   }
-  return callAi(setting, provider, systemPrompt, userPrompt);
+  return callAi(setting, provider, systemPrompt, userPrompt, options);
 }
 
 module.exports = {
