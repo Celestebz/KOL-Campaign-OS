@@ -12,7 +12,7 @@ import {
   getEmailSettings, createEmailMailbox, saveEmailSettings, deleteEmailMailbox, setDefaultEmailMailbox, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
-  getReplyTodos, getUnmatchedReplies, getBlockedReplies, getSystemEmails, bindReply, confirmReply, ignoreReply,
+  getBlockedReplies, getSystemEmails, bindReply, confirmReply, ignoreReply,
   markReplyManuallyHandled, retryReplySummary, blockReply, restoreReply,
   getEmailFilterRules, createEmailFilterRule, setEmailFilterRuleActive, deleteEmailFilterRule,
   getApprovalDashboardSummary
@@ -639,6 +639,10 @@ function RepliesTab() {
   const [report, setReport] = useState([]);
   const [category, setCategory] = useState();
   const [viewMode, setViewMode] = useState('pending');
+  const [senderScope, setSenderScope] = useState();
+  const [syncStatus, setSyncStatus] = useState([]);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState('');
   const [binding, setBinding] = useState(null);
   const [bindCustomerId, setBindCustomerId] = useState(null);
   const [bindOptions, setBindOptions] = useState([]);
@@ -657,9 +661,11 @@ function RepliesTab() {
     if (!silent) setLoading(true);
     try {
       if (viewMode === 'pending' || viewMode === 'done') {
-        const response = await axios.get('/api/emails/triage', { params: {
-          state: viewMode, page, mailbox_id: mailboxId, category
-        } });
+        const [response, statuses] = await Promise.all([
+          axios.get('/api/emails/triage', { params: { state: viewMode, page, mailbox_id: mailboxId, category, sender: senderScope } }),
+          getEmailSyncStatus()
+        ]);
+        setSyncStatus(statuses);
         const data = response.data.data;
         if (version !== fetchVersion.current) return;
         if (viewMode === 'pending' && prevCountRef.current !== null && data.total > prevCountRef.current) {
@@ -672,14 +678,7 @@ function RepliesTab() {
         setReport(data.report || []);
         return;
       }
-      const rows = viewMode === 'unmatched'
-        ? await getUnmatchedReplies(mailboxId)
-        : (viewMode === 'blocked'
-          ? await getBlockedReplies(mailboxId)
-          : (viewMode === 'system' ? await getSystemEmails(mailboxId) : await getReplyTodos(mailboxId)));
-      if (viewMode === 'pending' && prevCountRef.current !== null && rows.length > prevCountRef.current) {
-        message.info(`收到 ${rows.length - prevCountRef.current} 条新回复`);
-      }
+      const rows = viewMode === 'blocked' ? await getBlockedReplies(mailboxId) : await getSystemEmails(mailboxId);
       if (version !== fetchVersion.current) return;
       prevCountRef.current = rows.length;
       setReplies(rows);
@@ -688,7 +687,7 @@ function RepliesTab() {
     } finally {
       if (version === fetchVersion.current) setLoading(false);
     }
-  }, [viewMode, mailboxId, page, category]);
+  }, [viewMode, mailboxId, page, category, senderScope]);
 
   useEffect(() => { fetchReplies(); }, [fetchReplies]);
   useEffect(() => { getEmailSettings().then((rows) => setMailboxes(rows || [])).catch(() => {}); }, []);
@@ -698,6 +697,16 @@ function RepliesTab() {
     const timer = setInterval(() => fetchReplies({ silent: true }), 10000);
     return () => clearInterval(timer);
   }, [fetchReplies]);
+
+  const syncUnread = async () => {
+    setSyncing(true); setSyncError('');
+    try { await syncEmailNow(mailboxId); message.success('未读邮件已同步，无需等待 AI 分类即可处理'); }
+    catch (error) { setSyncError(error.response?.data?.error || '同步失败，请检查邮箱连接后重试'); }
+    finally { setSyncing(false); fetchReplies(); }
+  };
+  const visibleSync = syncStatus.filter(s => !mailboxId || s.mailbox_id === mailboxId);
+  const scanComplete = visibleSync.length > 0 && visibleSync.every(s => s.last_unread_scan_at);
+  const scanFailed = syncError || visibleSync.some(s => s.unread_scan_error);
 
   const changeView = (event) => {
     prevCountRef.current = null;
@@ -825,7 +834,7 @@ function RepliesTab() {
     setBindSaving(true);
     try {
       await bindReply(binding.id, bindCustomerId);
-      message.success('已绑定 KOL，AI 摘要生成中');
+      message.success('已关联红人，邮件仍保留在统一待办');
       setBinding(null);
       fetchReplies();
     } catch (error) {
@@ -836,7 +845,7 @@ function RepliesTab() {
   };
 
   const pendingColumns = [
-    { title: 'KOL／发件人', dataIndex: 'kol_name', width: 170, render: (v, r) => v || r.from_address },
+    { title: '发件人', dataIndex: 'kol_name', width: 190, render: (v, r) => <div>{v || r.from_address}{!r.customer_id && <div><Tag>陌生发件人</Tag></div>}</div> },
     { title: '分类／优先级', width: 180, render: (_, r) => {
       const priority = MAIL_PRIORITIES[r.business_priority];
       return <Space direction="vertical" size={2}>
@@ -914,25 +923,6 @@ function RepliesTab() {
     }
   ];
 
-  const unmatchedColumns = [
-    { title: '发件人', dataIndex: 'from_address', width: 220, render: (v) => v || '-' },
-    { title: '收件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
-    { title: '收到时间', dataIndex: 'received_at', width: 160,
-      render: (v) => (v ? new Date(v).toLocaleString('zh-CN') : '-') },
-    { title: '主题', dataIndex: 'subject', width: 220, ellipsis: true },
-    {
-      title: '操作', width: 240, render: (_, record) => (
-        <Space size={[0, 4]} wrap>
-          <Button type="link" size="small" onClick={() => openBind(record)}>绑定 KOL</Button>
-          <Popconfirm title="忽略这条回复？" onConfirm={() => handleIgnore(record)}>
-            <Button type="link" size="small" danger>忽略</Button>
-          </Popconfirm>
-          <Button type="link" size="small" danger onClick={() => openBlock(record)}>标记为屏蔽</Button>
-        </Space>
-      )
-    }
-  ];
-
   const blockedColumns = [
     { title: '发件人', dataIndex: 'from_address', width: 220, render: (v) => v || '-' },
     { title: '收件邮箱', dataIndex: 'mailbox_label', width: 130, render: (v, r) => v || r.mailbox_username || '-' },
@@ -978,8 +968,12 @@ function RepliesTab() {
         showIcon
         style={{ marginBottom: 12 }}
         message="邮件待办"
-        description="这里集中显示当前轮到我方处理的 KOL 来信；确认意向不会清除待办。通过系统发送回复，或标记“已人工回复”后，待办才会完成。"
+        description="已认识的红人和陌生发件人的未读来信统一进入这里，不必先绑定红人或项目；AI 在后台分类，分析失败也不会隐藏邮件。点“已处理”完成待办。"
       />
+      <Alert style={{ marginBottom: 12 }} showIcon type={scanFailed ? 'error' : scanComplete ? 'success' : 'warning'}
+        message={syncing ? '正在同步未读邮件，邮件会陆续进入待处理' : scanFailed ? '未读邮件同步失败，列表可能不完整' : scanComplete ? '已完成未读邮件扫描' : '尚未完成未读邮件同步，空列表不代表没有待办'}
+        description={syncError || (scanComplete ? visibleSync.map(s => `${s.label || '邮箱'}：${new Date(s.last_unread_scan_at).toLocaleString('zh-CN')}`).join('；') : '请同步邮箱未读邮件。陌生来信直接进入待办，AI 分类和关联红人均不是前置条件。')}
+        action={<Button loading={syncing} onClick={syncUnread}>同步未读邮件</Button>} />
       <Space style={{ marginBottom: 12 }} wrap>
         <Radio.Group
           value={viewMode}
@@ -987,7 +981,6 @@ function RepliesTab() {
           options={[
             { value: 'pending', label: '待处理' },
             { value: 'done', label: '已处理' },
-            { value: 'unmatched', label: '未识别回复' },
             { value: 'system', label: '系统邮件/退信' },
             { value: 'blocked', label: '已屏蔽邮件' }
           ]}
@@ -1022,15 +1015,17 @@ function RepliesTab() {
           onChange={(value) => { prevCountRef.current = null; setCategory(value); setPage(1); }}
           options={Object.entries(MAIL_CATEGORIES).map(([value, label]) => ({ value, label }))} />
       </>}
+      {(viewMode === 'pending' || viewMode === 'done') && <Select allowClear placeholder="全部发件人" style={{ width: 180, marginBottom: 12, marginLeft: 8 }}
+        value={senderScope} onChange={(value) => { prevCountRef.current = null; setSenderScope(value); setPage(1); }}
+        options={[{ value: 'unknown', label: '陌生发件人' }, { value: 'known', label: '已关联红人' }]} />}
       <Table
-        rowKey="id" loading={loading}
+        rowKey="id" loading={loading || syncing}
+        locale={{ emptyText: viewMode === 'pending' ? (scanFailed ? '同步失败，请重试；现有邮件不会被隐藏' : !scanComplete ? '尚未完成未读同步，请点击“同步未读邮件”' : category || senderScope ? '当前筛选下没有待办，可清除筛选查看全部' : '已扫描未读邮件，当前没有待处理事项') : '暂无记录' }}
         pagination={viewMode === 'pending' || viewMode === 'done' ? {
           current: page, pageSize: 30, total, showSizeChanger: false, onChange: setPage,
           showTotal: (count) => `共 ${count} 封`
         } : undefined}
-        columns={viewMode === 'unmatched'
-          ? unmatchedColumns
-          : (viewMode === 'blocked' ? blockedColumns : (viewMode === 'system' ? systemColumns : pendingColumns))}
+        columns={viewMode === 'blocked' ? blockedColumns : (viewMode === 'system' ? systemColumns : pendingColumns)}
         dataSource={replies}
         scroll={viewMode === 'pending' ? { x: 1660 } : undefined}
         expandable={{

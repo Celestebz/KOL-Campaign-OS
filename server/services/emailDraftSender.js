@@ -117,6 +117,15 @@ function buildFollowUpSendContext(draft, previousRecord) {
   };
 }
 
+async function resolveRecipient(draft) {
+  if (draft.kind === 'reply' && !draft.customer_id && draft.source_reply_id) {
+    const source = await dbOperations.get('SELECT from_address FROM email_replies WHERE id = ? AND owner_user_id = ?',
+      [draft.source_reply_id, draft.owner_user_id]);
+    return source ? { id: null, name: source.from_address, email: source.from_address } : null;
+  }
+  return dbOperations.get('SELECT id, name, email FROM customers WHERE id = ?', [draft.customer_id]);
+}
+
 async function sendApprovedDraft(draftId) {
   const claim = await dbOperations.run(
     `UPDATE email_drafts SET status = 'sending', updated_at = NOW()
@@ -153,10 +162,7 @@ async function sendApprovedDraft(draftId) {
     ? `草稿和活动绑定的邮箱不可用或未配置，已改用默认邮箱 ${settings.username} 发送`
     : null;
 
-  const customer = await dbOperations.get(
-    'SELECT id, name, email FROM customers WHERE id = ?',
-    [draft.customer_id]
-  );
+  const customer = await resolveRecipient(draft);
   if (!customer?.email) {
     await markFailed(draft.id);
     throw actionError('达人无邮箱地址', 400);
@@ -236,6 +242,9 @@ async function sendApprovedDraft(draftId) {
     [draft.id]
   );
   await markOutreachAfterSend(draft);
+  if (draft.kind === 'reply' && draft.source_reply_id && draft.owner_user_id) {
+    await require('./emailTriage').setDone(draft.source_reply_id, true, draft.owner_user_id);
+  }
   const result = { draft_id: draft.id, message_id: messageId, to: customer.email, warning: sendWarning };
   if (sendCtx && sendCtx.threadingMissing) result.threading_missing = true;
   return result;
@@ -248,10 +257,7 @@ async function confirmManuallySent(draftId) {
     throw actionError('仅发送中或发送结果待确认的草稿可人工确认', 409);
   }
 
-  const customer = await dbOperations.get(
-    'SELECT id, name, email FROM customers WHERE id = ?',
-    [draft.customer_id]
-  );
+  const customer = await resolveRecipient(draft);
   const note = '已由人工确认通过网页邮箱发送';
   const updated = await dbOperations.run(
     `UPDATE email_drafts SET status = 'sent', reviewer_note = CONCAT_WS('\n', NULLIF(reviewer_note, ''), ?), updated_at = NOW()
@@ -276,6 +282,9 @@ async function confirmManuallySent(draftId) {
     }
   }
   await markOutreachAfterSend(draft);
+  if (draft.kind === 'reply' && draft.source_reply_id && draft.owner_user_id) {
+    await require('./emailTriage').setDone(draft.source_reply_id, true, draft.owner_user_id);
+  }
   // 人工确认的跟进草稿：与系统自动起草一样需要计入 follow_up_count，
   // 否则 48h 后系统仍会按"还有跟进名额"再起草一封与人工跟进重复的草稿。
   if (draft.kind === 'follow_up') {

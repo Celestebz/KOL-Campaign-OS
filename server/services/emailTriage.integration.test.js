@@ -9,6 +9,8 @@ const ai = require('./aiClient');
 const live = require('./emailLiveSync');
 const threader = require('./emailThreader');
 const migration = require('../migrations/20261102000001-email-triage-todos');
+const { runWithUser } = require('../utils/requestContext');
+const mailer = require('./mailer');
 
 test('MySQL isolated-table lifecycle: migration, unread intake, completion, duplicate, new reply, restore, retry',
   { skip: process.env.RUN_EMAIL_TRIAGE_DB_TESTS !== '1' }, async t => {
@@ -16,14 +18,15 @@ test('MySQL isolated-table lifecycle: migration, unread intake, completion, dupl
     // All mutations are rewritten to fresh prefixed fixture tables. Existing rows are never read or written.
     const sql = new Sequelize.Sequelize(config.database, config.username, config.password,
       { ...config, logging: false, pool: { max: 1, min: 1, idle: 60000 } });
-    const tables = ['email_replies', 'email_records', 'customers', 'campaigns', 'campaign_kols', 'email_filter_rules', 'email_settings'];
+    const tables = ['email_replies', 'email_records', 'customers', 'campaigns', 'campaign_kols', 'email_filter_rules', 'email_settings', 'email_drafts', 'email_draft_versions', 'approval_items'];
     const prefix = `mail_triage_test_${randomBytes(6).toString('hex')}_`;
     const created = [];
-    const rewrite = query => query.replace(/\b(email_replies|email_records|customers|campaigns|campaign_kols|email_filter_rules|email_settings)\b/g, name => prefix + name);
-    const original = { ...db, ai: ai.callActiveAi, assign: threader.assignReplyThread };
+    const rewrite = query => query.replace(/\b(email_replies|email_records|customers|campaigns|campaign_kols|email_filter_rules|email_settings|email_drafts|email_draft_versions|approval_items)\b/g, name => prefix + name);
+    const original = { ...db, ai: ai.callActiveAi, assign: threader.assignReplyThread, assignRecord: threader.assignRecordThread, send: mailer.sendMail };
     t.after(async () => {
       Object.assign(db, { query: original.query, get: original.get, run: original.run });
       ai.callActiveAi = original.ai; threader.assignReplyThread = original.assign;
+      threader.assignRecordThread = original.assignRecord; mailer.sendMail = original.send;
       try {
         for (const table of created.reverse()) {
           assert.ok(table.startsWith(prefix));
@@ -36,10 +39,11 @@ test('MySQL isolated-table lifecycle: migration, unread intake, completion, dupl
       created.push(prefix + table);
     }
     const realQ = sql.getQueryInterface();
-    const q = Object.fromEntries(['describeTable', 'addColumn', 'showIndex', 'addIndex', 'removeIndex'].map(method =>
+    const q = Object.fromEntries(['describeTable', 'addColumn', 'showIndex', 'addIndex', 'removeIndex', 'changeColumn'].map(method =>
       [method, (table, ...args) => realQ[method](prefix + table, ...args)]));
     await migration.up(q, Sequelize);
     await migration.up(q, Sequelize);
+    await require('../migrations/20261106000001-unified-inbound-email').up(q, Sequelize);
     db.query = (query, params = []) => sql.query(rewrite(query), { replacements: params, type: Sequelize.QueryTypes.SELECT });
     db.get = async (query, params = []) => (await db.query(query, params))[0] || null;
     db.run = async (query, params = []) => {
@@ -126,4 +130,36 @@ test('MySQL isolated-table lifecycle: migration, unread intake, completion, dupl
       triage_lease = 'abandoned', triage_lease_until = DATE_SUB(NOW(), INTERVAL 1 MINUTE) WHERE id = ?`, [fresh.replyId]);
     await triage.drain();
     assert.equal((await db.get('SELECT triage_status FROM email_replies WHERE id = ?', [fresh.replyId])).triage_status, 'failed');
+    // First-contact lifecycle with real SQL; SMTP and AI are stubbed, never sent externally.
+    assert.equal((await getPage({ sender: 'unknown' })).total, 38);
+    assert.equal((await getPage({ sender: 'known' })).total, 0);
+    await db.run(`INSERT INTO email_settings (id, owner_user_id, username, enabled, is_default)
+      VALUES (10, 20, 'brand@example.test', 1, 1)`);
+    const drafter = require('./inboundReplyDrafter');
+    ai.callActiveAi = async () => ({ parsed: { subject: 'Re: Video for review', body_text: 'Thank you. We will review the video.' }, model: 'test' });
+    const newDraft = await runWithUser({ id: 20 }, () => drafter.draftInboundReply({ sourceReplyId: fresh.replyId }));
+    assert.equal(newDraft.ok, true, newDraft.error);
+    const again = await runWithUser({ id: 20 }, () => drafter.draftInboundReply({ sourceReplyId: fresh.replyId }));
+    assert.equal(again.draftId, newDraft.draftId);
+    assert.equal(again.skipped, true);
+    const forbidden = await runWithUser({ id: 21 }, () => drafter.draftInboundReply({ sourceReplyId: fresh.replyId }));
+    assert.equal(forbidden.ok, false);
+    const draft = await db.get('SELECT * FROM email_drafts WHERE id = ?', [newDraft.draftId]);
+    assert.equal(draft.customer_id, null);
+    assert.equal(draft.campaign_id, null);
+    await db.run("UPDATE email_drafts SET status = 'approved' WHERE id = ?", [draft.id]);
+    threader.assignRecordThread = async () => ({});
+    let deliveries = 0;
+    mailer.sendMail = async options => {
+      deliveries++;
+      assert.equal(options.to, 'creator@triage.test');
+      assert.equal(options.settings.id, 10);
+      assert.equal(options.inReplyTo, '<test-3@triage>');
+      return { messageId: '<sent@triage.test>' };
+    };
+    await require('./emailDraftSender').sendApprovedDraft(draft.id);
+    assert.equal(deliveries, 1);
+    assert.equal((await db.get('SELECT todo_status FROM email_replies WHERE id = ?', [fresh.replyId])).todo_status, 'done');
+    assert.equal((await db.get('SELECT COUNT(*) n FROM customers')).n, 0);
+    assert.equal((await db.get('SELECT COUNT(*) n FROM campaigns')).n, 0);
   });

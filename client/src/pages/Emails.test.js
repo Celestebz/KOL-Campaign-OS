@@ -31,9 +31,9 @@ beforeAll(() => {
 function mockApi() {
   axios.get.mockImplementation((url, config) => {
     if (url === '/api/emails/replies' || url === '/api/emails/triage') {
-      if (config?.params?.scope === 'unmatched') {
+      if (config?.params?.sender === 'unknown') {
         return Promise.resolve({
-          data: { data: [{ id: 9, from_address: 'ad@x.com', subject: '促销邮件', received_at: '2026-07-27T06:00:00Z', body_text: '', mailbox_label: '默认邮箱' }] }
+          data: { data: { rows: [{ id: 9, from_address: 'ad@x.com', subject: '首次来信', received_at: '2026-07-27T06:00:00Z', body_text: '', mailbox_label: '默认邮箱' }], total: 1, report: [] } }
         });
       }
       return Promise.resolve({
@@ -141,15 +141,19 @@ test('未读待办可人工完成和恢复，汇报统计不受当前页限制',
   expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/15/reopen');
 }, 30000);
 
-test('未识别回复列表支持绑定 KOL', async () => {
+test('陌生来信在统一待办里直接显示且可选关联红人', async () => {
   render(<Emails />);
   await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
-  await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/emails/triage', { params: { state: 'pending', page: 1, mailbox_id: undefined, category: undefined } }));
+  await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/emails/triage', { params: { state: 'pending', page: 1, mailbox_id: undefined, category: undefined, sender: undefined } }));
   expect(await screen.findByText('Alice')).toBeInTheDocument();
 
-  await userEvent.click(screen.getByText('未识别回复'));
+  expect(screen.queryByText('未识别回复')).not.toBeInTheDocument();
+  await userEvent.click(screen.getByText('全部发件人').closest('.ant-select').querySelector('.ant-select-selector'));
+  await userEvent.click(await screen.findByText('陌生发件人'));
   expect(await screen.findByText('ad@x.com')).toBeInTheDocument();
-  expect(axios.get).toHaveBeenCalledWith('/api/emails/replies', { params: { scope: 'unmatched' } });
+  expect(axios.get).toHaveBeenCalledWith('/api/emails/triage', expect.objectContaining({ params: expect.objectContaining({ sender: 'unknown' }) }));
+  expect(screen.getByRole('button', { name: '已处理' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /查看／回复/ })).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: '绑定 KOL' }));
   const dialog = await screen.findByRole('dialog');
@@ -162,7 +166,7 @@ test('未识别回复列表支持绑定 KOL', async () => {
   axios.post.mockResolvedValue({ data: { success: true, data: { id: 9, customer_id: 7 } } });
   await userEvent.click(within(dialog).getByRole('button', { name: /绑\s*定/ }));
   await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/9/bind', { customer_id: 7 }));
-  await waitFor(() => expect(message.success).toHaveBeenCalledWith('已绑定 KOL，AI 摘要生成中'));
+  await waitFor(() => expect(message.success).toHaveBeenCalledWith('已关联红人，邮件仍保留在统一待办'));
 }, 30000);
 
 test('邮件待办为 AI 摘要保留可读宽度，并可悬浮查看完整内容', async () => {

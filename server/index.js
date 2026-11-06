@@ -125,6 +125,8 @@ async function startServer() {
     await initDatabase();
     // 测试环境（NODE_ENV=test）不启动真实 IMAP 轮询与跟进定时器
     if (process.env.NODE_ENV !== 'test') {
+      // Classification is independent of mailbox polling and scheduled outgoing follow-ups.
+      require('./services/emailTriage').start();
       // 阶段 D 任务失败恢复：遗留 running 的后台任务/ Finder 任务标记为“服务重启中断”，
       // 工作台异常队列可见，retry 从 checkpoint 断点续跑
       const automationRuns = require('./services/automationRuns');

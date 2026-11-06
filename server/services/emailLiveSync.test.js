@@ -146,6 +146,32 @@ test('cursor never advances after unread persistence fails, permitting recovery'
   } finally { db.restore(); }
 });
 
+test('opening an email during download does not discard the observed unread todo', async () => {
+  const db = mockDb();
+  try {
+    const mail = makeMail(50); mail.flags = new Set(['\\Seen']);
+    const client = fakeClient({ messages: [mail] });
+    client.search = async () => [50]; // The unread snapshot preceded the user opening it.
+    await liveSync.fetchNew(makeWorkerForTest(client, { ...baseSettings }));
+    assert.equal(db.inserts[0][25], 'pending');
+    assert.equal(client.calls.flagsAdd, 0);
+  } finally { db.restore(); }
+});
+
+test('already stored unread mail is enrolled without downloading its body again', async () => {
+  const db = mockDb({ existingMessageIds: new Set(['<m50@test>']) });
+  try {
+    const client = fakeClient({ messages: [makeMail(50)] });
+    const fetches = [];
+    const originalFetch = client.fetch;
+    client.fetch = function (range, query) { fetches.push({ range, query }); return originalFetch(range, query); };
+    await liveSync.fetchNew(makeWorkerForTest(client, { ...baseSettings }));
+    assert.equal(db.inserts.length, 0);
+    assert.equal(fetches[0].query.source, undefined);
+    assert.ok(!fetches.some(call => Array.isArray(call.range) && call.query.source));
+  } finally { db.restore(); }
+});
+
 test('first connection imports historical unread mail before initializing the UID cursor', async () => {
   const settings = { ...baseSettings, last_uid: 0 };
   const db = mockDb({ settings });

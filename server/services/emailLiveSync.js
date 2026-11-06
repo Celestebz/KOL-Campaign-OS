@@ -191,15 +191,37 @@ async function fetchNew(worker, activeClient = worker.client) {
       }
     };
     for (let offset = 0; offset < unread.length; offset += 100) {
+      const newUids = [];
+      // Existing unread mail already has its body in the database. Fetch headers
+      // first, so repeated scans do not download every old attachment again.
       for await (const message of activeClient.fetch(unread.slice(offset, offset + 100),
+        { envelope: true, flags: true }, { uid: true })) {
+        if (!message?.uid) continue;
+        const messageId = message.envelope?.messageId || `uid-${settings.id}-${uidValidity}-${message.uid}`;
+        const existing = await dbOperations.get(
+          'SELECT id FROM email_replies WHERE message_id = ? AND mailbox_id <=> ? AND owner_user_id <=> ? LIMIT 1',
+          [messageId, settings.id, settings.owner_user_id]);
+        if (existing) {
+          await emailTriage.enqueue(existing.id, false);
+          scanned.add(message.uid);
+        } else newUids.push(message.uid);
+      }
+      // IMAP commands are issued only after the previous iterator has finished.
+      if (newUids.length) for await (const message of activeClient.fetch(newUids,
         { envelope: true, flags: true, bodyParts: ['text'], source: true }, { uid: true })) {
-        if (message?.uid) await consume(message);
+        if (!message?.uid) continue;
+        // The unread search is the intake observation. Opening the email while
+        // its body downloads must not remove the already-observed todo.
+        message.flags = new Set(message.flags || []);
+        message.flags.delete('\\Seen');
+        await consume(message);
       }
     }
     if (!lastUid) {
       lastUid = Math.max(0, Number(activeClient.mailbox?.uidNext || 1) - 1);
       await dbOperations.run('UPDATE email_settings SET last_uid = ? WHERE id = ?', [lastUid, settings.id]);
       settings.last_uid = lastUid;
+      await dbOperations.run('UPDATE email_settings SET last_unread_scan_at = NOW(), unread_scan_error = NULL WHERE id = ?', [settings.id]);
       return { fetched, matched, unmatched, initialized: true };
     }
     const range = `${lastUid + 1}:*`;
@@ -211,7 +233,12 @@ async function fetchNew(worker, activeClient = worker.client) {
       worker.state.lastMailAt = new Date();
       await dbOperations.run('UPDATE email_settings SET last_uid = ? WHERE id = ?', [lastUid, settings.id]);
     }
+    await dbOperations.run('UPDATE email_settings SET last_unread_scan_at = NOW(), unread_scan_error = NULL WHERE id = ?', [settings.id]);
     return { fetched, matched, unmatched };
+  } catch (error) {
+    await dbOperations.run('UPDATE email_settings SET unread_scan_error = ? WHERE id = ?',
+      ['未读扫描失败，请重试或检查邮箱连接', settings.id]).catch(() => {});
+    throw error;
   } finally {
     worker.fetching = false;
   }
@@ -222,6 +249,7 @@ async function fetchNewSafe(worker, activeClient) {
     return await fetchNew(worker, activeClient);
   } catch (error) {
     worker.state.lastError = error.message;
+    await dbOperations.run('UPDATE email_settings SET unread_scan_error = ? WHERE id = ?', ['未读扫描失败，请重试或检查邮箱连接', worker.settings.id]).catch(() => {});
     return { fetched: 0, matched: 0, unmatched: 0, error: error.message };
   }
 }
@@ -272,7 +300,7 @@ async function pollOnceLive(worker) {
   const oneShot = makeClient(worker.settings);
   try {
     await oneShot.connect();
-    await oneShot.mailboxOpen('INBOX');
+    await oneShot.mailboxOpen('INBOX', { readOnly: true });
     const result = await fetchNewSafe(worker, oneShot);
     if (!result.error && !result.busy) worker.state.lastFullSyncAt = new Date();
     await oneShot.logout();
@@ -404,6 +432,7 @@ async function syncMailboxNow(settings) {
     return result;
   } catch (error) {
     try { await oneShot.logout(); } catch { /* ignore */ }
+    await dbOperations.run('UPDATE email_settings SET unread_scan_error = ? WHERE id = ?', ['未读扫描失败，请重试或检查邮箱连接', settings.id]).catch(() => {});
     throw error;
   }
 }
@@ -440,6 +469,8 @@ async function getEmailSyncStatus(ownerUserId = null) {
       status: worker?.state.status || 'off',
       last_mail_at: worker?.state.lastMailAt || null,
       last_full_sync_at: worker?.state.lastFullSyncAt || null,
+      last_unread_scan_at: row.last_unread_scan_at || null,
+      unread_scan_error: row.unread_scan_error || null,
       last_error: worker?.state.lastError || null,
       reconnect_attempts: worker?.state.reconnectAttempts || 0,
       connected_since: worker?.state.connectedSince || null

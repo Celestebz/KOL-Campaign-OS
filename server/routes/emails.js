@@ -32,6 +32,9 @@ const VARIABLE_LABELS = {
   cooperation_type: '合作方式',
   sender_name: '发件人署名'
 };
+const inboundReplyDrafter = require('../services/inboundReplyDrafter');
+const replyDrafter = (args) => (!args.campaignId || !args.customerId)
+  ? inboundReplyDrafter.draftInboundReply(args) : emailDrafter.draftForCustomer(args);
 const ownerId = (req) => Number(req.user?.id) || 1; // authGuard always supplies user in production; fallback keeps direct unit handlers deterministic.
 
 // Every route containing a private resource id is denied before its handler runs
@@ -427,7 +430,7 @@ router.get('/drafts', async (req, res) => {
     if (mailbox_id) { conditions.push('d.mailbox_id = ?'); params.push(Number(mailbox_id)); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const drafts = (await dbOperations.query(
-      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name, ms.label AS mailbox_label, ms.username AS mailbox_username,
+      `SELECT d.*, k.name AS kol_name, COALESCE((SELECT sr.from_address FROM email_replies sr WHERE sr.id = d.source_reply_id AND sr.owner_user_id = d.owner_user_id), k.email) AS recipient_email, c.name AS campaign_name, ms.label AS mailbox_label, ms.username AS mailbox_username,
         (SELECT er.to_address FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS sent_to_address,
         (SELECT er.status FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS delivery_status,
         (SELECT er.error FROM email_records er WHERE er.draft_id = d.id ORDER BY er.id DESC LIMIT 1) AS delivery_error,
@@ -461,7 +464,7 @@ router.get('/drafts', async (req, res) => {
 router.get('/drafts/:id', async (req, res) => {
   try {
     const draft = await dbOperations.get(
-      `SELECT d.*, k.name AS kol_name, k.email AS recipient_email, c.name AS campaign_name
+      `SELECT d.*, k.name AS kol_name, COALESCE((SELECT sr.from_address FROM email_replies sr WHERE sr.id = d.source_reply_id AND sr.owner_user_id = d.owner_user_id), k.email) AS recipient_email, c.name AS campaign_name
        FROM email_drafts d
        LEFT JOIN customers k ON k.id = d.customer_id
        LEFT JOIN campaigns c ON c.id = d.campaign_id
@@ -545,7 +548,7 @@ router.post('/drafts/:id/regenerate', async (req, res) => {
        VALUES (?, ?, ?, 'regenerate', ?, NOW())`,
       [draft.id, draft.subject, draft.body_text, feedback]
     );
-    const result = await emailDrafter.draftForCustomer({
+    const result = await (draft.kind === 'reply' ? replyDrafter : emailDrafter.draftForCustomer)({
       campaignId: draft.campaign_id, customerId: draft.customer_id,
       kind: draft.kind, sourceReplyId: draft.source_reply_id, feedback, draftId: draft.id
     });
@@ -627,6 +630,8 @@ router.get('/triage', async (req, res) => {
       if (!categories.includes(req.query.category)) return res.status(400).json({ success: false, error: '分类参数无效' });
       where += ' AND r.business_category = ?'; params.push(req.query.category);
     }
+    if (req.query.sender === 'unknown') where += ' AND r.customer_id IS NULL';
+    if (req.query.sender === 'known') where += ' AND r.customer_id IS NOT NULL';
     const count = await dbOperations.get(`SELECT COUNT(*) AS total FROM email_replies r
       WHERE ${where} AND r.todo_status = ?`, [...params, state]);
     const rows = await dbOperations.query(`SELECT r.*, k.name AS kol_name, c.name AS campaign_name,
@@ -829,7 +834,7 @@ router.post('/replies/:id/draft-reply', async (req, res) => {
   try {
     const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [req.params.id]);
     if (!reply) return res.status(404).json({ success: false, error: '回复不存在' });
-    const result = await emailDrafter.draftForCustomer({
+    const result = await replyDrafter({
       campaignId: reply.campaign_id, customerId: reply.customer_id,
       kind: 'reply', sourceReplyId: reply.id,
       feedback: String(req.body?.feedback || '').trim().slice(0, 2000) || null
@@ -1035,7 +1040,7 @@ router.post('/threads/:id/draft-reply', async (req, res) => {
       );
       if (!reply) return res.status(400).json({ success: false, error: '该会话暂无来信，无法起草回复' });
     }
-    const result = await emailDrafter.draftForCustomer({
+    const result = await replyDrafter({
       campaignId: thread.campaign_id,
       customerId: thread.customer_id,
       kind: 'reply',
