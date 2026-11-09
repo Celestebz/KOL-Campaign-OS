@@ -12,14 +12,15 @@ import {
   getEmailSettings, createEmailMailbox, saveEmailSettings, deleteEmailMailbox, setDefaultEmailMailbox, testEmailSettings, testImapSettings, syncEmailNow, getEmailSyncStatus,
   getEmailTemplates, getEmailVariables, createEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getDrafts, saveDraft, regenerateDraft, approveDraft, rejectDraft, sendDraft, confirmManualSent, confirmNotSent,
-  getBlockedReplies, getSystemEmails, bindReply, confirmReply, ignoreReply,
-  markReplyManuallyHandled, retryReplySummary, blockReply, restoreReply,
+  getBlockedReplies, getSystemEmails, bindReply, confirmReply,
+  retryReplySummary, blockReply, restoreReply,
   getEmailFilterRules, createEmailFilterRule, setEmailFilterRuleActive, deleteEmailFilterRule,
   getApprovalDashboardSummary
 } from './emailApi';
 import EmailThreadDrawer from './EmailThreadDrawer';
 
 const { TextArea } = Input;
+const COMPLETION_LABELS = { replied_external: '已在邮箱回复', resolved: '事项已办妥', no_reply_needed: '无需回复', sent: '已通过系统回复' };
 const MAIL_CATEGORIES = {
   payment: '催款／付款问题', content_review: '视频／脚本待审核', execution_issue: '合作执行问题',
   outreach_reply: '开发信回复', inbound_offer: '主动合作', other: '其他', needs_review: '待确认'
@@ -639,6 +640,9 @@ function RepliesTab() {
   const [report, setReport] = useState([]);
   const [category, setCategory] = useState();
   const [viewMode, setViewMode] = useState('pending');
+  const [completingReply, setCompletingReply] = useState(null);
+  const [completionReason, setCompletionReason] = useState('resolved');
+  const [completionSaving, setCompletionSaving] = useState(false);
   const [senderScope, setSenderScope] = useState();
   const [syncStatus, setSyncStatus] = useState([]);
   const [syncing, setSyncing] = useState(false);
@@ -732,30 +736,23 @@ function RepliesTab() {
     }
   };
 
-  const handleIgnore = async (record) => {
+  const openCompletion = (record) => {
+    setCompletingReply(record); setCompletionReason('resolved');
+  };
+  const completeReply = async () => {
+    setCompletionSaving(true);
     try {
-      await ignoreReply(record.id);
-      message.success('已忽略');
-      fetchReplies();
-    } catch (error) {
-      message.error('操作失败');
-    }
+      await axios.post(`/api/emails/replies/${completingReply.id}/complete`, { reason: completionReason });
+      message.success(`已完成：${COMPLETION_LABELS[completionReason]}`);
+      setCompletingReply(null); fetchReplies();
+    } catch (error) { message.error(error.response?.data?.error || '操作失败'); }
+    finally { setCompletionSaving(false); }
   };
 
-  const handleManuallyReplied = async (record) => {
+  const restoreTodo = async (record) => {
     try {
-      await markReplyManuallyHandled(record.id);
-      message.success('已记录为人工回复，邮件待办已完成');
-      fetchReplies();
-    } catch (error) {
-      message.error(error.response?.data?.error || '操作失败');
-    }
-  };
-
-  const handleTodo = async (record, done) => {
-    try {
-      await axios.post(`/api/emails/replies/${record.id}/${done ? 'complete' : 'reopen'}`);
-      message.success(done ? '已处理，不会重复进入待办' : '已恢复待办');
+      await axios.post(`/api/emails/replies/${record.id}/reopen`);
+      message.success('已恢复待办');
       fetchReplies();
     } catch (error) { message.error(error.response?.data?.error || '操作失败'); }
   };
@@ -894,29 +891,18 @@ function RepliesTab() {
         return intent ? <Tag color={intent.color}>{intent.text}</Tag> : '-';
       }
     },
+    ...(viewMode === 'done' ? [{ title: '处理结果', width: 150, render: (_, record) => <Tag>{COMPLETION_LABELS[record.completion_reason] || (record.confirm_status === 'manually_replied' ? '已在邮箱回复' : record.confirm_status === 'ignored' ? '无需回复' : '已完成')}</Tag> }] : []),
     {
-      title: '操作', width: 420, render: (_, record) => (
+      title: '操作', width: 360, render: (_, record) => (
         <Space size={[0, 4]} wrap>
           {viewMode === 'done'
-            ? <Button type="link" size="small" onClick={() => handleTodo(record, false)}>恢复待办</Button>
-            : <Button type="primary" size="small" onClick={() => handleTodo(record, true)}>已处理</Button>}
+            ? <Button type="link" size="small" onClick={() => restoreTodo(record)}>恢复待办</Button>
+            : <Button type="primary" size="small" onClick={() => openCompletion(record)}>完成处理</Button>}
           {record.customer_id && record.confirm_status === 'pending'
             ? <Button type="link" size="small" onClick={() => openConfirm(record)}>确认意向</Button>
             : null}
           {!record.customer_id && <Button type="link" size="small" onClick={() => openBind(record)}>绑定 KOL</Button>}
           <Button type="link" size="small" icon={<MailOutlined />} onClick={() => openThreadDrawer(record)}>查看／回复</Button>
-          <Popconfirm
-            title="确认已经通过外部邮箱回复该达人？"
-            description="系统只记录完成状态，不会发送邮件。"
-            okText="确认已回复"
-            cancelText="取消"
-            onConfirm={() => handleManuallyReplied(record)}
-          >
-            <Button type="link" size="small">已人工回复</Button>
-          </Popconfirm>
-          <Popconfirm title="忽略这条回复？" onConfirm={() => handleIgnore(record)}>
-            <Button type="link" size="small" danger>忽略</Button>
-          </Popconfirm>
           <Button type="link" size="small" danger onClick={() => openBlock(record)}>标记为屏蔽</Button>
         </Space>
       )
@@ -968,7 +954,7 @@ function RepliesTab() {
         showIcon
         style={{ marginBottom: 12 }}
         message="邮件待办"
-        description="已认识的红人和陌生发件人的未读来信统一进入这里，不必先绑定红人或项目；AI 在后台分类，分析失败也不会隐藏邮件。点“已处理”完成待办。"
+        description="已认识的红人和陌生发件人的未读来信统一进入这里，不必先绑定红人或项目；AI 在后台分类，分析失败也不会隐藏邮件。点“完成处理”完成待办。"
       />
       <Alert style={{ marginBottom: 12 }} showIcon type={scanFailed ? 'error' : scanComplete ? 'success' : 'warning'}
         message={syncing ? '正在同步未读邮件，邮件会陆续进入待处理' : scanFailed ? '未读邮件同步失败，列表可能不完整' : scanComplete ? '已完成未读邮件扫描' : '尚未完成未读邮件同步，空列表不代表没有待办'}
@@ -992,7 +978,7 @@ function RepliesTab() {
       </Space>
       {(viewMode === 'pending' || viewMode === 'done') && <>
         <Alert type="info" showIcon style={{ marginBottom: 12 }}
-          message="只将同步时发现的未读邮件加入待办；打开邮件不会完成待办，点“已处理”后不重复提醒，新回复单独进入。"
+          message="只将同步时发现的未读邮件加入待办；打开邮件不会完成待办，点“完成处理”后不重复提醒，新回复单独进入。"
           description="AI 分析不改变邮箱已读状态。失败自动重试，仍失败可手动重试；历史未读将在同步时补入。" />
         <Card size="small" title="AI 工作汇报" style={{ marginBottom: 12 }}>
           <Space wrap>
@@ -1034,6 +1020,18 @@ function RepliesTab() {
           )
         }}
       />
+      <Modal title="完成处理" open={Boolean(completingReply)} onOk={completeReply}
+        onCancel={() => { if (!completionSaving) setCompletingReply(null); }} confirmLoading={completionSaving}
+        okText="确认完成" cancelText="取消" closable={!completionSaving} maskClosable={!completionSaving}>
+        <p>请选择处理结果，系统只记录状态，不会发送邮件。</p>
+        <Radio.Group value={completionReason} onChange={(event) => setCompletionReason(event.target.value)} disabled={completionSaving}>
+          <Space direction="vertical">
+            <Radio value="replied_external">已在邮箱回复</Radio>
+            <Radio value="resolved">事项已办妥（如已付款、已审核视频）</Radio>
+            <Radio value="no_reply_needed">无需回复</Radio>
+          </Space>
+        </Radio.Group>
+      </Modal>
       <Modal
         title="标记为屏蔽"
         open={Boolean(blocking)}

@@ -133,9 +133,13 @@ test('未读待办可人工完成和恢复，汇报统计不受当前页限制',
   await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
   expect(await screen.findByText('待处理 61 封')).toBeInTheDocument();
   expect(screen.getByText('打开视频审核')).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('button', { name: '已处理' }));
+  await userEvent.click(screen.getByRole('button', { name: '完成处理' }));
+  const completionDialog = await screen.findByRole('dialog');
+  expect(within(completionDialog).getByText('已在邮箱回复')).toBeInTheDocument();
+  expect(within(completionDialog).getByText('无需回复')).toBeInTheDocument();
+  await userEvent.click(within(completionDialog).getByRole('button', { name: '确认完成' }));
   await waitFor(() => expect(screen.queryByText('已提交视频等待反馈')).not.toBeInTheDocument());
-  expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/15/complete');
+  expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/15/complete', { reason: 'resolved' });
   await userEvent.click(screen.getByRole('radio', { name: '已处理' }).closest('label'));
   await userEvent.click(await screen.findByRole('button', { name: '恢复待办' }));
   expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/15/reopen');
@@ -152,7 +156,7 @@ test('陌生来信在统一待办里直接显示且可选关联红人', async ()
   await userEvent.click(await screen.findByText('陌生发件人'));
   expect(await screen.findByText('ad@x.com')).toBeInTheDocument();
   expect(axios.get).toHaveBeenCalledWith('/api/emails/triage', expect.objectContaining({ params: expect.objectContaining({ sender: 'unknown' }) }));
-  expect(screen.getByRole('button', { name: '已处理' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '完成处理' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /查看／回复/ })).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: '绑定 KOL' }));

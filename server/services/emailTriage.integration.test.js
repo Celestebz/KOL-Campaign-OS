@@ -44,6 +44,7 @@ test('MySQL isolated-table lifecycle: migration, unread intake, completion, dupl
     await migration.up(q, Sequelize);
     await migration.up(q, Sequelize);
     await require('../migrations/20261106000001-unified-inbound-email').up(q, Sequelize);
+    await require('../migrations/20261109000001-email-completion-reason').up(q, Sequelize);
     db.query = (query, params = []) => sql.query(rewrite(query), { replacements: params, type: Sequelize.QueryTypes.SELECT });
     db.get = async (query, params = []) => (await db.query(query, params))[0] || null;
     db.run = async (query, params = []) => {
@@ -160,6 +161,15 @@ test('MySQL isolated-table lifecycle: migration, unread intake, completion, dupl
     await require('./emailDraftSender').sendApprovedDraft(draft.id);
     assert.equal(deliveries, 1);
     assert.equal((await db.get('SELECT todo_status FROM email_replies WHERE id = ?', [fresh.replyId])).todo_status, 'done');
+    assert.equal((await db.get('SELECT completion_reason FROM email_replies WHERE id = ?', [fresh.replyId])).completion_reason, 'sent');
+    for (const reason of ['replied_external', 'resolved', 'no_reply_needed']) {
+      await triage.setDone(fresh.replyId, false, 20);
+      assert.equal((await db.get('SELECT completion_reason FROM email_replies WHERE id = ?', [fresh.replyId])).completion_reason, null);
+      await triage.setDone(fresh.replyId, true, 20, reason);
+      await triage.setDone(fresh.replyId, true, 20, 'sent');
+      assert.equal((await db.get('SELECT completion_reason FROM email_replies WHERE id = ?', [fresh.replyId])).completion_reason, reason,
+        'a repeated completion cannot overwrite the recorded reason');
+    }
     assert.equal((await db.get('SELECT COUNT(*) n FROM customers')).n, 0);
     assert.equal((await db.get('SELECT COUNT(*) n FROM campaigns')).n, 0);
   });

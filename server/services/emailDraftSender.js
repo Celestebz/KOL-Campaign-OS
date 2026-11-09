@@ -243,7 +243,7 @@ async function sendApprovedDraft(draftId) {
   );
   await markOutreachAfterSend(draft);
   if (draft.kind === 'reply' && draft.source_reply_id && draft.owner_user_id) {
-    await require('./emailTriage').setDone(draft.source_reply_id, true, draft.owner_user_id);
+    await require('./emailTriage').setDone(draft.source_reply_id, true, draft.owner_user_id, 'sent');
   }
   const result = { draft_id: draft.id, message_id: messageId, to: customer.email, warning: sendWarning };
   if (sendCtx && sendCtx.threadingMissing) result.threading_missing = true;
@@ -283,7 +283,7 @@ async function confirmManuallySent(draftId) {
   }
   await markOutreachAfterSend(draft);
   if (draft.kind === 'reply' && draft.source_reply_id && draft.owner_user_id) {
-    await require('./emailTriage').setDone(draft.source_reply_id, true, draft.owner_user_id);
+    await require('./emailTriage').setDone(draft.source_reply_id, true, draft.owner_user_id, 'replied_external');
   }
   // 人工确认的跟进草稿：与系统自动起草一样需要计入 follow_up_count，
   // 否则 48h 后系统仍会按"还有跟进名额"再起草一封与人工跟进重复的草稿。

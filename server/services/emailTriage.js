@@ -115,10 +115,17 @@ async function retry(id) {
     triage_retry_at = NULL WHERE id = ? AND todo_status = 'pending' AND triage_status = 'failed'`, [id]);
 }
 
-async function setDone(id, done, ownerUserId) {
-  const result = await db.run(`UPDATE email_replies SET todo_status = ?, todo_completed_at = ${done ? 'NOW()' : 'NULL'}
+async function setDone(id, done, ownerUserId, reason = 'resolved') {
+  if (done && !['replied_external', 'resolved', 'no_reply_needed', 'sent'].includes(reason)) {
+    throw Object.assign(new Error('请选择有效的处理结果'), { statusCode: 400 });
+  }
+  const result = await db.run(`UPDATE email_replies SET todo_status = ?, todo_completed_at = ${done ? 'NOW()' : 'NULL'},
+    completion_reason = ?
     WHERE id = ? AND owner_user_id = ? AND todo_status = ?`,
-  [done ? 'done' : 'pending', id, ownerUserId, done ? 'pending' : 'done']);
+  [done ? 'done' : 'pending', done ? reason : null, id, ownerUserId, done ? 'pending' : 'done']);
+  if (done && result.changes) await db.run(`UPDATE approval_items SET status = 'cancelled',
+    decision = 'source_gone', decided_at = NOW(), updated_at = NOW()
+    WHERE type = 'reply' AND subject_type = 'email_reply' AND subject_id = ? AND status = 'pending'`, [id]);
   await db.run(`UPDATE campaign_kols ck INNER JOIN email_replies source
     ON source.campaign_id = ck.campaign_id AND source.customer_id = ck.customer_id
     SET ck.needs_reply = EXISTS (SELECT 1 FROM email_replies r

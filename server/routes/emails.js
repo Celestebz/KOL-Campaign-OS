@@ -648,7 +648,11 @@ router.get('/triage', async (req, res) => {
 
 router.post('/replies/:id/complete', async (req, res) => {
   try {
-    const result = await require('../services/emailTriage').setDone(req.params.id, true, ownerId(req));
+    const reason = req.body?.reason || 'resolved';
+    if (!['replied_external', 'resolved', 'no_reply_needed'].includes(reason)) {
+      return res.status(400).json({ success: false, error: '请选择有效的处理结果' });
+    }
+    const result = await require('../services/emailTriage').setDone(req.params.id, true, ownerId(req), reason);
     res.json({ success: true, data: result });
   } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
