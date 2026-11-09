@@ -80,7 +80,7 @@ test('first-touch prompt uses configured sender and asks interest before commerc
     customer: { name: 'Casey', country_region: 'US' },
     campaign: { name: 'TRA-0429', product: 'Wood chipper' },
     strategy: null,
-    styleGuide: 'Mention free shipping and a deadline.',
+    firstTouchTemplate: 'Mention free shipping and a deadline.',
     videos: [{ youtube_video_id: 'v1', title: 'A real project', play_count: 1000 }],
     senderName: 'Celeste',
     kind: 'first_touch'
@@ -91,7 +91,7 @@ test('first-touch prompt uses configured sender and asks interest before commerc
   assert.match(prompt, /Never output placeholders such as \[Name\]/);
   assert.match(prompt, /greeting such as "Hi Creator Name," on its own line/);
   assert.match(prompt, /never continue the first sentence on the greeting line/);
-  assert.match(prompt, /one blank line between every paragraph/);
+  assert.match(prompt, /one blank line between paragraphs/);
   assert.match(prompt, /override any conflicting general style-guide instruction/);
   assert.match(prompt, /reference videos only as internal evidence/i);
   assert.match(prompt, /Never mention, quote, list, paraphrase, or otherwise reveal a video title/);
@@ -130,6 +130,27 @@ test('prompt uses the exact brand supplied by the mailbox or campaign', () => {
   });
   assert.match(prompt, /Brand: VivaTrees/);
   assert.match(prompt, /use this exact brand name when introducing the sender and in the signature/);
+});
+
+test('first-touch template is isolated from replies and replies use the current draft plus chat instructions', () => {
+  const prompt = emailDrafter.buildUserPrompt({
+    customer: { name: 'Casey', country_region: 'US' },
+    campaign: { name: 'Everglow', product: 'Tree collar' },
+    strategy: null,
+    firstTouchTemplate: 'FIRST_TOUCH_ONLY_SECRET_OUTLINE',
+    videos: [],
+    senderName: 'Celeste',
+    kind: 'reply',
+    currentDraft: { subject: 'Re: Collaboration', body_text: 'Hi Casey,\n\nOld draft.' },
+    instructionHistory: ['先询问报价'],
+    feedback: '不要承诺发布时间'
+  });
+  assert.doesNotMatch(prompt, /FIRST_TOUCH_ONLY_SECRET_OUTLINE/);
+  assert.match(prompt, /Current draft to revise/);
+  assert.match(prompt, /Old draft/);
+  assert.match(prompt, /Earlier user instructions/);
+  assert.match(prompt, /先询问报价/);
+  assert.match(prompt, /不要承诺发布时间/);
 });
 
 test('normalizeGreetingLine puts a blank line after a greeting without changing formatted bodies', () => {
@@ -432,12 +453,13 @@ test('reply 起草：有 thread 时走会话上下文并落库新列', async () 
   assert.ok(seenPrompt.includes('untrusted external content'), 'prompt 声明邮件内容不可信');
   assert.ok(seenPrompt.includes('Do not re-ask questions'), '回复规则：不重复提问');
   assert.ok(seenPrompt.includes('quoting is appended by the sending service'), '回复规则：不生成历史引用');
-  assert.ok(seenPrompt.includes('Human feedback on previous version (address it): 语气随和一点'), 'feedback 仅承载人工意见');
-  assert.ok(!seenPrompt.includes('Human feedback on previous version (address it): 语气随和一点\n来信原文'), '邮件原文不混入 feedback');
+  assert.ok(seenPrompt.includes("User's latest instruction (highest priority for this draft): 语气随和一点"), '用户指令是回复起草的最高优先级');
+  assert.ok(!seenPrompt.includes("User's latest instruction (highest priority for this draft): 语气随和一点\n来信原文"), '邮件原文不混入用户指令');
+  assert.doesNotMatch(seenPrompt, /exactly three short paragraphs|Keep body under 140 English words/, '回复不再套固定结构');
 
   const insert = draftInsert(fake.statements);
   assert.equal((insert.sql.match(/\?/g) || []).length, insert.params.length, 'INSERT 占位符与参数数量一致');
-  assert.equal(insert.params[10], 'p2.3', 'prompt_version 升级');
+  assert.equal(insert.params[10], 'p2.4', 'prompt_version 升级');
   assert.equal(insert.params[14], 33, 'thread_id');
   assert.equal(insert.params[15], '<r2@x>', 'reply_to_message_id 为最新来信');
   assert.deepEqual(JSON.parse(insert.params[16]), ['<r1@x>', '<r2@x>'], 'context_message_ids');

@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Col, Collapse, Drawer, Empty, Input, message, Modal,
   Popconfirm, Popover, Row, Space, Spin, Tag, Typography
 } from 'antd';
-import { PictureOutlined, ReloadOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons';
+import { PictureOutlined, ReloadOutlined, RobotOutlined, SendOutlined, UserOutlined } from '@ant-design/icons';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import dayjs from 'dayjs';
@@ -143,13 +143,15 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
   const [editHtml, setEditHtml] = useState('');
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [imageIds, setImageIds] = useState(new Set());
-  const [regenOpen, setRegenOpen] = useState(false);
   const [regenFeedback, setRegenFeedback] = useState('');
   const [regenLoading, setRegenLoading] = useState(false);
+  const [assistantMessages, setAssistantMessages] = useState([]);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [contextRefreshing, setContextRefreshing] = useState(false);
+  const [startDraftOpen, setStartDraftOpen] = useState(false);
+  const [startDraftPrompt, setStartDraftPrompt] = useState('');
 
   // 旧数据回退：reply.thread_id 为 null 时不调 threads API，直接用列表行构造单条时间线
   const legacyTimeline = useMemo(() => {
@@ -234,10 +236,12 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
     const initKey = threadId ? `thread:${threadId}` : `reply:${reply?.id || ''}`;
     if (initKeyRef.current === initKey) return;
     initKeyRef.current = initKey;
-    setRegenOpen(false);
     setRegenFeedback('');
+    setAssistantMessages([]);
     setRejectOpen(false);
     setRejectReason('');
+    setStartDraftOpen(false);
+    setStartDraftPrompt('');
     setImageIds(new Set());
     if (threadId) {
       loadThread();
@@ -269,15 +273,16 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
 
   // 无草稿时起草：thread 模式走会话接口；旧数据回退旧 draftReply 后加载草稿详情进入编辑态
   const handleStartDraft = async () => {
+    const feedback = startDraftPrompt.trim();
     setActionLoading(true);
     try {
       if (threadId) {
-        const res = await draftThreadReply(threadId, {});
+        const res = await draftThreadReply(threadId, { feedback });
         if (res?.message === '已有草稿，复用现有') message.info(res.message);
         else message.success(res?.message || '回复草稿已生成');
         await loadThread();
       } else {
-        const res = await draftReply(reply.id);
+        const res = await draftReply(reply.id, feedback);
         const draftId = res?.data?.draftId;
         if (draftId) {
           const d = await getDraft(draftId);
@@ -289,6 +294,9 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
         }
       }
       notifyChanged();
+      if (feedback) setAssistantMessages([{ role: 'user', text: feedback }]);
+      setStartDraftOpen(false);
+      setStartDraftPrompt('');
     } catch (error) {
       message.error(error.response?.data?.error || '生成回复草稿失败');
     } finally {
@@ -312,11 +320,20 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
   // 重新生成：后端对已有待审草稿会 dedupe 跳过，因此统一走旧 regenerateDraft 原地重生成
   const handleRegenerate = async () => {
     if (!draft) return;
+    const instruction = regenFeedback.trim();
+    if (!instruction) {
+      message.info('请先告诉 AI 你希望怎么修改');
+      return;
+    }
     setRegenLoading(true);
     try {
-      const updated = await regenerateDraft(draft.id, regenFeedback || undefined);
-      message.success('已重新生成');
-      setRegenOpen(false);
+      const updated = await regenerateDraft(draft.id, instruction);
+      message.success('AI 已根据你的要求更新草稿');
+      setAssistantMessages((items) => [
+        ...items,
+        { role: 'user', text: instruction },
+        { role: 'assistant', text: '已更新右侧草稿，你可以继续告诉我怎么调整。' }
+      ]);
       setRegenFeedback('');
       if (updated) {
         setDraft(updated);
@@ -487,7 +504,7 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
                   <Button
                     type="primary" icon={<RobotOutlined />} loading={actionLoading}
                     disabled={!threadId && !reply}
-                    onClick={handleStartDraft}
+                    onClick={() => setStartDraftOpen(true)}
                   >
                     AI 起草回复
                   </Button>
@@ -560,24 +577,54 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
                     }]}
                   />
                 )}
-                {regenOpen && (
+                <Card size="small" title={<Space><RobotOutlined />AI 回复助手</Space>}>
+                  <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                    AI 会阅读完整往来和当前草稿。像聊天一样告诉它你的回复目标或修改要求即可。
+                  </Typography.Paragraph>
+                  {assistantMessages.length > 0 && (
+                    <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 12 }}>
+                      {assistantMessages.map((item, index) => (
+                        <div
+                          key={`${item.role}-${index}`}
+                          style={{
+                            alignSelf: item.role === 'user' ? 'flex-end' : 'flex-start',
+                            maxWidth: '88%', padding: '8px 10px', borderRadius: 8,
+                            background: item.role === 'user' ? '#e6f4ff' : '#f5f5f5',
+                            whiteSpace: 'pre-wrap'
+                          }}
+                        >
+                          <Space align="start" size={6}>
+                            {item.role === 'user' ? <UserOutlined /> : <RobotOutlined />}
+                            <span>{item.text}</span>
+                          </Space>
+                        </div>
+                      ))}
+                    </Space>
+                  )}
                   <TextArea
-                    rows={3}
                     value={regenFeedback}
                     onChange={(e) => setRegenFeedback(e.target.value)}
-                    placeholder="可填写反馈，AI 会据此调整（旧版本会保留在版本历史中）"
+                    placeholder="例如：接受报价，但不要承诺发布时间；语气更自然一点。"
+                    autoSize={{ minRows: 3, maxRows: 7 }}
+                    maxLength={2000}
+                    showCount
+                    onPressEnter={(event) => {
+                      if (!event.shiftKey) {
+                        event.preventDefault();
+                        handleRegenerate();
+                      }
+                    }}
                   />
-                )}
+                  <Button
+                    type="primary" icon={<SendOutlined />} loading={regenLoading}
+                    disabled={!regenFeedback.trim()} onClick={handleRegenerate}
+                    style={{ marginTop: 10 }}
+                  >
+                    发送给 AI
+                  </Button>
+                </Card>
                 <Space wrap>
                   <Button onClick={handleSave}>保存草稿</Button>
-                  {!regenOpen ? (
-                    <Button onClick={() => setRegenOpen(true)}>重新生成</Button>
-                  ) : (
-                    <>
-                      <Button loading={regenLoading} onClick={handleRegenerate}>确认重新生成</Button>
-                      <Button type="text" onClick={() => { setRegenOpen(false); setRegenFeedback(''); }}>取消</Button>
-                    </>
-                  )}
                   <Popconfirm
                     title="确认立即发送这封邮件？"
                     description="点击确认后，邮件将立即对外发送，且无法撤回。"
@@ -607,6 +654,43 @@ function EmailThreadDrawer({ open, threadId, reply, onClose, onChanged }) {
       >
         <p>请填写驳回原因：</p>
         <TextArea rows={3} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+      </Modal>
+
+      <Modal
+        title="告诉 AI 这封回复要怎么写"
+        open={startDraftOpen}
+        okText="生成回复"
+        cancelText="取消"
+        confirmLoading={actionLoading}
+        onOk={handleStartDraft}
+        onCancel={() => {
+          if (!actionLoading) setStartDraftOpen(false);
+        }}
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          AI 会同时参考完整往来邮件和会话摘要。你可以补充回复目标、语气、必须询问或避免承诺的内容；留空则按默认规则起草。
+        </Typography.Paragraph>
+        <Space wrap style={{ marginBottom: 12 }}>
+          {['简洁友好', '正式专业', '积极推进合作', '先澄清关键信息'].map((text) => (
+            <Button
+              key={text}
+              size="small"
+              onClick={() => setStartDraftPrompt((current) => current ? `${current}；${text}` : text)}
+            >
+              {text}
+            </Button>
+          ))}
+        </Space>
+        <TextArea
+          value={startDraftPrompt}
+          onChange={(event) => setStartDraftPrompt(event.target.value)}
+          placeholder="例如：礼貌接受寄样，询问收货地址，并说明暂不承诺发布时间。"
+          autoSize={{ minRows: 4, maxRows: 8 }}
+          maxLength={2000}
+          showCount
+          disabled={actionLoading}
+        />
       </Modal>
     </Drawer>
   );

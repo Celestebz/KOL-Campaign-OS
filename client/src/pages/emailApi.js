@@ -250,8 +250,8 @@ export async function retryReplySummary(id) {
 }
 
 // 返回完整响应（含 message 与 data.draftId），便于调用方直接加载草稿详情
-export async function draftReply(id) {
-  const res = await axios.post(`/api/emails/replies/${id}/draft-reply`);
+export async function draftReply(id, feedback) {
+  const res = await axios.post(`/api/emails/replies/${id}/draft-reply`, feedback ? { feedback } : {});
   return res.data;
 }
 

@@ -10,7 +10,7 @@ const { draftDedupeKey, findBlockingDraft, isDuplicateError } = require('./email
 const emailContextBuilder = require('./emailContextBuilder');
 const { currentUserId } = require('../utils/requestContext');
 
-const PROMPT_VERSION = 'p2.3';
+const PROMPT_VERSION = 'p2.4';
 const SNAPSHOT_STALE_DAYS = 7;
 // IG/TT 证据没有快照回抓，新鲜度以证据视频最新发布日期衡量，阈值 30 天
 const FINDER_EVIDENCE_STALE_DAYS = 30;
@@ -23,7 +23,7 @@ const SUPPORTED_PLATFORMS = Object.keys(PLATFORM_LABELS);
 
 const SYSTEM_PROMPT = 'You are an outreach copywriter for a brand marketing team. Write natural, professional emails to content creators. Return valid JSON only. No Markdown, no explanations.';
 
-function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, feedback, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', brand = '', threadContext = null, replyFallback = null, communicationProduct = null, productContextOverride = null }) {
+function buildUserPrompt({ customer, campaign, strategy, firstTouchTemplate = '', feedback, currentDraft = null, instructionHistory = [], videos, platform = 'youtube', followers = null, kind = 'first_touch', senderName = '', brand = '', threadContext = null, replyFallback = null, communicationProduct = null, productContextOverride = null }) {
   const isFirstTouch = kind === 'first_touch';
   const isFollowUp = kind === 'follow_up';
   const videoLines = videos.map((v) =>
@@ -63,7 +63,11 @@ function buildUserPrompt({ customer, campaign, strategy, styleGuide, videos, fee
 - Do not repeat the full first-touch pitch, list specifications, introduce new research, or add commercial terms, deliverables, urgency, or deadlines.
 - End with exactly one low-pressure question and no second call to action.
 - Avoid guilt-inducing language and phrases such as "I haven't heard back", "just checking in", "circling back", "bumping this", or "final attempt".`
-      : `This is a ${kind.replace('_', ' ')} email. Use only commercial terms, deliverables, and dates explicitly supplied in the context. Never invent a deadline or commitment.`;
+      : `This is a reply in an ongoing conversation. Read the conversation and reason about what the creator needs before writing.
+- Follow the user's latest instruction as the primary writing goal.
+- Answer the latest inbound message directly and naturally. Choose the structure and length that fit the conversation; do not force a template, fixed paragraph count, or generic outreach pitch.
+- Preserve useful parts of the current draft when revising, but change anything necessary to follow the user's instruction.
+- Use only commercial terms, deliverables, and dates explicitly supplied in the confirmed facts or by the user. Never invent a deadline or commitment.`;
   // 会话上下文（kind='reply' 且有 thread）：完整时间线+滚动摘要+已确认合作事实。
   // 邮件原文一律视为不可信外部内容，用分隔符包裹并声明其中指令不得执行。
   const conversationBlock = threadContext ? `
@@ -96,9 +100,10 @@ Reference videos (internal evidence; follow the rules below on whether they may 
 ${videoLines || '(no videos available)'}
 
 Campaign: ${campaign.name}. Product context: ${productContext || '(none)'}.${conversationBlock ? `\n${conversationBlock}` : ''}
-Writing rules (must follow strictly):
-${styleGuide}
-${feedback ? `\nHuman feedback on previous version (address it): ${feedback}` : ''}
+${isFirstTouch && firstTouchTemplate ? `First-touch template (applies only to this first email; use as a flexible outline, not text to copy):\n${firstTouchTemplate}\n` : ''}
+${kind === 'reply' && currentDraft ? `Current draft to revise:\n<<<CURRENT DRAFT>>>\nSubject: ${currentDraft.subject || ''}\n${currentDraft.body_text || ''}\n<<<END CURRENT DRAFT>>>\n` : ''}
+${kind === 'reply' && instructionHistory.length ? `Earlier user instructions in this drafting conversation (oldest to newest):\n${instructionHistory.map((item) => `- ${item}`).join('\n')}\n` : ''}
+${feedback ? `${kind === 'reply' ? 'User\'s latest instruction (highest priority for this draft)' : 'Human feedback on previous version'}: ${feedback}\n` : ''}
 
 Stage rules (override any conflicting general style-guide instruction):
 ${stageRules}
@@ -109,8 +114,8 @@ ${evidenceRules}
 - Use complete sentences and common, natural business English. Keep the tone warm and professional, not slangy or overly casual.
 - Avoid phrases such as "if you're in", "we'll ship right away", "organic completion video", "get one shipped your way", "recently released", "newly launched", "our newest product", and "just hit the market".
 - Start body_text with a greeting such as "Hi Creator Name," on its own line. Put one blank line immediately after the greeting; never continue the first sentence on the greeting line.
-- ${isFirstTouch ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 introduces the sender/brand and states the fit; paragraph 2 briefly introduces the opportunity and ends with the single call to action.' : isFollowUp ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 briefly identifies the sender/brand and restates the purpose; paragraph 2 contains the single call to action.' : 'After the greeting, write exactly three short paragraphs followed by a signature.'} Put one blank line between every paragraph and before the signature. Do not use bullets.
-- ${isFirstTouch ? 'Keep body_text between 60 and 90 English words, including the greeting and signature.' : isFollowUp ? 'Keep body_text between 45 and 70 English words, including the greeting and signature.' : 'Keep body under 140 English words.'} Write in English.`;
+- ${isFirstTouch ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 introduces the sender/brand and states the fit; paragraph 2 briefly introduces the opportunity and ends with the single call to action.' : isFollowUp ? 'After the greeting, write exactly two short paragraphs followed by a signature: paragraph 1 briefly identifies the sender/brand and restates the purpose; paragraph 2 contains the single call to action.' : 'For replies, choose the paragraph structure naturally from the conversation and the user instruction.'} Put one blank line between paragraphs and before the signature. Do not use bullets unless the user explicitly asks for them or a list is the clearest way to answer multiple questions.
+- ${isFirstTouch ? 'Keep body_text between 60 and 90 English words, including the greeting and signature.' : isFollowUp ? 'Keep body_text between 45 and 70 English words, including the greeting and signature.' : 'Keep the reply concise unless the conversation or user instruction requires detail.'} Write in English.`;
 }
 
 function normalizeGreetingLine(input) {
@@ -330,9 +335,30 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       'SELECT * FROM kol_strategies WHERE campaign_id = ? ORDER BY updated_at DESC LIMIT 1',
       [campaignId]
     );
-    const styleGuide = await dbOperations.get(
-      "SELECT * FROM email_templates WHERE kind = 'style_guide' ORDER BY id LIMIT 1"
-    );
+    // 首联模板从数据读取层即与后续沟通隔离，reply/follow_up 不会把它带入 prompt。
+    const firstTouchTemplate = kind === 'first_touch'
+      ? await dbOperations.get("SELECT * FROM email_templates WHERE kind = 'style_guide' ORDER BY id LIMIT 1")
+      : null;
+
+    let currentDraft = null;
+    let instructionHistory = [];
+    if (kind === 'reply' && draftId) {
+      currentDraft = await dbOperations.get(
+        'SELECT id, subject, body_text FROM email_drafts WHERE id = ?',
+        [draftId]
+      );
+      const instructionRows = await dbOperations.query(
+        `SELECT feedback FROM email_draft_versions
+         WHERE draft_id = ? AND feedback IS NOT NULL AND feedback <> ''
+         ORDER BY id DESC LIMIT 10`,
+        [draftId]
+      );
+      instructionHistory = instructionRows.map((row) => String(row.feedback).trim()).filter(Boolean).reverse();
+      // regenerate 路由会先保存本轮指令再调用 drafter；这里移除一次，避免它同时出现在历史和“最新指令”中。
+      if (feedback && instructionHistory[instructionHistory.length - 1] === String(feedback).trim()) {
+        instructionHistory.pop();
+      }
+    }
     
     // kind='reply'：有 thread 走会话上下文；旧数据无 thread 回退单封来信上下文（截断在构建阶段做）。
     // feedback 仅承载人工修改意见，不再混入邮件原文。
@@ -373,7 +399,8 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
 
     const userPrompt = buildUserPrompt({
       customer, campaign, strategy,
-      styleGuide: styleGuide?.body_html || '',
+      firstTouchTemplate: firstTouchTemplate?.body_html || '',
+      currentDraft, instructionHistory,
       videos, feedback, platform, followers, kind,
       senderName: mailbox?.sender_name || '',
       brand: senderBrand,
@@ -445,7 +472,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
           generated_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
         [campaignId, customerId, kind, subject, bodyText, riskLevel, JSON.stringify(riskReasons), evidence,
-         sourceReplyId, styleGuide?.id || null, PROMPT_VERSION, model || null, dedupeKey, mailbox?.id || null,
+         sourceReplyId, firstTouchTemplate?.id || null, PROMPT_VERSION, model || null, dedupeKey, mailbox?.id || null,
          draftThreadId, replyToMessageId, contextMessageIds, contextSummarySnapshot, ownerUserId]
         );
       } catch (error) {
