@@ -101,3 +101,24 @@ test('AI sees scoped history and prior outreach as evidence, not as instructions
   assert.equal(historyQuery.params[5], 7);
   assert.match(historyQuery.sql, /owner_user_id = \?/);
 });
+
+test('unlinked senders get bounded same-mailbox history and payment output is checked before saving', async t => {
+  const { calls } = fixture(t, { subject: 'Re:', body_text: 'Has the product shipped yet? Could you share tracking information?',
+    quoted_body_text: 'We agreed on a gifted collaboration. Please share your shipping address.' });
+  let query;
+  db.query = async (sql, params) => { query = { sql, params }; return [{ direction: 'inbound', body: 'I agree to the gifted collaboration.' }]; };
+  ai.callActiveAi = async (system, prompt) => {
+    assert.match(prompt, /same_sender_and_mailbox_reference_only/);
+    assert.match(prompt, /gifted collaboration/);
+    assert.match(prompt, /绝不能因为属于履约就归 payment/);
+    return { parsed: { summary: '查询发货和物流', category: 'payment', priority: 'urgent', reason: '物流属于付款问题' } };
+  };
+  await triage.analyze(1);
+  assert.match(query.sql, /mailbox_id <=> \?/);
+  assert.match(query.sql, /INTERVAL 60 DAY/);
+  assert.deepEqual(query.params.slice(0, 3), [7, 2, 'creator@example.com']);
+  assert.deepEqual(query.params.slice(6, 9), [7, 2, 'creator@example.com']);
+  const saved = calls.find(c => c.sql.includes('SET ai_summary'));
+  assert.equal(saved.params[2], 'execution_issue');
+  assert.equal(saved.params[3], 'important');
+});
