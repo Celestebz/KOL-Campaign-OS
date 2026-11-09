@@ -172,4 +172,52 @@ test('MySQL isolated-table lifecycle: migration, unread intake, completion, dupl
     }
     assert.equal((await db.get('SELECT COUNT(*) n FROM customers')).n, 0);
     assert.equal((await db.get('SELECT COUNT(*) n FROM campaigns')).n, 0);
+
+    // Recovery never removes a human block or another owner's rule, never calls AI,
+    // and does not reopen a completed todo.
+    await db.run(`INSERT INTO email_filter_rules (owner_user_id,rule_type,rule_value,active,created_by)
+      VALUES (20,'domain','blocked.test',1,'boss')`);
+    const blocked = {};
+    for (const [name, owner, address, source, markedBy, todo] of [
+      ['ai', 20, 'video@gmail.com', 'ai', null, 'excluded'],
+      ['human', 20, 'human@gmail.com', 'human', 'boss', 'excluded'],
+      ['rule', 20, 'rule@blocked.test', 'rule', null, 'excluded'],
+      ['ai_rule_overlap', 20, 'overlap@blocked.test', 'ai', null, 'excluded'],
+      ['other_owner', 21, 'other@blocked.test', 'ai', null, 'excluded'],
+      ['done', 20, 'done@gmail.com', 'ai', null, 'done']
+    ]) {
+      const inserted = await db.run(`INSERT INTO email_replies (owner_user_id,mailbox_id,message_id,from_address,
+        subject,classification,classification_source,classification_reason,spam_marked_by,confirm_status,todo_status,received_at)
+        VALUES (?,10,?,?,'Video for review','spam',?,'AI认为个人邮箱不可信',?,'spam',?,NOW())`,
+      [owner, `<blocked-${name}@fixture>`, address, source, markedBy, todo]);
+      blocked[name] = inserted.id;
+    }
+    let accidentalCalls = 0;
+    ai.callActiveAi = async () => { accidentalCalls++; throw new Error('Recovery must not call AI'); };
+    const recovery = require('../migrations/20261109000002-manual-only-email-blocking');
+    const recoveryQ = { sequelize: {
+      transaction: callback => sql.transaction(callback),
+      query: (statement, options) => sql.query(rewrite(statement), options)
+    } };
+    await recovery.up(recoveryQ);
+    await recovery.up(recoveryQ);
+    const recovered = await db.get('SELECT * FROM email_replies WHERE id = ?', [blocked.ai]);
+    assert.equal(recovered.classification, 'needs_review');
+    assert.equal(recovered.todo_status, 'pending');
+    assert.equal(recovered.triage_status, 'manual_review');
+    assert.equal((await db.get('SELECT classification FROM email_replies WHERE id = ?', [blocked.human])).classification, 'spam');
+    assert.equal((await db.get('SELECT classification FROM email_replies WHERE id = ?', [blocked.rule])).classification, 'spam');
+    assert.equal((await db.get('SELECT classification_source FROM email_replies WHERE id = ?', [blocked.ai_rule_overlap])).classification_source, 'rule');
+    assert.equal((await db.get('SELECT classification FROM email_replies WHERE id = ?', [blocked.other_owner])).classification, 'needs_review');
+    assert.equal((await db.get('SELECT todo_status FROM email_replies WHERE id = ?', [blocked.done])).todo_status, 'done');
+    assert.equal(accidentalCalls, 0);
+    // A human block made while the model is in flight wins over its late response.
+    ai.callActiveAi = async () => {
+      await db.run("UPDATE email_replies SET classification='spam',classification_source='human',spam_marked_by='boss' WHERE id=?", [blocked.ai]);
+      return { parsed: { classification: 'suspected_kol' } };
+    };
+    await runWithUser({ id: 20 }, () => require('./emailFilterService').classifyStoredReply(blocked.ai));
+    assert.equal((await db.get('SELECT classification_source FROM email_replies WHERE id = ?', [blocked.ai])).classification_source, 'human');
+    await require('./emailFilterService').restoreReply(blocked.ai);
+    assert.equal((await db.get('SELECT todo_status FROM email_replies WHERE id = ?', [blocked.ai])).todo_status, 'pending');
   });

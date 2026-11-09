@@ -110,6 +110,23 @@ beforeEach(() => {
   mockApi();
 });
 
+test('旧 AI 屏蔽恢复后先人工确认，仅点击 AI 分析才提交模型任务', async () => {
+  const defaultGet = axios.get.getMockImplementation();
+  axios.get.mockImplementation((url, config) => {
+    if (url !== '/api/emails/triage') return defaultGet(url, config);
+    return Promise.resolve({ data: { data: { rows: [{ id: 90, from_address: 'creator@gmail.com',
+      subject: 'Video shared for review', triage_status: 'manual_review', business_category: 'needs_review' }], total: 1,
+      report: [{ category: 'needs_review', priority: 'important', analysis: 'manual_review', total: 1 }] } } });
+  });
+  render(<Emails />);
+  await userEvent.click(await screen.findByRole('tab', { name: '邮件待办' }));
+  expect(await screen.findByText('待人工确认')).toBeInTheDocument();
+  expect(screen.getByText('邮件已恢复，等待人工确认；可按需点击 AI 分析。')).toBeInTheDocument();
+  expect(axios.post).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: 'AI 分析' }));
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/emails/replies/90/retry-summary'));
+}, 30000);
+
 test('未读待办可人工完成和恢复，汇报统计不受当前页限制', async () => {
   const defaultGet = axios.get.getMockImplementation();
   let completed = false;

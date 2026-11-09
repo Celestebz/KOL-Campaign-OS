@@ -851,7 +851,7 @@ function RepliesTab() {
       </Space>;
     } },
     { title: '判断依据／建议动作', width: 260, render: (_, r) => <div>
-      <div>{r.triage_reason || '等待 AI 分析'}</div>
+      <div>{r.triage_reason || (r.triage_status === 'manual_review' ? '邮件已恢复，等待人工确认；可按需点击 AI 分析。' : '等待 AI 分析')}</div>
       {r.suggested_action && <div style={{ color: '#1677ff' }}>{r.suggested_action}</div>}
     </div> },
     { title: '项目', dataIndex: 'campaign_name', width: 160 },
@@ -868,6 +868,9 @@ function RepliesTab() {
     {
       title: 'AI 摘要', dataIndex: 'ai_summary', width: 280, ellipsis: true,
       render: (v, record) => {
+        if (record.triage_status === 'manual_review') {
+          return <Space><Tag>待人工确认</Tag><Button type="link" size="small" onClick={() => handleRetry(record)}>AI 分析</Button></Space>;
+        }
         if (record.triage_status === 'pending' || record.triage_status === 'running') {
           return <Tag color="processing">{record.triage_status === 'running' ? '分析中' : '待分析'}</Tag>;
         }
@@ -987,6 +990,7 @@ function RepliesTab() {
               {value.text} {report.filter(g => g.priority === key).reduce((sum, g) => sum + Number(g.total), 0)}
             </Tag>)}
             <Tag>待分析／分析中 {report.filter(g => ['pending', 'running'].includes(g.analysis)).reduce((sum, g) => sum + Number(g.total), 0)}</Tag>
+            <Tag>待人工确认 {report.filter(g => g.analysis === 'manual_review').reduce((sum, g) => sum + Number(g.total), 0)}</Tag>
             <Tag color="error">分析失败 {report.filter(g => g.analysis === 'failed').reduce((sum, g) => sum + Number(g.total), 0)}</Tag>
           </Space>
           <div style={{ marginTop: 8 }}>

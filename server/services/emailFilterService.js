@@ -40,9 +40,11 @@ async function classifyIncoming({ fromAddress, subject, bodyText, matched }) {
   try {
     const { parsed } = await aiClient.callActiveAi(
       'Classify inbound business email. Return JSON only.',
-      `判断这封邮件是否是 KOL 合作回复。返回 {"classification":"suspected_kol|spam|system|needs_review","confidence":0-100,"reason":"简短中文理由"}。\n发件人：${fromAddress}\n${text}`
+      `判断这封邮件是否可能涉及 KOL 合作，仅给建议。返回 {"classification":"suspected_kol|needs_review","confidence":0-100,"reason":"简短中文理由"}。\n` +
+      `你没有屏蔽或隐藏邮件的权限，不得输出 spam 或 system。不确定时一律 needs_review。` +
+      `个人 Gmail 邮箱、陌生发件人、主动合作邀约、Google Drive 视频或文件分享，都不能作为屏蔽依据。\n发件人：${fromAddress}\n${text}`
     );
-    const allowed = new Set(['suspected_kol', 'spam', 'system', 'needs_review']);
+    const allowed = new Set(['suspected_kol', 'needs_review']);
     return {
       classification: allowed.has(parsed?.classification) ? parsed.classification : 'needs_review',
       source: 'ai', reason: String(parsed?.reason || 'AI 无法确定').slice(0, 500),
@@ -117,13 +119,18 @@ async function restoreReply(replyId) {
   await dbOperations.run(
     `UPDATE email_replies SET classification = 'needs_review', classification_source = 'human',
      classification_reason = '从垃圾邮件恢复', classified_at = NOW(), spam_marked_by = NULL,
+     triage_status = CASE WHEN triage_status = 'success' OR todo_status = 'done' THEN triage_status ELSE 'manual_review' END,
+     todo_status = CASE WHEN todo_status = 'done' THEN 'done' ELSE 'pending' END,
+     todo_enqueued_at = COALESCE(todo_enqueued_at, NOW()),
+     business_category = COALESCE(business_category, 'needs_review'), business_priority = COALESCE(business_priority, 'important'),
      confirm_status = 'pending', updated_at = NOW() WHERE id = ?`, [reply.id]
   );
 }
 
 async function classifyStoredReply(replyId) {
   const reply = await dbOperations.get('SELECT * FROM email_replies WHERE id = ?', [replyId]);
-  if (!reply || reply.classification === 'spam' || reply.customer_id) return null;
+  if (!reply || reply.classification === 'spam' || reply.customer_id
+    || reply.spam_marked_by || ['human', 'rule'].includes(reply.classification_source)) return null;
   const result = await classifyIncoming({
     fromAddress: reply.from_address, subject: reply.subject,
     bodyText: reply.body_text, matched: Boolean(reply.customer_id)
@@ -131,7 +138,9 @@ async function classifyStoredReply(replyId) {
   await dbOperations.run(
     `UPDATE email_replies SET classification = ?, classification_source = ?, classification_reason = ?,
      classified_at = NOW(), confirm_status = CASE WHEN ? IN ('spam', 'system') THEN ? ELSE confirm_status END,
-     updated_at = NOW() WHERE id = ?`,
+     updated_at = NOW() WHERE id = ?
+       AND COALESCE(classification_source, '') NOT IN ('human', 'rule')
+       AND spam_marked_by IS NULL AND classification <> 'spam'`,
     [result.classification, result.source, result.reason, result.classification,
      result.classification === 'spam' ? 'spam' : 'system', reply.id]
   );

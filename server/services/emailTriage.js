@@ -16,10 +16,7 @@ function deliveryKey(message, mailboxId, ownerUserId, uidValidity = '') {
 }
 
 async function enqueue(id, seen) {
-  // Old AI guesses must not act as an inbox gate for a first-time sender.
-  if (!seen) await db.run(`UPDATE email_replies SET classification = 'needs_review', confirm_status = 'pending',
-    classification_reason = '未读来信重新进入统一待办，不以旧 AI 垃圾判断隐藏'
-    WHERE id = ? AND todo_status = 'excluded' AND classification = 'spam' AND classification_source = 'ai'`, [id]);
+  // Blocking is changed only by explicit user actions or the reviewed legacy recovery migration.
   await db.run(`UPDATE email_replies SET mail_seen = ?,
     todo_enqueued_at = CASE WHEN todo_status = 'excluded' AND ? = 0 THEN NOW() ELSE todo_enqueued_at END,
     triage_status = CASE WHEN todo_status = 'excluded' AND ? = 0 THEN 'pending' ELSE triage_status END,
@@ -131,7 +128,7 @@ async function drain() {
 
 async function retry(id) {
   await db.run(`UPDATE email_replies SET triage_status = 'pending', triage_attempts = 0,
-    triage_retry_at = NULL WHERE id = ? AND todo_status = 'pending' AND triage_status = 'failed'`, [id]);
+    triage_retry_at = NULL WHERE id = ? AND todo_status = 'pending' AND triage_status IN ('failed', 'manual_review')`, [id]);
 }
 
 async function setDone(id, done, ownerUserId, reason = 'resolved') {
