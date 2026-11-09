@@ -439,10 +439,10 @@ async function fetchScrapeCreators(platform, url, setting) {
 
   return {
     platform,
-    platform_video_id: String(firstDefined(post.shortcode, post.code, post.aweme_id, post.id, post.video_id, '')),
-    kol_name: firstDefined(owner.username, owner.unique_id, owner.full_name, owner.nickname, post.username, post.author_name, ''),
-    title: firstDefined(getInstagramCaption(post), post.description, post.desc, ''),
-    author_name: firstDefined(owner.username, owner.unique_id, owner.full_name, owner.nickname, post.username, post.author_name, ''),
+    platform_video_id: clean(firstDefined(post.shortcode, post.code, post.aweme_id, post.id, post.video_id)),
+    kol_name: clean(firstDefined(owner.username, owner.unique_id, owner.full_name, owner.nickname, post.username, post.author_name)),
+    title: clean(firstDefined(getInstagramCaption(post), post.description, post.desc)),
+    author_name: clean(firstDefined(owner.username, owner.unique_id, owner.full_name, owner.nickname, post.username, post.author_name)),
     content_type: contentType,
     published_at: normalizeTimestamp(firstDefined(post.taken_at_timestamp, post.taken_at, post.created_at, post.create_time, post.published_at, '')),
     metrics: normalizedMetrics,
@@ -890,12 +890,12 @@ async function crawlVideo(videoId, jobItemId) {
      last_crawled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [
       fetched.platform,
-      fetched.platform_video_id,
-      fetched.kol_name,
-      fetched.title,
-      fetched.author_name,
+      clean(fetched.platform_video_id) || video.platform_video_id || '',
+      clean(fetched.kol_name),
+      clean(fetched.title),
+      clean(fetched.author_name),
       fetched.content_type || 'unknown',
-      fetched.published_at,
+      fetched.published_at ?? null,
       'crawled',
       'success',
       videoId
@@ -1407,3 +1407,4 @@ router.get('/jobs/:id/export', async (req, res) => {
 module.exports = router;
 module.exports.crawlVideo = crawlVideo;
 module.exports.fetchYouTubeScrapeCreators = fetchYouTubeScrapeCreators;
+module.exports.fetchScrapeCreators = fetchScrapeCreators;
