@@ -34,8 +34,8 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
 
   const handleSubmit = async () => {
     const values = await form.validateFields();
-    const product = products.find((item) => item.id === values.product_id);
-    if (!product) {
+    const selectedProducts = values.product_ids.map((id) => products.find((item) => item.id === id));
+    if (selectedProducts.some((item) => !item)) {
       message.error('所选产品不存在或已归档');
       return;
     }
@@ -44,25 +44,12 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
     try {
       const campaignResponse = await axios.post('/api/campaigns', {
         name: values.name.trim(),
-        brand: product.brand || '',
-        product: product.name,
+        product_ids: selectedProducts.map((item) => item.id),
+        campaign_brief: values.campaign_brief?.trim() || '',
         period: values.period?.trim() || '',
         mailbox_id: values.mailbox_id || null
       });
       const campaign = campaignResponse.data.data;
-
-      try {
-        await axios.post(`/api/campaigns/${campaign.id}/products`, {
-          product_id: product.id,
-          role: 'hero',
-          priority: 0,
-          campaign_brief: values.campaign_brief?.trim() || '',
-          status: 'active'
-        });
-      } catch (error) {
-        const detail = error.response?.data?.error || '';
-        if (!detail.includes('already attached')) throw error;
-      }
 
       message.success('项目已创建并关联产品');
       form.resetFields();
@@ -94,13 +81,14 @@ const CampaignCreateModal = ({ open, onCancel, onCreated, createAndContinue = fa
         </Form.Item>
         <Form.Item
           label="推广产品/SKU"
-          name="product_id"
+          name="product_ids"
           rules={[{ required: true, message: '请选择推广产品' }]}
         >
           <Select
+            mode="multiple"
             showSearch
             loading={loadingProducts}
-            placeholder="请选择产品"
+            placeholder="请选择产品（可多选）"
             optionFilterProp="label"
             options={products.map((item) => ({
               value: item.id,

@@ -408,3 +408,65 @@ test('PUT /campaigns/:id can bind and clear mailbox_id', async () => {
     assert.equal(update.params[7], null, 'explicit null clears the binding');
   });
 });
+const { sequelize } = require('../database');
+
+test('multi-product creation commits all links and rolls back invalid or failed requests', async () => {
+  const originalQuery = sequelize.query;
+  const originalTransaction = sequelize.transaction;
+  try {
+    const handler = findHandler(require('./campaigns'), 'post', '/');
+    for (const scenario of ['success', 'archived', 'missing', 'duplicate', 'linkFailure']) {
+      const writes = [];
+      let committed = false;
+      let rolledBack = false;
+      const transaction = {};
+      sequelize.transaction = async (callback) => {
+        try {
+          const result = await callback(transaction);
+          committed = true;
+          return result;
+        } catch (error) {
+          rolledBack = true;
+          throw error;
+        }
+      };
+      sequelize.query = async (sql, options) => {
+        assert.equal(options.transaction, transaction);
+        if (sql.includes('FROM campaigns WHERE name')) return scenario === 'duplicate' ? [{ id: 1 }] : [];
+        if (sql.includes('FROM products')) return scenario === 'missing' ? [{ id: 2 }] : [
+          { id: 2, name: 'Second', brand: 'Brand', status: scenario === 'archived' ? 'archived' : 'active' },
+          { id: 1, name: 'First', brand: 'Brand', status: 'active' }
+        ];
+        if (sql.includes('FROM campaigns WHERE id')) return [{ id: 8, name: 'Multi' }];
+        writes.push({ sql, params: options.replacements });
+        if (sql.includes('INSERT INTO campaigns')) return [8, 1];
+        if (scenario === 'linkFailure' && options.replacements[1] === 2) throw new Error('link failed');
+        return [0, 1];
+      };
+      const response = await callHandler(handler, { body: {
+        name: 'Multi', product_ids: [1, 2, 1], campaign_brief: ' Shared brief '
+      } });
+      if (scenario === 'success') {
+        assert.equal(response.payload.success, true);
+        assert.equal(committed, true);
+        assert.deepEqual(writes.slice(1).map((write) => write.params), [
+          [8, 1, 'hero', 0, 'Shared brief'], [8, 2, 'secondary', 1, 'Shared brief']
+        ]);
+        assert.equal(writes[0].params[2], 'First / Second');
+      } else {
+        assert.equal(response.payload.success, false);
+        assert.equal(committed, false);
+        assert.equal(rolledBack, true);
+        assert.equal(response.statusCode, scenario === 'linkFailure' ? 500 : scenario === 'duplicate' ? 409 : 400);
+        if (scenario !== 'linkFailure') assert.equal(writes.length, 0);
+      }
+    }
+    for (const product_ids of [[], null, '1', [0], ['bad']]) {
+      const response = await callHandler(handler, { body: { name: 'Invalid', product_ids } });
+      assert.equal(response.statusCode, 400);
+    }
+  } finally {
+    sequelize.query = originalQuery;
+    sequelize.transaction = originalTransaction;
+  }
+});

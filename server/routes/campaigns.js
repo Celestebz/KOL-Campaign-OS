@@ -1,5 +1,5 @@
 const express = require('express');
-const { dbOperations } = require('../database');
+const { dbOperations, sequelize } = require('../database');
 
 const router = express.Router();
 const requestOwnerId = (req) => Number(req.user?.id) || 1;
@@ -546,6 +546,62 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ success: false, error: '产品/活动名称为必填字段' });
     }
 
+    // The multi-product creation endpoint commits the project and all links together.
+    if (hasOwn(req.body, 'product_ids')) {
+      const ids = req.body.product_ids;
+      if (!Array.isArray(ids) || !ids.length || ids.some((id) => parseBodyId(id) === null)) {
+        return res.status(400).json({ success: false, error: '请选择有效的推广产品' });
+      }
+      if (typeof name !== 'string' || !name.trim()
+        || (req.body.campaign_brief != null && typeof req.body.campaign_brief !== 'string')) {
+        return res.status(400).json({ success: false, error: '项目名称或 Brief 格式无效' });
+      }
+      const productIds = [...new Set(ids.map(parseBodyId))];
+      const created = await sequelize.transaction(async (transaction) => {
+        const select = (sql, replacements) => sequelize.query(sql, {
+          replacements, type: sequelize.QueryTypes.SELECT, transaction, logging: false
+        });
+        const reject = (message, status = 400) => {
+          const error = new Error(message);
+          error.status = status;
+          throw error;
+        };
+        const existing = await select('SELECT id FROM campaigns WHERE name = ? FOR UPDATE', [name.trim()]);
+        if (existing.length) reject('已存在同名项目，请使用其他项目名称', 409);
+        const selected = await select(
+          `SELECT id, name, brand, status FROM products WHERE id IN (${productIds.map(() => '?').join(',')}) FOR UPDATE`,
+          productIds
+        );
+        if (selected.length !== productIds.length || selected.some((item) => item.status === 'archived')) {
+          reject('所选产品不存在或已归档');
+        }
+        if (mailbox_id) {
+          const mailboxes = await select('SELECT id FROM email_settings WHERE id = ? AND owner_user_id = ?', [mailbox_id, requestOwnerId(req)]);
+          if (!mailboxes.length) reject('发件邮箱不存在');
+        }
+        const ordered = productIds.map((id) => selected.find((item) => Number(item.id) === id));
+        const [id] = await sequelize.query(
+          `INSERT INTO campaigns (name, brand, product, campaign_type, status, period,
+           brand_keywords, purchase_keywords, negative_keywords, mailbox_id)
+           VALUES (?, ?, ?, 'active_project', 'active', ?, ?, ?, ?, ?)`,
+          { replacements: [name.trim(), [...new Set(ordered.map((item) => item.brand).filter(Boolean))].join(' / '),
+            ordered.map((item) => item.name).join(' / '), period || '', brand_keywords || '',
+            purchase_keywords || '', negative_keywords || '', mailbox_id || null],
+            type: sequelize.QueryTypes.INSERT, transaction, logging: false }
+        );
+        for (const [priority, productId] of productIds.entries()) {
+          await sequelize.query(
+            `INSERT INTO campaign_products (campaign_id, product_id, role, priority, campaign_brief, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            { replacements: [id, productId, priority === 0 ? 'hero' : 'secondary', priority,
+              req.body.campaign_brief?.trim() || ''], transaction, logging: false }
+          );
+        }
+        return (await select('SELECT * FROM campaigns WHERE id = ?', [id]))[0];
+      });
+      return res.json({ success: true, data: created, message: '项目已创建并关联产品' });
+    }
+
     const existing = await dbOperations.get('SELECT * FROM campaigns WHERE name = ?', [name]);
     if (existing) {
       return res.json({ success: true, data: existing, message: '产品/活动已存在' });
@@ -569,7 +625,7 @@ router.post('/', async (req, res) => {
     const created = await dbOperations.get('SELECT * FROM campaigns WHERE id = ?', [result.id]);
     res.json({ success: true, data: created, message: '产品/活动已创建' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.status || 500).json({ success: false, error: error.message });
   }
 });
 
