@@ -9,6 +9,8 @@ import { subscribeCampaignProgressChanged } from './campaignProgressSync';
 import { deriveCampaignStage, deriveProgressText } from './campaignProgress';
 import { normalizeCampaignProductMaterial } from './campaignProductMaterial';
 import CampaignKols from './CampaignKols';
+import CampaignTasks from './productTasks/CampaignTasks';
+import TaskMemberBoard from './productTasks/TaskMemberBoard';
 
 const STRATEGY_STATUS = {
   draft: { label: '草稿', color: 'orange' },
@@ -604,6 +606,7 @@ const CampaignDetail = () => {
         defaultActiveKey="overview"
         items={[
           { key: 'overview', label: '项目概览', children: <Card className="content-card">{overviewTab}</Card> },
+          { key: 'product-tasks', label: '产品任务', children: <Card className="content-card"><CampaignTasks campaignId={campaign.id} /></Card> },
           {
             key: 'candidates',
             label: `候选池（${summary.kols_candidate ?? 0}）`,
@@ -616,7 +619,10 @@ const CampaignDetail = () => {
                   description="集中审核当前项目候选；人工确认合作后，达人会进入合作区，候选记录仍会保留。"
                   action={<Link to={`/finder?campaign_id=${campaign.id}`}><Button>继续寻找达人</Button></Link>}
                 />
-                <CampaignKols view="candidate" campaignId={campaign.id} embedded />
+                <Tabs items={[
+                  { key: 'tasks', label: '按产品任务推进', children: <TaskMemberBoard campaignId={campaign.id} view="candidate" /> },
+                  { key: 'legacy', label: '原项目记录', children: <CampaignKols view="candidate" campaignId={campaign.id} embedded /> }
+                ]} />
               </Space>
             )
           },
@@ -632,7 +638,10 @@ const CampaignDetail = () => {
                   description="统一处理联系、沟通、报价、寄样、内容履约与发布进度。"
                   action={<Link to={`/emails?campaign_id=${campaign.id}`}><Button icon={<MailOutlined />}>项目邮件</Button></Link>}
                 />
-                <CampaignKols view="cooperation" campaignId={campaign.id} embedded />
+                <Tabs items={[
+                  { key: 'tasks', label: '按产品任务履约', children: <TaskMemberBoard campaignId={campaign.id} view="cooperation" /> },
+                  { key: 'legacy', label: '原项目记录', children: <CampaignKols view="cooperation" campaignId={campaign.id} embedded /> }
+                ]} />
               </Space>
             )
           },

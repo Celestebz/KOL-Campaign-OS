@@ -143,8 +143,22 @@ async function sendApprovedDraft(draftId) {
   }
 
   const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [draftId]);
+  try {
+    if (draft.kind === 'reply' && draft.source_reply_id) {
+      const source = await dbOperations.get('SELECT id,thread_id FROM email_replies WHERE id=? AND owner_user_id=?', [draft.source_reply_id, draft.owner_user_id]);
+      await require('./productTaskMail').inheritReplyTaskLinks(draft, source, dbOperations);
+    }
+    await require('./productTaskMail').validateTaskDraftForSend(draft, dbOperations);
+  } catch (error) {
+    await markFailed(draft.id);
+    throw error;
+  }
   // 多邮箱：草稿绑定的邮箱优先；草稿未绑定时按活动绑定邮箱解析，最后才回退默认邮箱
   const bound = draft.mailbox_id ? await emailMailboxes.getMailboxById(draft.mailbox_id, draft.owner_user_id) : null;
+  if (draft.prompt_version?.startsWith('product-task-') && !bound?.enabled) {
+    await markFailed(draft.id);
+    throw actionError('预览时选择的发件邮箱已不可用，请重新起草，不能自动切换邮箱', 409);
+  }
   const campaignRow = draft.campaign_id
     ? await dbOperations.get('SELECT mailbox_id FROM campaigns WHERE id = ?', [draft.campaign_id])
     : null;

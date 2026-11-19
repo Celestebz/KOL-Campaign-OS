@@ -63,6 +63,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/campaigns', campaignRoutes);
+app.use('/api/campaigns', require('./routes/productTasks').createRouter());
 app.use('/api/products', productRoutes);
 app.use('/api/raw-candidates', rawCandidateRoutes.router);
 app.use('/api/campaign-kols', campaignKolRoutes);

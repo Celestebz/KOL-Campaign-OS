@@ -206,11 +206,14 @@ router.get('/:id/detail', async (req, res) => {
     );
 
     const kolAggPromise = dbOperations.get(
-      `SELECT COUNT(*) AS kols_total,
-         COALESCE(SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END), 0) AS candidates,
-         COALESCE(SUM(CASE WHEN pipeline_stage = 'candidate' THEN 1 ELSE 0 END), 0) AS kols_candidate,
-         COALESCE(SUM(CASE WHEN pipeline_stage = 'confirmed' THEN 1 ELSE 0 END), 0) AS kols_confirmed
-       FROM campaign_kols WHERE campaign_id = ?`,
+      `SELECT COUNT(DISTINCT ck.customer_id) AS kols_total,
+         COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM campaign_kol_tasks kt WHERE kt.campaign_kol_id=ck.id AND kt.review_status='pending')
+           OR (NOT EXISTS (SELECT 1 FROM campaign_kol_tasks kt WHERE kt.campaign_kol_id=ck.id) AND ck.status='candidate') THEN ck.customer_id END) AS candidates,
+         COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM campaign_kol_tasks kt WHERE kt.campaign_kol_id=ck.id AND kt.cooperation_status IN ('candidate','negotiating','cancelled'))
+           OR (NOT EXISTS (SELECT 1 FROM campaign_kol_tasks kt WHERE kt.campaign_kol_id=ck.id) AND ck.pipeline_stage='candidate') THEN ck.customer_id END) AS kols_candidate,
+         COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM campaign_kol_tasks kt WHERE kt.campaign_kol_id=ck.id AND kt.cooperation_status IN ('confirmed','shipped','producing','published','completed'))
+           OR (NOT EXISTS (SELECT 1 FROM campaign_kol_tasks kt WHERE kt.campaign_kol_id=ck.id) AND ck.pipeline_stage='confirmed') THEN ck.customer_id END) AS kols_confirmed
+       FROM campaign_kols ck WHERE ck.campaign_id = ?`,
       [campaignId]
     );
     // 漏斗使用累计事实口径，而不是互斥的当前状态：状态继续推进后，已联系/已回复不能减少。
@@ -229,8 +232,12 @@ router.get('/:id/detail', async (req, res) => {
          WHERE campaign_id = ? AND customer_id IS NOT NULL
            AND COALESCE(classification, 'kol_reply') <> 'spam'
            AND confirm_status <> 'ignored'
+         UNION ALL
+         SELECT ck.customer_id FROM campaign_task_events e
+         JOIN campaign_kol_tasks kt ON kt.id=e.kol_task_id JOIN campaign_kols ck ON ck.id=kt.campaign_kol_id
+         WHERE ck.campaign_id=? AND e.event_type='manual_contact'
        ) touched`,
-      [campaignId, campaignId, campaignId]
+      [campaignId, campaignId, campaignId, campaignId]
     );
     const repliedKolsRowPromise = dbOperations.get(
       `SELECT COUNT(DISTINCT customer_id) AS count

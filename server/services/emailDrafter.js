@@ -395,6 +395,7 @@ async function draftForCustomer({ campaignId, customerId, kind = 'first_touch', 
       const snapshot = firstTouchProductContextSnapshot(firstTouch);
       if (snapshot !== null) productContextOverride = snapshot;
     }
+    if (threadContext?.taskProductContext) productContextOverride = threadContext.taskProductContext;
     const productContextUsed = resolveProductContext({ communicationProduct, strategy, campaign, override: productContextOverride });
 
     const userPrompt = buildUserPrompt({

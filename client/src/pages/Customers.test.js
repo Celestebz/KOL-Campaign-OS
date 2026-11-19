@@ -55,6 +55,34 @@ test('maps the YouTube snapshot engagement rate for the detail view', () => {
   });
 });
 
+test('shows multiple recommended products and requests SKU filtering', async () => {
+  axios.get.mockImplementation((url) => {
+    if (url === '/api/customers') return Promise.resolve({ data: {
+      data: [{ id: 11, name: 'Alice', product_recommendations: [
+        { sku: 'TLA-0125', category: '林业' },
+        { sku: 'TLA-0136', category: '林业' }
+      ] }],
+      recommendation_options: { categories: [{ value: '林业', count: 1 }], skus: [
+        { value: 'TLA-0125', count: 1 }, { value: 'TLA-0136', count: 1 }
+      ] }
+    } });
+    if (url === '/api/customers/filter-options') return Promise.resolve({ data: { data: { countries: [], platforms: [] } } });
+    return Promise.resolve({ data: { data: [] } });
+  });
+  render(<Customers />);
+  expect(await screen.findByText('TLA-0125')).toBeInTheDocument();
+  expect(screen.getByText('TLA-0136')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('combobox', { name: '推荐 SKU' }));
+  await userEvent.click(await screen.findByText('TLA-0136（1人）'));
+  await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/customers', {
+    params: { recommended_sku: ['TLA-0136'] }
+  }));
+  await userEvent.click(screen.getByRole('checkbox', { name: '匹配全部所选 SKU' }));
+  await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/customers', {
+    params: { recommended_sku: ['TLA-0136'], recommendation_match: 'all' }
+  }));
+});
+
 test('shows platform home links and follower counts in the KOL management table', async () => {
   axios.get.mockImplementation((url) => {
     if (url === '/api/customers') return Promise.resolve({

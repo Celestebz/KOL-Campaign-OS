@@ -32,7 +32,7 @@ function mkRecord(id, { at, body, messageId, subject = 'Hi', to = 'kol@x.com' })
 }
 
 // 内存版最小仓库：按 SQL 形态路由到固定数据，run 只记录
-function createFakeDb({ thread, replies = [], records = [], campaign = null, customer = null, campaignKol = null, strategy = null, campaignKolProduct = null }) {
+function createFakeDb({ thread, replies = [], records = [], campaign = null, customer = null, campaignKol = null, strategy = null, campaignKolProduct = null, taskSnapshots = [] }) {
   const statements = [];
   const get = async (sql) => {
     if (/FROM email_threads WHERE id = \?/.test(sql)) return thread;
@@ -44,6 +44,7 @@ function createFakeDb({ thread, replies = [], records = [], campaign = null, cus
     throw new Error(`Unexpected get: ${sql}`);
   };
   const query = async (sql) => {
+    if (sql.includes('FROM email_task_links')) return taskSnapshots.map((snapshot) => ({ snapshot: JSON.stringify(snapshot) }));
     if (/FROM email_replies WHERE thread_id = \?/.test(sql)) return replies;
     if (/FROM email_records WHERE thread_id = \?/.test(sql)) return records;
     throw new Error(`Unexpected query: ${sql}`);
@@ -58,6 +59,20 @@ function createFakeDb({ thread, replies = [], records = [], campaign = null, cus
 const baseThread = { id: 33, campaign_id: 5, customer_id: 7, normalized_subject: 'Hi', context_summary: null, summary_through_message_id: null };
 const baseCampaign = { id: 5, name: 'Everglow', brand: 'BILT HARD', product: 'Tree collar', period: '2026Q3', status: 'active' };
 const baseCustomer = { id: 7, name: 'Casey', platform: 'instagram', country_region: 'US', email: 'kol@x.com' };
+
+test('task reply context keeps multiple scoped products and omits unrelated project fees', async () => {
+  const fake = createFakeDb({ thread: baseThread, campaign: baseCampaign, customer: baseCustomer,
+    campaignKol: { quoted_fee: '99999', expected_publish_at: '2028-01-01' },
+    strategy: { product_context: 'unrelated project product' },
+    records: [mkRecord(1, { at: '2026-11-01', body: 'A and B invitation' })],
+    taskSnapshots: [{ name: '组合推广', products: [{ sku: 'A', name: '产品A' }, { sku: 'B', name: '产品B' }], publish_due_at: '2027-01-15' }]
+  });
+  const ctx = await emailContextBuilder.buildThreadContext(33, {}, fake);
+  assert.match(ctx.taskProductContext, /产品A.*产品B/);
+  assert.match(ctx.projectBlock, /2027-01-15/);
+  assert.ok(!ctx.factsBlock.includes('99999'));
+  assert.ok(!ctx.strategyBlock.includes('unrelated'));
+});
 
 test('communication product overrides the campaign product in the project block', async () => {
   const fake = createFakeDb({

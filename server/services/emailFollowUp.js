@@ -23,6 +23,11 @@ async function scanOnce() {
        GROUP BY campaign_id, customer_id, owner_user_id
      ) er_owner ON er_owner.campaign_id = ck.campaign_id AND er_owner.customer_id = ck.customer_id
      WHERE ck.last_outreach_at IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM email_task_links etl JOIN email_drafts task_draft ON task_draft.id=etl.draft_id
+         WHERE task_draft.campaign_id=ck.campaign_id AND task_draft.customer_id=ck.customer_id
+           AND task_draft.owner_user_id=er_owner.owner_user_id AND task_draft.status='sent'
+       )
        AND ck.last_outreach_at <= DATE_SUB(NOW(), INTERVAL ? HOUR)
        AND ck.last_outreach_at > DATE_SUB(NOW(), INTERVAL ? DAY)
        AND COALESCE(ck.follow_up_count, 0) < ?

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Collapse, Descriptions, Drawer, Empty, Form, Input, message, Modal, Popconfirm, Select, Space, Spin, Statistic, Table, Tabs, Tag, Upload } from 'antd';
+import { Alert, Button, Card, Checkbox, Collapse, Descriptions, Drawer, Empty, Form, Input, message, Modal, Popconfirm, Select, Space, Spin, Statistic, Table, Tabs, Tag, Upload } from 'antd';
 import {
   CloudDownloadOutlined,
   CloudUploadOutlined,
@@ -13,6 +13,9 @@ import {
 } from '@ant-design/icons';
 import axios from 'axios';
 import CampaignCreateModal from './CampaignCreateModal';
+import TaskIntakeModal from './productTasks/TaskIntakeModal';
+import TaskOutreachModal from './productTasks/TaskOutreachModal';
+import { COOPERATION, REVIEW, dateText } from './productTasks/taskLabels';
 import { COOPERATION_STAGE_OPTIONS } from './campaignKolStatus';
 
 export const normalizeYoutubeSnapshot = (snapshot = {}) => ({
@@ -73,6 +76,11 @@ const Customers = () => {
   const [selectedCooperationStatus, setSelectedCooperationStatus] = useState(null);
   const [selectedPlatform, setSelectedPlatform] = useState(null);
   const [selectedCountry, setSelectedCountry] = useState(null);
+  const [recommendedCategories, setRecommendedCategories] = useState([]);
+  const [recommendedSkus, setRecommendedSkus] = useState([]);
+  const [matchAllSkus, setMatchAllSkus] = useState(false);
+  const [recommendationOptions, setRecommendationOptions] = useState({ categories: [], skus: [] });
+  const listRequest = useRef(0);
   const [filterOptions, setFilterOptions] = useState({ countries: [], platforms: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerKol, setDrawerKol] = useState(null);
@@ -80,6 +88,7 @@ const Customers = () => {
   const [activeSnapshotPlatform, setActiveSnapshotPlatform] = useState('youtube');
   const [snapshotRefreshing, setSnapshotRefreshing] = useState(false);
   const [projectHistory, setProjectHistory] = useState([]);
+  const [taskHistory, setTaskHistory] = useState([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [drawerError, setDrawerError] = useState('');
   const [addToProjectOpen, setAddToProjectOpen] = useState(false);
@@ -105,8 +114,29 @@ const Customers = () => {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const drawerRequest = useRef(0);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [taskIntakeOpen, setTaskIntakeOpen] = useState(false);
+  const [taskOutreachMode, setTaskOutreachMode] = useState(false);
+  const [taskOutreach, setTaskOutreach] = useState(null);
+  const [sourceTaskName, setSourceTaskName] = useState('');
   const [currentPageKolIds, setCurrentPageKolIds] = useState([]);
   const [form] = Form.useForm();
+
+  useEffect(() => {
+    const context = new URLSearchParams(window.location.search);
+    const campaignId = Number(context.get('campaign_id'));
+    const taskId = Number(context.get('task_id'));
+    if (!campaignId || !taskId) return;
+    let cancelled = false;
+    axios.get(`/api/campaigns/${campaignId}/tasks`).then((res) => {
+      if (cancelled) return;
+      const task = (res.data.data || []).find((row) => row.id === taskId);
+      if (!task) return;
+      setSourceTaskName(task.name);
+      setRecommendedSkus([...new Set((task.products || []).map((p) => p.sku).filter(Boolean))]);
+      setMatchAllSkus(true);
+    }).catch(() => message.warning('来源任务加载失败，可手动筛选后选择任务'));
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     fetchGroups();
@@ -122,9 +152,10 @@ const Customers = () => {
   useEffect(() => {
     fetchKols();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroup, selectedCooperationStatus, selectedPlatform, selectedCountry]);
+  }, [selectedGroup, selectedCooperationStatus, selectedPlatform, selectedCountry, recommendedCategories, recommendedSkus, matchAllSkus]);
 
   const fetchKols = async () => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
       const params = {};
@@ -133,15 +164,21 @@ const Customers = () => {
       if (selectedCooperationStatus) params.cooperation_status = selectedCooperationStatus;
       if (selectedPlatform) params.platform = selectedPlatform;
       if (selectedCountry) params.country_region = selectedCountry;
+      if (recommendedCategories.length) params.recommended_category = recommendedCategories;
+      if (recommendedSkus.length) params.recommended_sku = recommendedSkus;
+      if (matchAllSkus) params.recommendation_match = 'all';
       const response = await axios.get('/api/customers', { params });
+      if (requestId !== listRequest.current) return;
       const rows = response.data.data || [];
+      setRecommendationOptions(response.data.recommendation_options || { categories: [], skus: [] });
       setKols(rows);
       setCurrentPageKolIds(rows.slice(0, 20).map((item) => item.id));
       setSelectedRowKeys([]);
     } catch (error) {
+      if (requestId !== listRequest.current) return;
       message.error('获取 KOL 列表失败');
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
@@ -165,19 +202,22 @@ const Customers = () => {
           : record.tiktok_url || listedPlatforms.has('tiktok') ? 'tiktok' : 'youtube'
     );
     setProjectHistory([]);
+    setTaskHistory([]);
     setDrawerError('');
     setDrawerLoading(true);
     try {
-      const [detail, history, youtube, instagram, tiktok] = await Promise.all([
+      const [detail, history, youtube, instagram, tiktok, taskRows] = await Promise.all([
         axios.get(`/api/customers/${record.id}`),
         axios.get(`/api/customers/${record.id}/project-history`),
         axios.get(`/api/customers/${record.id}/youtube-snapshot`),
         axios.get(`/api/customers/${record.id}/social-snapshot/instagram`),
-        axios.get(`/api/customers/${record.id}/social-snapshot/tiktok`)
+        axios.get(`/api/customers/${record.id}/social-snapshot/tiktok`),
+        axios.get(`/api/customers/${record.id}/product-tasks`)
       ]);
       if (requestId !== drawerRequest.current) return;
       setDrawerKol(detail.data.data);
       setProjectHistory(history.data.data || []);
+      setTaskHistory(taskRows.data.data || []);
       const yt = youtube.data.data || {};
       setPlatformSnapshots({
         youtube: normalizeYoutubeSnapshot(yt),
@@ -202,6 +242,9 @@ const Customers = () => {
     setSelectedCooperationStatus(null);
     setSelectedPlatform(null);
     setSelectedCountry(null);
+    setRecommendedCategories([]);
+    setRecommendedSkus([]);
+    setMatchAllSkus(false);
   };
 
   const openAddToProject = (ids, candidatePool = false) => {
@@ -651,6 +694,14 @@ const Customers = () => {
     { title: '邮箱', dataIndex: 'email', key: 'email', width: 210, render: (value) => value || '-' },
     { title: '国家/地区', dataIndex: 'country_region', key: 'country_region', width: 110, render: (value) => value || '-' },
     { title: '内容类目', dataIndex: 'content_category', key: 'content_category', width: 150, render: (value) => value || '-' },
+    { title: '推荐品类', key: 'recommended_categories', width: 170, render: (_, record) => {
+      const values = [...new Set((record.product_recommendations || []).map((fit) => fit.category).filter(Boolean))];
+      return values.length ? <Space wrap>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : '-';
+    } },
+    { title: '推荐 SKU', key: 'recommended_skus', width: 220, render: (_, record) => {
+      const values = [...new Set((record.product_recommendations || []).map((fit) => fit.sku).filter(Boolean))];
+      return values.length ? <Space wrap>{values.map((value) => <Tag key={value} color="blue">{value}</Tag>)}</Space> : '-';
+    } },
     { title: 'YouTube', key: 'youtube', width: 130, render: (_, record) => platformLink(record.youtube_url, record.youtube_followers) },
     { title: 'Instagram', key: 'instagram', width: 130, render: (_, record) => platformLink(record.instagram_url, record.instagram_followers) },
     { title: 'TikTok', key: 'tiktok', width: 130, render: (_, record) => platformLink(record.tiktok_url, record.tiktok_followers) },
@@ -724,6 +775,15 @@ const Customers = () => {
           <Select allowClear showSearch placeholder="国家地区" value={selectedCountry} onChange={setSelectedCountry}
             style={{ width: 160 }} options={filterOptions.countries.map((value) => ({ value, label: value }))} />
           <Button onClick={clearFilters}>清空筛选</Button>
+          <Select mode="multiple" allowClear showSearch aria-label="推荐品类" placeholder="推荐品类"
+            style={{ minWidth: 200 }} value={recommendedCategories}
+            onChange={(values) => { setRecommendedCategories(values); setRecommendedSkus([]); }}
+            options={recommendationOptions.categories.map(({ value, count }) => ({ value, label: `${value}（${count}人）` }))} />
+          <Select mode="multiple" allowClear showSearch aria-label="推荐 SKU" placeholder="推荐 SKU"
+            style={{ minWidth: 240 }} value={recommendedSkus} onChange={setRecommendedSkus}
+            options={recommendationOptions.skus.map(({ value, count }) => ({ value, label: `${value}（${count}人）` }))} />
+          <Checkbox checked={matchAllSkus} onChange={(event) => setMatchAllSkus(event.target.checked)}>匹配全部所选 SKU</Checkbox>
+          <span style={{ color: '#666' }}>推荐人数按当前基础筛选去重统计；历史合作单独展示</span>
           <Button icon={<ReloadOutlined />} onClick={fetchKols}>刷新</Button>
           <Button type="primary" icon={<UploadOutlined />} onClick={() => setLinkImportOpen(true)}>粘贴链接导入</Button>
           <Button icon={<DownloadOutlined />} onClick={handleDownloadTemplate}>下载模板</Button>
@@ -763,9 +823,19 @@ const Customers = () => {
         />
       </Modal>
 
+      {sourceTaskName && <Alert type="info" showIcon style={{ marginBottom: 16 }} message={`正在为「${sourceTaskName}」选人，已预设产品筛选，可自行调整。`} />}
+      <TaskIntakeModal open={taskIntakeOpen} outreach={taskOutreachMode} onClose={() => setTaskIntakeOpen(false)}
+        customers={kols.filter((kol) => selectedRowKeys.includes(kol.id))} campaigns={campaigns} onSaved={(campaignId, rows) => {
+          if (taskOutreachMode) setTaskOutreach({ campaignId, memberIds: [...new Set(rows.map((row) => row.id))] });
+          fetchKols();
+        }} />
+      <TaskOutreachModal open={!!taskOutreach} onClose={() => setTaskOutreach(null)} campaignId={taskOutreach?.campaignId}
+        memberIds={taskOutreach?.memberIds || []} onSent={fetchKols} />
       {selectedRowKeys.length > 0 && <Card className="content-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <span>已选 {selectedRowKeys.length} 个 KOL</span>
+          <Button type="primary" onClick={() => { setTaskOutreachMode(false); setTaskIntakeOpen(true); }}>按产品任务加入候选池</Button>
+          <Button onClick={() => { setTaskOutreachMode(true); setTaskIntakeOpen(true); }}>按任务发开发信</Button>
           <Button onClick={selectCurrentPage} disabled={!currentPageKolIds.length}>全选当前页</Button>
           <Button onClick={() => setSelectedRowKeys([])} disabled={!selectedRowKeys.length}>清空选择</Button>
           <Button type="default" icon={<PlusOutlined />} onClick={() => openAddToProject(selectedRowKeys, true)}>加入候选池</Button>
@@ -868,6 +938,19 @@ const Customers = () => {
             </div>
             <div>
               <h3>SKU 匹配</h3>
+              {(drawerKol.product_recommendations || []).length > 0 && <Table
+                size="small" pagination={false}
+                rowKey={(row) => `${row.campaign_product_id}-${row.fit_id}`}
+                dataSource={drawerKol.product_recommendations}
+                columns={[
+                  { title: '推荐 SKU', dataIndex: 'sku', render: (value) => value || '-' },
+                  { title: '推荐品类', dataIndex: 'category', render: (value) => value || '-' },
+                  { title: '匹配分', dataIndex: 'score', render: (value) => value ?? '-' },
+                  { title: '确认', dataIndex: 'decision', render: decisionLabel },
+                  { title: '推荐依据', dataIndex: 'evidence_summary', render: (value) => value || '-' },
+                  { title: '证据', dataIndex: 'evidence_url', render: (value) => value ? <a href={value} target="_blank" rel="noreferrer">查看视频</a> : '-' }
+                ]}
+              />}
               <Descriptions bordered column={2} size="small">
                 <Descriptions.Item label="匹配SKU">{drawerKol.current_target_sku || '-'}</Descriptions.Item>
                 <Descriptions.Item label="SKU匹配分">{drawerKol.current_fit_score ?? '-'}</Descriptions.Item>
@@ -893,6 +976,14 @@ const Customers = () => {
               </Descriptions>
             </div>
             <div>
+              <h3>产品任务与合作进度</h3>
+              <Table size="small" rowKey="id" pagination={false} dataSource={taskHistory} columns={[
+                { title: '项目', dataIndex: 'campaign_name', render: (value, row) => <a href={`/campaigns/${row.campaign_id}`}>{value}</a> },
+                { title: '任务', dataIndex: 'task_name' },
+                { title: '审核', dataIndex: 'review_status', render: (value) => REVIEW[value] || value },
+                { title: '合作', dataIndex: 'cooperation_status', render: (value) => COOPERATION[value] || value },
+                { title: '承诺发布', dataIndex: 'agreed_publish_at', render: dateText }
+              ]} />
               <h3>项目历史</h3>
               {projectHistory.length ? <Table size="small" rowKey="id" pagination={false} dataSource={projectHistory}
                 columns={[

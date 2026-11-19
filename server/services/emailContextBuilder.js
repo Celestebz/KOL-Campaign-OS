@@ -50,7 +50,7 @@ async function loadThreadTimeline(threadId, db = dbOperations) {
   const replies = await db.query(
     `SELECT id, message_id, subject, from_address, received_at,
             body_text, clean_body_text, body_html, quoted_body_text, signature_text,
-            parse_status, ai_summary, confirm_status
+            parse_status, ai_summary, confirm_status, reply_to_message_id
      FROM email_replies WHERE thread_id = ?
      ORDER BY received_at ASC, id ASC`,
     [threadId]
@@ -264,7 +264,7 @@ async function buildThreadContext(threadId, opts = {}, db = dbOperations) {
       [thread.campaign_id, thread.customer_id]
     )
     : null;
-  const communicationProduct = campaignKol
+  let communicationProduct = campaignKol
     ? await db.get(
         `SELECT p.sku AS product_sku, p.name AS product_name
          FROM campaign_kol_products ckp
@@ -275,6 +275,18 @@ async function buildThreadContext(threadId, opts = {}, db = dbOperations) {
         [campaignKol.id]
       )
     : null;
+  const scopedOutbound = timeline.find((m) => m.direction === 'outbound' && latestInbound?.reply?.reply_to_message_id === m.messageId)
+    || [...timeline].reverse().find((m) => m.direction === 'outbound' && (!latestInbound || new Date(m.at) <= new Date(latestInbound.at)));
+  let taskProductContext = null;
+  if (scopedOutbound) {
+    const links = await db.query(`SELECT l.snapshot FROM email_task_links l
+      JOIN email_records er ON er.draft_id=l.draft_id WHERE er.id=?`, [scopedOutbound.recordId]);
+    const snapshots = links.map((link) => { try { return JSON.parse(link.snapshot); } catch (_) { return null; } }).filter(Boolean);
+    if (snapshots.length) {
+      taskProductContext = snapshots.map((s) => `${s.name}: ${(s.products || []).map((p) => `${p.sku || ''} ${p.name}`).join(' + ')}; Publish: ${s.publish_from || '?'} - ${s.publish_due_at || '?'}`).join('\n');
+      communicationProduct = { product_name: taskProductContext };
+    }
+  }
   const strategy = thread.campaign_id
     ? await db.get('SELECT * FROM kol_strategies WHERE campaign_id = ? ORDER BY updated_at DESC LIMIT 1', [thread.campaign_id])
     : null;
@@ -286,10 +298,11 @@ async function buildThreadContext(threadId, opts = {}, db = dbOperations) {
 
   return {
     thread,
+    taskProductContext,
     projectBlock: renderProjectBlock(campaign, communicationProduct),
     kolBlock: renderKolBlock(customer),
-    strategyBlock: renderStrategyBlock(strategy),
-    factsBlock: renderFactsBlock(campaignKol),
+    strategyBlock: renderStrategyBlock(taskProductContext ? { target_market: strategy?.target_market } : strategy),
+    factsBlock: renderFactsBlock(taskProductContext ? { cooperation_type: campaignKol?.cooperation_type } : campaignKol),
     messagesBlock: { messages: recent, text: messagesText },
     contextMessageIds: recent.map((m) => m.messageId),
     summaryUsed,

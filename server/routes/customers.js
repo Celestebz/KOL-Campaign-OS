@@ -7,6 +7,7 @@ const { dbOperations } = require('../database');
 const { runYoutubeIntakeSnapshot } = require('../services/youtubeIntakeSnapshot');
 const { runSocialIntakeSnapshot } = require('../services/socialIntakeSnapshot');
 const { parseKolProfileUrl } = require('../utils/kolProfileUrl');
+const { recommendationsFromFits, matchesRecommendations, recommendationOptions } = require('../utils/kolRecommendations');
 
 const router = express.Router();
 
@@ -129,6 +130,7 @@ async function attachKolInsights(customers) {
        rcpf.id, rcpf.platform, rcpf.fit_score, rcpf.matched_persona, rcpf.evidence_summary,
        rcpf.decision_status, rcpf.identity_status, rcpf.updated_at,
        rc.evidence_url, rc.video_url, rc.ai_match_reason, rc.status candidate_status,
+       p.id product_id, cp.id campaign_product_id,
        p.sku product_sku, p.name product_name, p.category product_category
      FROM raw_candidate_product_fits rcpf
      LEFT JOIN raw_candidates rc ON rc.id = rcpf.latest_raw_candidate_id
@@ -201,6 +203,9 @@ async function attachKolInsights(customers) {
     }, new Map()).values());
     return {
       ...customer,
+      product_recommendations: recommendationsFromFits(customerFits).map((fit) => ({
+        ...fit, evidence_summary: parseEvidenceSummary(fit.evidence_summary)
+      })),
       covered_platforms: coveredPlatforms,
       primary_platform: platformLabel(primaryAccount?.platform),
       primary_account_name: primaryAccount?.username || null,
@@ -680,7 +685,11 @@ router.get('/', async (req, res) => {
     sql += ' ORDER BY c.created_at DESC';
     const customers = await dbOperations.query(sql, params);
     const withAccounts = await attachPlatformAccounts(customers);
-    res.json({ success: true, data: await attachKolInsights(withAccounts) });
+    const enriched = await attachKolInsights(withAccounts);
+    res.json({ success: true,
+      data: enriched.filter((customer) => matchesRecommendations(customer, req.query)),
+      recommendation_options: recommendationOptions(enriched, req.query)
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1223,6 +1232,13 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+router.get('/:id/product-tasks', async (req, res) => {
+  try {
+    const service = require('../services/productTaskService').createProductTaskService(require('../database'));
+    res.json({ success: true, data: await service.customerHistory(req.params.id) });
+  } catch (error) { res.status(error.statusCode || 500).json({ success: false, error: error.message }); }
 });
 
 module.exports = router;

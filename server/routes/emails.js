@@ -539,6 +539,9 @@ router.post('/drafts/:id/regenerate', async (req, res) => {
   try {
     const draft = await dbOperations.get('SELECT * FROM email_drafts WHERE id = ?', [req.params.id]);
     if (!draft) return res.status(404).json({ success: false, error: '草稿不存在' });
+    if (draft.prompt_version === 'product-task-template-v1') {
+      return res.status(409).json({ success: false, error: '产品任务固定模板请直接编辑正文；需要更换任务或模板时请重新预览起草。' });
+    }
     if (draft.status !== 'pending_review') {
       return res.status(409).json({ success: false, error: '仅待审阅状态可重新生成' });
     }

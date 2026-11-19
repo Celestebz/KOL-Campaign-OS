@@ -102,6 +102,21 @@ test('best SKU fit is selected by approval and score instead of recency', () => 
   assert.equal(selected.product_sku, 'TMB-1401');
 });
 
+test('KOL insight includes all evidence-based recommendations without promoting project membership', async () => {
+  const original = dbOperations.query;
+  dbOperations.query = async (sql) => String(sql).includes('FROM raw_candidate_product_fits') ? [
+    { customer_id: 7, id: 1, product_id: 10, campaign_product_id: 20, product_sku: 'A', product_category: '汽车', decision_status: 'pending' },
+    { customer_id: 7, id: 2, product_id: 11, campaign_product_id: 21, product_sku: 'B', product_category: '林业', decision_status: 'approved' }
+  ] : [{ customer_id: 7, product_sku: 'C', project_status: 'candidate' }];
+  try {
+    const [customer] = await customersRoute.attachKolInsights([{ id: 7 }]);
+    assert.deepEqual(customer.product_recommendations.map((fit) => fit.sku), ['A', 'B']);
+    assert.deepEqual(customer.product_recommendations.map((fit) => fit.decision), ['pending', 'approved']);
+  } finally {
+    dbOperations.query = original;
+  }
+});
+
 test('creator grade follows the approved median-view and engagement thresholds', () => {
   assert.equal(customersRoute.creatorGrade(5, 50000, 0.03), 'A');
   assert.equal(customersRoute.creatorGrade(3, 15000, 0.015), 'B');
