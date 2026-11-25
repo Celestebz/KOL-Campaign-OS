@@ -163,10 +163,40 @@ function isAgentFinderOperation(req) {
   return method === 'POST' && /^\/api\/finder-tasks\/[^/]+\/(video-evidence\/import|evidence-analysis|generate-candidates-from-evidence)$/.test(p);
 }
 
+// Only side-effect-free reads may use an external Agent identity here.
+// Do not allow whole routers: several customer GET routes start snapshot jobs.
+function isAgentReadOperation(req) {
+  if (req.method.toUpperCase() !== 'GET') return false;
+  return ['/api/emails/settings/sync-status', '/api/emails/threads', '/api/customers'].includes(req.path)
+    || /^\/api\/emails\/threads\/[1-9]\d*$/.test(req.path)
+    || /^\/api\/customers\/[1-9]\d*(?:\/project-history)?$/.test(req.path);
+}
+
 function createAuthGuard(store = defaultStore) {
   return function authGuardForStore(req, res, next) {
   const p = req.path;
   if (p === '/api/health' || p.startsWith('/api/agent') || p.startsWith('/api/auth')) return next();
+  if (isAgentReadOperation(req)) {
+    return loadSession(req, store).then((user) => {
+      if (user) { req.user = user; return requestContext.runWithUser(user, next); }
+      if (!/^Bearer\s+/i.test(String(req.headers.authorization || ''))) {
+        return res.status(401).json({ success: false, error: '请登录或配置 External Agent API Token 后继续' });
+      }
+      return requireAgentToken(req, res, () => {
+        // Reject orphaned tokens and disabled owners before any private read.
+        const ownerId = Number(req.user?.id);
+        if (!Number.isSafeInteger(ownerId) || ownerId <= 0) {
+          return res.status(403).json({ success: false, error: 'Agent Token must belong to an active user' });
+        }
+        return Promise.resolve(store.findUserById(ownerId)).then((owner) => {
+          if (!owner || owner.status !== 'active') {
+            return res.status(403).json({ success: false, error: 'Agent Token owner is not active' });
+          }
+          return next();
+        }).catch(next);
+      });
+    }).catch(next);
+  }
   if (isAgentFinderOperation(req)) {
     return loadSession(req, store).then((user) => {
       if (user) { req.user = user; return requestContext.runWithUser(user, next); }
@@ -287,4 +317,4 @@ function handleAccountError(error, res, next) {
   return next(error);
 }
 
-module.exports = { COOKIE_NAME, createAuthRouter, createAuthGuard, authGuard, requireAuth, isAgentFinderOperation, hashPassword, verifyPassword, issueToken, parseToken, loadSession };
+module.exports = { COOKIE_NAME, createAuthRouter, createAuthGuard, authGuard, requireAuth, isAgentFinderOperation, isAgentReadOperation, hashPassword, verifyPassword, issueToken, parseToken, loadSession };
