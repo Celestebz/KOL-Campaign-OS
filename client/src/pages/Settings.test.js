@@ -78,13 +78,13 @@ test('edits Feishu project mappings with system campaign choices', async () => {
   })));
 });
 
-test('removes Agent Automation while retaining YouTube Maton and External Agent API', async () => {
+test('removes Agent Automation while retaining YouTube Maton and Skill connections', async () => {
   render(<Settings />);
   expect(await screen.findByText('配置概览')).toBeInTheDocument();
   expect(screen.queryByRole('tab', { name: 'Agent 自动化' })).not.toBeInTheDocument();
   expect(screen.queryByText('BrowserAct')).not.toBeInTheDocument();
   expect(screen.queryByText('Playwright Local')).not.toBeInTheDocument();
-  expect(screen.getByRole('tab', { name: 'External Agent API' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Skill 连接' })).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('tab', { name: '平台数据源' }));
   expect(screen.getByRole('button', { name: '配置 Maton Gateway' })).toBeInTheDocument();

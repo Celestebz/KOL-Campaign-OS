@@ -180,7 +180,7 @@ function createAuthGuard(store = defaultStore) {
     return loadSession(req, store).then((user) => {
       if (user) { req.user = user; return requestContext.runWithUser(user, next); }
       if (!/^Bearer\s+/i.test(String(req.headers.authorization || ''))) {
-        return res.status(401).json({ success: false, error: '请登录或配置 External Agent API Token 后继续' });
+        return res.status(401).json({ success: false, error: '请登录 OS 或通过 Skill 完成浏览器授权后继续' });
       }
       return requireAgentToken(req, res, () => {
         // Reject orphaned tokens and disabled owners before any private read.
@@ -214,6 +214,7 @@ function createAuthRouter(store = defaultStore) {
   const express = require('express');
   const router = express.Router();
   const sessionRequired = requireAuthWithStore(store);
+  router.use('/agent', require('../routes/agentLogin').createRouter({ requireSession: sessionRequired }));
   const requireAdmin = (req, res, next) => req.user.role === 'admin' ? next() : res.status(403).json({ success: false, error: '仅管理员可访问' });
 
   router.get('/me', async (req, res, next) => {

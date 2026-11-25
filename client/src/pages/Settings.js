@@ -19,6 +19,7 @@ import FeishuSubtableMappings from './settings/feishuSubtableMappings';
 import FeishuSheetMappings from './settings/FeishuSheetMappings';
 import { parseCampaignSubtableMap, serializeCampaignSubtableRows } from './settings/feishuSubtableMappingUtils';
 import './Settings.css';
+import AgentConnect from './AgentConnect';
 
 const { Text } = Typography;
 
@@ -221,7 +222,7 @@ const Settings = () => {
     return [
       { key: 'platforms', label: '平台数据源', value: `${platformReady}/3 个平台已就绪`, ready: platformReady === 3 },
       { key: 'ai', label: 'AI 模型', value: settings.aiModels.active, ready: Boolean(aiReady) },
-      { key: 'external', label: 'External Agent API', value: settings.externalAgent.enabled ? '已启用' : '未启用', ready: Boolean(settings.externalAgent.api_token) },
+      { key: 'external', label: 'Skill 连接', value: '登录一次后使用', ready: true, statusLabel: '无需手动配置' },
       { key: 'storage', label: '云端存储', value: feishu.app_id && feishu.app_token ? '飞书已配置' : '飞书待配置', ready: Boolean(feishu.app_id && feishu.app_token) },
       { key: 'runtime', label: '运行与备用策略', value: settings.fallbackStrategy.enableFallback ? 'Fallback 已启用' : '仅使用主数据源', ready: true }
     ];
@@ -249,7 +250,7 @@ const Settings = () => {
             <div className="settings-overview-card__label">{item.label}</div>
             <div className="settings-overview-card__value">{item.value}</div>
             <Space>
-              <Tag color={item.ready ? 'success' : 'warning'}>{item.ready ? '配置完整' : '需要检查'}</Tag>
+              <Tag color={item.ready ? 'success' : 'warning'}>{item.statusLabel || (item.ready ? '配置完整' : '需要检查')}</Tag>
               <Button type="link" icon={<ArrowRightOutlined />} onClick={() => setActiveSection(item.key)}>进入设置</Button>
             </Space>
           </Card>
@@ -353,14 +354,7 @@ const Settings = () => {
 
   const renderExternal = () => (
     <>
-      <SectionHeading title="External Agent API" description="供 Codex、WorkBuddy 等外部 Agent 读取策略并写入候选池，候选通过仍由人工确认。" />
-      <Row gutter={16}>
-        <Col xs={24} md={7}><Form.Item label="启用 External Agent API" name={['settings', 'externalAgent', 'enabled']} valuePropName="checked"><Switch /></Form.Item></Col>
-        <Col xs={24} md={17}><Form.Item label="Agent API Token" name={['settings', 'externalAgent', 'api_token']}><Input.Password autoComplete="new-password" placeholder="留空保留现有 token；输入新值则更新" /></Form.Item></Col>
-      </Row>
-      <Form.Item label="Agent 使用备注" name={['settings', 'externalAgent', 'notes']}><Input placeholder="例如：只允许写候选池；通过永远人工确认。" /></Form.Item>
-      <Alert type="info" showIcon message="外部 Agent 使用当前用户的 Token 执行找人任务；结果进入原始候选，由人工审核。" />
-      <SaveSectionButton />
+      <AgentConnect embedded />
     </>
   );
 

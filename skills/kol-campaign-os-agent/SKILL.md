@@ -9,19 +9,28 @@ description: Connect to and operate KOL Campaign OS for campaign strategy, one-p
 
 Use app HTTP APIs only. Never access MySQL directly.
 
-- Production `base_url`: `http://59.110.45.218`. Override it only with `KOL_CAMPAIGN_OS_BASE_URL` when the user explicitly selects another environment.
+- Production `base_url`: `http://59.110.45.218`. Use the client's `--base-url` only when the user explicitly selects another environment.
 - Treat production as the source of truth. Use localhost only for code development and tests.
 - Check `GET {base_url}/api/health` first.
-- For `/api/agent/*` and the Finder/configuration endpoints documented below, send `Authorization: Bearer <External Agent API Token>`.
-- Read the token from `KOL_CAMPAIGN_OS_AGENT_TOKEN` in the process environment or an existing gitignored local secret configuration. Never search chat history for it; never print, log, persist, repeat, or reveal any prefix of it.
-- If the token is unavailable, stop before authenticated calls and ask the user to configure `KOL_CAMPAIGN_OS_AGENT_TOKEN` outside the conversation. Do not ask the user to paste it into chat and do not fall back to SSH, SQL, a local database, or a guessed token.
+- Use bundled `scripts/os-client.cjs` (Node.js 18+) for authenticated HTTP requests. Resolve its path relative to this installed skill, not a repository checkout. No npm dependencies or manual Token/environment setup is required.
+- On first use run `node "<skill-dir>/scripts/os-client.cjs" login`. It opens the OS browser login and displays a connection code and verification URL. Show the URL/code to the user if the browser does not open. The user logs in and explicitly allows the matching connection; passwords stay in the OS browser. Keep the bounded login command running while the user authorizes (at most ten minutes).
+- On later uses run `status` or make the requested API call directly. The client saves authorization in the current user's private home directory (Windows DPAPI; Unix private file permissions), automatically supplies credentials, and renews access. Do not read/decrypt that cache, copy browser cookies, print credentials, or ask users to paste them into chat.
+- If login is expired, revoked, or explicitly denied, report it and guide the user through browser login again. Never use SSH or SQL to bypass authentication. `logout` revokes this connection; the OS Settings → Skill connections page can revoke any of the user's connections.
 
-Use the HTTP API for all campaign, creator, candidate, Finder, and draft reads or writes. A `401 Invalid External Agent API Token` proves the production route and token configuration exist, but it does not grant access. A `403 External Agent API Token is not configured` means production configuration is missing.
+Use the HTTP API for all campaign, creator, candidate, Finder, and draft reads or writes. Examples below describe API payloads; the bundled client supplies authentication automatically:
+
+```sh
+node "<skill-dir>/scripts/os-client.cjs" request GET "/api/emails/settings/sync-status"
+node "<skill-dir>/scripts/os-client.cjs" request GET "/api/emails/threads?customer_id=123"
+node "<skill-dir>/scripts/os-client.cjs" request POST "/api/agent/campaigns/1/email-drafts/batch-upsert" --body-file "validated-drafts.json"
+```
+
+Use a JSON file for write bodies, retaining the previews and human approvals required below. Never log request authentication. A 401/403 after the client's automatic renewal is an authentication/permission blocker; 404 on the browser-login endpoints means the server needs the matching release.
 
 ## Read-only email and creator access
 
-After deploying the Agent read-access fix, these existing HTTP endpoints accept
-either a browser session or `Authorization: Bearer <External Agent API Token>`:
+These existing HTTP endpoints accept the bundled client's browser-authorized
+identity or an ordinary OS browser session:
 
 - `GET /api/emails/settings/sync-status`
 - `GET /api/emails/threads?customer_id=<id>&campaign_id=<id>&page=1&pageSize=20`
@@ -30,13 +39,15 @@ either a browser session or `Authorization: Bearer <External Agent API Token>`:
 - `GET /api/customers/<id>`
 - `GET /api/customers/<id>/project-history`
 
-The token must belong to an active user. Mailbox status and email threads are
+Authorization must belong to an active user. Mailbox status and email threads are
 restricted to that owner; another owner's thread returns 404. Customer records
 remain the shared KOL Master, as in the existing authenticated web application.
 This permission does not include mailbox configuration, sync-now, snapshots,
 draft generation, approval, sending, or any mutation. A configured mailbox does
 not authenticate the Agent, and a browser login does not authenticate separate
-HTTP requests. Configure credentials outside chat; never copy browser cookies.
+HTTP requests. Use the bundled login flow; never copy browser cookies. Legacy
+manual Agent Tokens remain compatible for existing integrations and are not
+required for new Skill connections.
 
 Use sync status to report freshness, then inspect thread timelines for actual
 sent messages and inbound replies. Project history or Feishu status alone is

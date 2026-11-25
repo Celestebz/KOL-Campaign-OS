@@ -24,6 +24,7 @@ import Campaigns from './pages/Campaigns';
 import CampaignDetail from './pages/CampaignDetail';
 import Login from './pages/Login';
 import UserManagement from './pages/UserManagement';
+import AgentConnect from './pages/AgentConnect';
 
 const { Header, Sider, Content } = Layout;
 
@@ -203,6 +204,7 @@ function App() {
             <Route path="/records" element={<Records />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/agent/connect" element={<AgentConnect />} />
             {currentUser?.role === 'admin' && <Route path="/users" element={<UserManagement />} />}
           </Routes>
         </Content>

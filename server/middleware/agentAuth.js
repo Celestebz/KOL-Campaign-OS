@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { dbOperations } = require('../database');
 const requestContext = require('../utils/requestContext');
+const agentLogin = require('../services/agentLogin').createAgentLogin();
 
 const AGENT_API_PROVIDER_KEY = 'agent.external_api';
 
@@ -22,13 +23,20 @@ function secureEqual(actual, expected) {
     && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-async function requireAgentToken(req, res, next) {
+function createAgentAuth({ login = agentLogin, database = dbOperations } = {}) {
+return async function requireAgentToken(req, res, next) {
   try {
-    const rows = await dbOperations.query(
+    const supplied = bearerToken(req);
+    if (supplied.startsWith('kol_access_')) {
+      const user = await login.authenticate(supplied);
+      if (!user) return res.status(401).json({ success: false, error: 'Skill 登录已过期或已撤销，请重新登录' });
+      req.user = user;
+      return requestContext.runWithUser(user, next);
+    }
+    const rows = await database.query(
       'SELECT api_key, owner_user_id FROM api_settings WHERE provider = ?',
       [AGENT_API_PROVIDER_KEY]
     );
-    const supplied = bearerToken(req);
     const row = rows.find((candidate) => clean(candidate.api_key) && secureEqual(supplied, clean(candidate.api_key)));
     if (!rows.some((candidate) => clean(candidate.api_key))) {
       return res.status(403).json({ success: false, error: 'External Agent API Token is not configured' });
@@ -42,5 +50,6 @@ async function requireAgentToken(req, res, next) {
     return res.status(500).json({ success: false, error: error.message });
   }
 }
+}
 
-module.exports = { AGENT_API_PROVIDER_KEY, requireAgentToken };
+module.exports = { AGENT_API_PROVIDER_KEY, requireAgentToken: createAgentAuth(), createAgentAuth };

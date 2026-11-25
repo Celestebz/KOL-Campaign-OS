@@ -4,7 +4,7 @@ export const SETTINGS_SECTIONS = [
   { key: 'overview', label: '概览' },
   { key: 'platforms', label: '平台数据源' },
   { key: 'ai', label: 'AI 模型' },
-  { key: 'external', label: 'External Agent API' },
+  { key: 'external', label: 'Skill 连接' },
   { key: 'storage', label: '云端存储' },
   { key: 'runtime', label: '运行与备用策略' }
 ];

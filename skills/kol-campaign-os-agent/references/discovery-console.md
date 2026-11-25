@@ -8,10 +8,11 @@ remain human actions. Read the request; never infer it from the latest row.
 ## Connection
 
 Use the OS origin explicitly supplied in the handoff, otherwise the base URL
-in SKILL.md. Send the user's configured `Authorization: Bearer <token>` on
-all `/api/agent/` calls. The token must belong to the user who created the
-request. A request owned by another user returns 404. Never put the token
-in copied instructions, artifacts, browser storage, screenshots, or chat.
+in SKILL.md. Use bundled `scripts/os-client.cjs request` for `/api/agent/`
+calls; on first use its `login` command opens the browser authorization flow.
+The connected account must be the user who created the request. A request
+owned by another user returns 404. Never put credentials in copied
+instructions, artifacts, browser storage, screenshots, or chat.
 
 Install/update this directory as `kol-campaign-os-agent` in the external
 Agent's skill directory. The repository installer accepts an explicit target:

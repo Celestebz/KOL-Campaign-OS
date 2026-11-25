@@ -182,7 +182,9 @@ function main() {
     for (const item of removed) console.log('- ' + item.skill + ': ' + item.path);
   }
   console.log('');
-  console.log('Next: start KOL Campaign OS, then choose the entry skill in your agent.');
+  console.log('Next: ask your agent to use the skill. On first use, it opens the OS browser login once.');
+  console.log('No manual Agent Token or environment variable is required.');
+  console.log('Login command: node "' + path.join(targetRoot, manifest.entry_skill, 'scripts', 'os-client.cjs') + '" login');
   console.log('Production URL: http://59.110.45.218');
 }
 
