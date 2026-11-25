@@ -18,6 +18,31 @@ Use app HTTP APIs only. Never access MySQL directly.
 
 Use the HTTP API for all campaign, creator, candidate, Finder, and draft reads or writes. A `401 Invalid External Agent API Token` proves the production route and token configuration exist, but it does not grant access. A `403 External Agent API Token is not configured` means production configuration is missing.
 
+## Read-only email and creator access
+
+After deploying the Agent read-access fix, these existing HTTP endpoints accept
+either a browser session or `Authorization: Bearer <External Agent API Token>`:
+
+- `GET /api/emails/settings/sync-status`
+- `GET /api/emails/threads?customer_id=<id>&campaign_id=<id>&page=1&pageSize=20`
+- `GET /api/emails/threads/<id>`
+- `GET /api/customers` (existing search and pagination parameters)
+- `GET /api/customers/<id>`
+- `GET /api/customers/<id>/project-history`
+
+The token must belong to an active user. Mailbox status and email threads are
+restricted to that owner; another owner's thread returns 404. Customer records
+remain the shared KOL Master, as in the existing authenticated web application.
+This permission does not include mailbox configuration, sync-now, snapshots,
+draft generation, approval, sending, or any mutation. A configured mailbox does
+not authenticate the Agent, and a browser login does not authenticate separate
+HTTP requests. Configure credentials outside chat; never copy browser cookies.
+
+Use sync status to report freshness, then inspect thread timelines for actual
+sent messages and inbound replies. Project history or Feishu status alone is
+not evidence of contact or a reply. No matching visible thread means no evidence
+was found in this account, not proof that the creator was never contacted.
+
 ## SSH Diagnostics
 
 Use SSH only for production service status, logs, release inspection, performance diagnosis, and an explicitly approved deployment. Never use SSH to bypass the Agent API for business data.
